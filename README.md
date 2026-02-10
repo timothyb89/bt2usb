@@ -14,6 +14,12 @@ This firmware connects to Bluetooth LE HID devices (keyboards, mice, custom devi
 
 I built this to pair with the fantastic [Full Scroll Dial by Engineer Bo](https://www.youtube.com/watch?v=tzqJ1rJURgs) so I could easily switch it between computers with a USB switch. The idea is inspired by the excellent [`hid-remapper`](https://github.com/jfedor2/hid-remapper), but written in embedded Rust and with specific device profiles.
 
+## Requirements
+
+- A Raspberry Pi Pico W with the CYW43439 wireless chipset. Other RP2040 boards with different wireless chipsets will not work. 
+
+No other hardware is required, aside from the BLE device you want to convert to USB.
+
 ## Features
 
 - Rough profiles for the Full Scroll Dial and Logitech MX Master 3S
@@ -27,6 +33,11 @@ I built this to pair with the fantastic [Full Scroll Dial by Engineer Bo](https:
 - Various resiliency fixes. The Pico's BLE stack is a bit finnicky.
 - Select between devices and profiles at runtime (with a HID/serial interface + WebUSB)
 - Some solution for status reporting
+- Generic mouse/keyboard device profiles
+
+Longer term desired TODOs:
+
+- Bluetooth Classic support. Supported by the Pico W, but not by `trouble`.
 
 ## Building
 
