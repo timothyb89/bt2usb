@@ -11,53 +11,51 @@
 #![no_main]
 
 mod ble_hid;
+mod ble_state;
 mod bonding;
 mod device_profile;
+mod framing;
+mod protocol;
+mod rpc;
+mod rpc_log;
 mod usb_hid;
 
-use core::cell::RefCell;
 use cyw43_pio::PioSpi;
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
+use embassy_futures::select::{select, Either};
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0, USB};
+use embassy_rp::peripherals::{DMA_CH0, FLASH, PIO0, USB};
 use embassy_rp::pio::Pio;
 use embassy_rp::usb::Driver;
-use embassy_time::{Duration, Timer};
-use embassy_usb::class::hid::{HidWriter, State};
-use embassy_usb::Builder;
-use heapless::Deque;
+use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
 use panic_probe as _;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use trouble_host::connection::{ConnectConfig, ScanConfig};
-use trouble_host::scan::LeAdvReportsIter;
 use trouble_host::scan::Scanner;
 
-use usbd_hid::descriptor::{KeyboardReport, MouseReport, SerializedDescriptor};
+use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
 use ble_hid::{parse_hid_report, HidReportType, HID_REPORT_CHANNEL};
+use ble_state::{BleCommand, BleEvent, RpcScannerHandler, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};
 use device_profile::DeviceProfile;
+use embassy_time::Timer;
+use protocol::ConnectionState;
 use usb_hid::{
-    keyboard_report_descriptor, mouse_report_descriptor, serialize_keyboard_report,
-    serialize_mouse_report, serialize_mouse_report_16bit, KeyboardHidReport, MouseHidReport,
-    MouseReport16, UsbDeviceHandler, MOUSE_HIRES_16BIT_REPORT_DESC, MOUSE_HIRES_REPORT_DESC,
+    serialize_keyboard_report, serialize_mouse_report, serialize_mouse_report_16bit,
+    KeyboardHidReport, MOUSE_HIRES_16BIT_REPORT_DESC, MOUSE_HIRES_REPORT_DESC,
+    VENDOR_RPC_REPORT_DESC,
 };
 
 // ============ Target HID Device Configuration ============
-/// Change this to switch which BLE device to scan for
-const TARGET_PROFILE: DeviceProfile = DeviceProfile::FullScrollDial16Bit;
-
-// HID Service and Characteristic UUIDs
-const HID_REPORT_CHAR_UUID: Uuid = Uuid::new_short(0x2A4D); // HID Report
-const HID_REPORT_MAP_CHAR_UUID: Uuid = Uuid::new_short(0x2A4B); // HID Report Map
+/// Default device profile (used for fresh pairing when no stored profile exists)
+const DEFAULT_PROFILE: DeviceProfile = DeviceProfile::FullScrollDial16Bit;
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
@@ -66,51 +64,6 @@ bind_interrupts!(struct Irqs {
 
 /// Flash size for RP2040 (2MB)
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
-
-/// Channel used to signal when the target device is found during scanning.
-/// Carries the address of the found device.
-static FOUND_DEVICE_CHANNEL: Channel<CriticalSectionRawMutex, Address, 1> = Channel::new();
-
-struct ScannerHandler;
-
-impl EventHandler for ScannerHandler {
-    fn on_adv_reports(&self, mut it: LeAdvReportsIter<'_>) {
-        while let Some(Ok(report)) = it.next() {
-            let data = report.data;
-            let mut i = 0;
-
-            // Parse AD structures
-            while i < data.len() {
-                let len = data[i] as usize;
-                if len == 0 {
-                    break;
-                } // Padding
-                if i + 1 + len > data.len() {
-                    break;
-                } // Malformed
-
-                let type_code = data[i + 1];
-                let value = &data[i + 2..i + 1 + len];
-
-                // AD Type 0x08 (Shortened Local Name) or 0x09 (Complete Local Name)
-                if type_code == 0x08 || type_code == 0x09 {
-                    if let Ok(name) = core::str::from_utf8(value) {
-                        // Check if name matches our target device profile
-                        if name == TARGET_PROFILE.name() {
-                            info!("FOUND DEVICE: {} ({:?})", name, report.addr);
-                            let _ = FOUND_DEVICE_CHANNEL.try_send(Address {
-                                kind: report.addr_kind,
-                                addr: report.addr,
-                            });
-                            return;
-                        }
-                    }
-                }
-                i += 1 + len;
-            }
-        }
-    }
-}
 
 /// CYW43 task - required to run the WiFi/BLE chip
 #[embassy_executor::task]
@@ -209,116 +162,6 @@ const CONNECTIONS_MAX: usize = 1;
 /// Max L2CAP channels (signal + att + coc)
 const L2CAP_CHANNELS_MAX: usize = 3;
 
-/// BLE advertisement event handler for scanning
-/// Only logs HID devices
-struct BleAdvHandler {
-    /// Track seen device addresses to avoid duplicate logging
-    seen: RefCell<Deque<BdAddr, 32>>,
-}
-
-impl BleAdvHandler {
-    fn new() -> Self {
-        Self {
-            seen: RefCell::new(Deque::new()),
-        }
-    }
-}
-
-impl EventHandler for BleAdvHandler {
-    fn on_adv_reports(&self, mut it: LeAdvReportsIter<'_>) {
-        let mut seen = self.seen.borrow_mut();
-
-        while let Some(Ok(report)) = it.next() {
-            // Skip if already seen this device
-            if seen.iter().any(|b| b.raw() == report.addr.raw()) {
-                continue;
-            }
-
-            // Track this device
-            if seen.is_full() {
-                seen.pop_front();
-            }
-            let _ = seen.push_back(report.addr);
-
-            // Get the raw address bytes for hex display
-            let addr_bytes = report.addr.raw();
-
-            // Parse advertisement data for device name and HID service
-            let mut name: Option<&[u8]> = None;
-            let mut is_hid = false;
-
-            let data = report.data;
-            let mut i = 0;
-            while i < data.len() {
-                let len = data[i] as usize;
-                if len == 0 || i + len >= data.len() {
-                    break;
-                }
-                let ad_type = data[i + 1];
-                let ad_data = &data[i + 2..i + 1 + len];
-
-                match ad_type {
-                    0x09 | 0x08 => {
-                        // Complete or Shortened Local Name
-                        name = Some(ad_data);
-                    }
-                    0x02 | 0x03 => {
-                        // Incomplete or Complete List of 16-bit Service UUIDs
-                        for chunk in ad_data.chunks(2) {
-                            if chunk.len() == 2 && chunk[0] == 0x12 && chunk[1] == 0x18 {
-                                is_hid = true;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1 + len;
-            }
-
-            // Only log HID devices
-            if !is_hid {
-                continue;
-            }
-
-            // Log the discovery with hex address
-            if let Some(name_bytes) = name {
-                if let Ok(name_str) = core::str::from_utf8(name_bytes) {
-                    info!(
-                        "Found HID device: {} [{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}]",
-                        name_str,
-                        addr_bytes[5],
-                        addr_bytes[4],
-                        addr_bytes[3],
-                        addr_bytes[2],
-                        addr_bytes[1],
-                        addr_bytes[0]
-                    );
-                } else {
-                    info!(
-                        "Found HID device: [{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}]",
-                        addr_bytes[5],
-                        addr_bytes[4],
-                        addr_bytes[3],
-                        addr_bytes[2],
-                        addr_bytes[1],
-                        addr_bytes[0]
-                    );
-                }
-            } else {
-                info!(
-                    "Found HID device: [{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}]",
-                    addr_bytes[5],
-                    addr_bytes[4],
-                    addr_bytes[3],
-                    addr_bytes[2],
-                    addr_bytes[1],
-                    addr_bytes[0]
-                );
-            }
-        }
-    }
-}
-
 /// Main entry point
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -385,7 +228,7 @@ async fn main(spawner: Spawner) {
     };
     // Mouse (select descriptor based on TARGET_PROFILE)
     static MOUSE_HANDLER: StaticCell<usb_hid::HiresMouseRequestHandler> = StaticCell::new();
-    let mouse_descriptor = if TARGET_PROFILE.uses_16bit_reports() {
+    let mouse_descriptor = if DEFAULT_PROFILE.uses_16bit_reports() {
         MOUSE_HIRES_16BIT_REPORT_DESC // Experimental 16-bit mode
     } else {
         MOUSE_HIRES_REPORT_DESC // Standard 8-bit mode
@@ -398,7 +241,6 @@ async fn main(spawner: Spawner) {
     };
 
     // State buffers
-    static DEVICE_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static MS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
@@ -406,6 +248,7 @@ async fn main(spawner: Spawner) {
 
     static STATE_KB: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
     static STATE_MOUSE: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
+    static STATE_RPC: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
 
     let mut builder = embassy_usb::Builder::new(
         driver,
@@ -430,11 +273,26 @@ async fn main(spawner: Spawner) {
         mouse_config,
     );
 
+    // Vendor HID interface for RPC communication (replaces CDC ACM to avoid BLE interference)
+    let rpc_config = embassy_usb::class::hid::Config {
+        report_descriptor: VENDOR_RPC_REPORT_DESC,
+        request_handler: None,
+        poll_ms: 10, // 10ms poll — fast enough for streaming events without excessive USB load
+        max_packet_size: 64,
+    };
+    let rpc_hid = HidReaderWriter::<_, 64, 64>::new(
+        &mut builder,
+        STATE_RPC.init(embassy_usb::class::hid::State::new()),
+        rpc_config,
+    );
+    let (rpc_reader, rpc_writer) = rpc_hid.split();
+
     let usb_dev = builder.build();
 
     // Spawn USB tasks
     unwrap!(spawner.spawn(usb_task(usb_dev)));
     unwrap!(spawner.spawn(usb_hid_handler_task(kb_writer, mouse_writer)));
+    unwrap!(spawner.spawn(rpc::rpc_task(rpc_writer, rpc_reader)));
 
     info!("USB HID device initialized");
 
@@ -452,7 +310,7 @@ async fn main(spawner: Spawner) {
         );
     }
 
-    let controller = ExternalController::new(bt_device);
+    let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
 
     // Static random address: MSB must have bits 11 (>= 0xC0)
     let address = Address::random([0xff, 0x8f, 0x1b, 0x05, 0xe4, 0xca]);
@@ -500,340 +358,408 @@ async fn main(spawner: Spawner) {
         ..
     } = stack.build();
 
-    let scanner_handler = ScannerHandler;
+    let scanner_handler = RpcScannerHandler;
     let mut scanner = Scanner::new(central);
 
-    info!("BLE Central initialized. Starting discovery...");
+    info!("BLE Central initialized");
 
-    // Run BLE host (with scanner handler) and connection logic concurrently
+    // If we have stored bonds, auto-connect on startup
+    if !loaded_bonds.is_empty() {
+        let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
+    }
+
+    // Run BLE host (with scanner handler) and command-driven state machine concurrently
     let _ = join(runner.run_with_handler(&scanner_handler), async {
-        // Track whether we have a valid stored bond
-        let has_stored_bond = !loaded_bonds.is_empty();
-
-        // Determine the active device profile:
-        // - From stored bond if reconnecting
-        // - From TARGET_PROFILE if scanning fresh
-        let active_profile = if has_stored_bond {
+        // ============ Command-driven BLE state machine ============
+        let mut active_profile = if !loaded_bonds.is_empty() {
             DeviceProfile::from_id(loaded_bonds[0].profile_id)
         } else {
-            TARGET_PROFILE
-        };
-        info!("Active device profile: {:?}", active_profile);
-
-        // --- DISCOVERY PHASE ---
-        let target_address = if has_stored_bond {
-            // If we have a bonded device, connect directly to it (skip scanning)
-            let lb = &loaded_bonds[0];
-            let addr = lb.bond.identity.bd_addr;
-            info!("Bonded device found, connecting directly to {:?}", addr);
-
-            // Convert BdAddr to Address
-            let addr_bytes = addr.raw();
-            let kind = if (addr_bytes[5] & 0xC0) == 0xC0 {
-                AddrKind::RANDOM
-            } else {
-                AddrKind::PUBLIC
-            };
-
-            Address { kind, addr }
-        } else {
-            // No bonds, scan for device by name
-            loop {
-                info!("Scanning for '{}'...", TARGET_PROFILE.name());
-
-                // Start active scanning (needed to get names usually in scan response)
-                let mut scan_config = ScanConfig::default();
-                scan_config.active = true;
-                scan_config.interval = embassy_time::Duration::from_millis(100);
-                scan_config.window = embassy_time::Duration::from_millis(100);
-                // No filter list = BasicUnfiltered
-
-                match scanner.scan(&scan_config).await {
-                    Ok(_scan_session) => {
-                        // Scan started successfully. Wait for FOUND_DEVICE_CHANNEL
-                        match embassy_time::with_timeout(
-                            embassy_time::Duration::from_secs(10),
-                            FOUND_DEVICE_CHANNEL.receive(),
-                        )
-                        .await
-                        {
-                            Ok(address) => {
-                                info!("Target found! Stopping scan.");
-                                break address; // Exit loop with address
-                            }
-                            Err(_) => {
-                                info!("Scan timeout. Restarting scan...");
-                                continue;
-                            }
-                        }
-                        // session dropped here, stopping scan
-                    }
-                    Err(e) => {
-                        error!("Failed to start scan: {:?}", e);
-                        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
-                    }
-                }
-            }
+            DEFAULT_PROFILE
         };
 
-        // --- CONNECTION PHASE ---
-        // Get central back from scanner
-        let mut central = scanner.into_inner();
+        loop {
+            let _ =
+                BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Disconnected));
+            info!("BLE state: Idle. Waiting for command...");
 
-        // Connect to the found target
-        let mut config = ConnectConfig {
-            connect_params: Default::default(),
-            scan_config: ScanConfig {
-                active: true,
-                filter_accept_list: &[(target_address.kind, &target_address.addr)],
-                ..Default::default()
-            },
-        };
-        // Request low-latency connection parameters for high-performance mice
-        // BLE intervals work in 1.25ms units, 7.5ms = 6 units (minimum allowed)
-        config.connect_params.min_connection_interval = embassy_time::Duration::from_micros(7500); // 7.5ms
-        config.connect_params.max_connection_interval = embassy_time::Duration::from_millis(15); // 15ms
-        config.connect_params.supervision_timeout = embassy_time::Duration::from_secs(2);
+            let cmd = BLE_CMD_CHANNEL.receive().await;
+            match cmd {
+                BleCommand::StartScan => {
+                    info!("Starting BLE scan...");
+                    rpc_log::info("Scanning for BLE HID devices");
+                    let _ = BLE_EVENT_CHANNEL
+                        .try_send(BleEvent::StateChanged(ConnectionState::Scanning));
 
-        const MAX_PAIRING_RETRIES: u8 = 5;
-        let mut pairing_attempts: u8 = 0;
+                    let mut scan_config = ScanConfig::default();
+                    scan_config.active = true;
+                    scan_config.interval = embassy_time::Duration::from_millis(100);
+                    scan_config.window = embassy_time::Duration::from_millis(100);
 
-        'connect: loop {
-            pairing_attempts += 1;
-            info!(
-                "Connection attempt {} of {}",
-                pairing_attempts, MAX_PAIRING_RETRIES
-            );
-
-            let conn = match central.connect(&config).await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    error!("Connection failed: {:?}", e);
-                    if pairing_attempts >= MAX_PAIRING_RETRIES {
-                        error!("Max connection retries exceeded, giving up");
-                        return;
-                    }
-                    warn!("Retrying in 500ms...");
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
-                    continue 'connect;
-                }
-            };
-
-            info!("Connected to HID device!");
-
-            // Set bondable based on whether we have an existing bond
-            if let Err(e) = conn.set_bondable(!has_stored_bond) {
-                error!("Failed to set bondable: {:?}", e);
-            }
-            info!(
-                "Bondable set to: {} (has_stored_bond: {})",
-                !has_stored_bond, has_stored_bond
-            );
-
-            // Request security (triggers pairing or re-encryption)
-            info!(
-                "Requesting security (has_stored_bond: {}, bondable: {})...",
-                has_stored_bond, !has_stored_bond
-            );
-            match conn.request_security() {
-                Ok(_) => info!("Security request sent"),
-                Err(e) => {
-                    error!("Failed to request security: {:?}", e);
-                    if pairing_attempts >= MAX_PAIRING_RETRIES {
-                        error!("Max pairing retries exceeded, giving up");
-                        return;
-                    }
-                    warn!("Retrying in 500ms...");
-                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
-                    continue 'connect;
-                }
-            }
-
-            // Wait for pairing outcome
-            let pairing_ok = loop {
-                match conn.next().await {
-                    ConnectionEvent::PairingComplete {
-                        security_level,
-                        bond,
-                    } => {
-                        info!("Pairing complete! Level: {:?}", security_level);
-                        if let Some(bond_info) = bond {
-                            info!("Bond info received: {:?}", bond_info);
-                            info!("Storing bond to flash...");
-                            match bonding::store_bond(
-                                &mut flash,
-                                &bond_info,
-                                active_profile.to_id(),
-                            )
-                            .await
-                            {
-                                Ok(slot) => {
-                                    info!("Bond stored successfully in slot {}", slot);
-                                }
-                                Err(_) => {
-                                    error!("Failed to store bond to flash");
-                                }
-                            }
-                        }
-                        break true;
-                    }
-                    ConnectionEvent::PairingFailed(e) => {
-                        error!("Pairing failed: {:?}", e);
-                        break false;
-                    }
-                    ConnectionEvent::Disconnected { reason } => {
-                        error!("Disconnected during pairing: {:?}", reason);
-                        break false;
-                    }
-                    other => {
-                        debug!("Connection event during security setup: {:?}", other);
-                    }
-                }
-            };
-
-            if pairing_ok {
-                info!("Connected, creating GATT client...");
-
-                // Create GATT client to interact with services
-                let client =
-                    match GattClient::<ExternalController<_, 10>, DefaultPacketPool, 10>::new(
-                        &stack, &conn,
-                    )
-                    .await
-                    {
-                        Ok(c) => c,
-                        Err(e) => {
-                            error!("Failed to create GATT client: {:?}", e);
-                            return;
-                        }
-                    };
-
-                // Run GATT client task and HID input handling concurrently
-                let _ = join(client.task(), async {
-                    // First, probe for common services to see what the device exposes
-                    info!("Probing for common BLE services...");
-
-                    let common_services: [(u16, &str); 5] = [
-                        (0x1800, "Generic Access"),
-                        (0x1801, "Generic Attribute"),
-                        (0x180A, "Device Information"),
-                        (0x180F, "Battery Service"),
-                        (0x1812, "HID Service"),
-                    ];
-
-                    for (uuid, name) in common_services.iter() {
-                        let service_uuid = Uuid::new_short(*uuid);
-                        info!("  Checking for {} (0x{:04X})...", name, uuid);
-
-                        match embassy_time::with_timeout(
-                            embassy_time::Duration::from_secs(5),
-                            client.services_by_uuid(&service_uuid),
-                        )
-                        .await
-                        {
-                            Ok(Ok(services)) if !services.is_empty() => {
-                                info!("    FOUND: {} instance(s)", services.len());
-                            }
-                            Ok(Ok(_)) => {
-                                info!("    Not found");
-                            }
-                            Ok(Err(e)) => {
-                                warn!("    Error: {:?}", e);
-                            }
-                            Err(_) => {
-                                error!("    TIMEOUT after 5s");
-                            }
-                        }
-                    }
-
-                    // Now discover HID service specifically
-                    info!("Discovering HID service...");
-                    let hid_service_uuid = Uuid::new_short(0x1812);
-
-                    let services = match embassy_time::with_timeout(
-                        embassy_time::Duration::from_secs(10),
-                        client.services_by_uuid(&hid_service_uuid),
-                    )
-                    .await
-                    {
-                        Ok(Ok(services)) => services,
-                        Ok(Err(e)) => {
-                            error!("Failed to discover HID service: {:?}", e);
-                            return;
-                        }
-                        Err(_) => {
-                            error!("HID service discovery timed out after 10s");
-                            return;
-                        }
-                    };
-
-                    if services.is_empty() {
-                        error!("No HID service found!");
-                        return;
-                    }
-
-                    let hid_service = &services[0];
-                    info!("Found HID service");
-
-                    // Find HID Report characteristic (UUID 0x2A4D)
-                    // Note: There may be multiple report characteristics, but we'll use the first one
-                    // In a full implementation, we'd parse the Report Map to identify each one
-                    info!("Discovering HID Report characteristic...");
-                    let report_uuid = Uuid::new_short(0x2A4D);
-
-                    let report_char: Characteristic<[u8; 64]> = match client
-                        .characteristic_by_uuid(hid_service, &report_uuid)
-                        .await
-                    {
-                        Ok(char) => char,
-                        Err(e) => {
-                            error!("Failed to discover report characteristic: {:?}", e);
-                            return;
-                        }
-                    };
-
-                    info!("Found HID Report characteristic");
-                    info!("Subscribing to HID notifications...");
-
-                    match client.subscribe(&report_char, false).await {
-                        Ok(mut listener) => {
-                            info!("Subscribed successfully!");
-                            info!("=== HID CONNECTION ESTABLISHED ===");
-                            info!("Waiting for mouse HID reports...");
-
+                    match scanner.scan(&scan_config).await {
+                        Ok(_session) => {
+                            // Scan is active. ScanResult events are emitted by RpcScannerHandler.
+                            // Wait for StopScan or Connect command, or timeout.
                             loop {
-                                let notification = listener.next().await;
-                                let data = notification.as_ref();
-
-                                if data.is_empty() {
-                                    continue;
+                                match select(
+                                    BLE_CMD_CHANNEL.receive(),
+                                    embassy_time::Timer::after(embassy_time::Duration::from_secs(
+                                        30,
+                                    )),
+                                )
+                                .await
+                                {
+                                    Either::First(BleCommand::StopScan) => {
+                                        info!("Scan stopped by command");
+                                        rpc_log::info("Scan stopped");
+                                        break;
+                                    }
+                                    Either::First(BleCommand::Connect { address, addr_kind }) => {
+                                        info!("Connect command during scan");
+                                        // Session dropped here stops scanning.
+                                        // Push Connect command back for the outer loop to handle.
+                                        let _ = BLE_CMD_CHANNEL
+                                            .try_send(BleCommand::Connect { address, addr_kind });
+                                        break;
+                                    }
+                                    Either::First(_) => {
+                                        // Ignore other commands during scan
+                                    }
+                                    Either::Second(_) => {
+                                        info!("Scan timeout (30s)");
+                                        rpc_log::info("Scan timeout (30s)");
+                                        break;
+                                    }
                                 }
-                                // debug!("HID Report: {:02x}", data);
-
-                                let report = parse_hid_report(data, 0, active_profile);
-                                HID_REPORT_CHANNEL.send(report).await;
                             }
+                            // Scan session dropped here, scanning stops
                         }
                         Err(e) => {
-                            error!("Failed to subscribe to notifications: {:?}", e);
+                            error!("Failed to start scan: {:?}", e);
                         }
                     }
-                })
-                .await;
+                }
 
-                // GATT/HID loop ended (disconnect or error) — exit retry loop
-                break;
-            }
+                BleCommand::StopScan => {
+                    // Not scanning, ignore
+                }
 
-            // Pairing failed — retry
-            if pairing_attempts >= MAX_PAIRING_RETRIES {
-                error!("Max pairing retries exceeded, giving up");
-                return;
+                BleCommand::Connect { address, addr_kind } => {
+                    let kind = if addr_kind == 1 {
+                        AddrKind::RANDOM
+                    } else {
+                        AddrKind::PUBLIC
+                    };
+                    let target = Address {
+                        kind,
+                        addr: BdAddr::new(address),
+                    };
+                    active_profile = DEFAULT_PROFILE; // Will be updated if bond has a profile
+
+                    // Get central back from scanner for connection
+                    let mut central = scanner.into_inner();
+                    ble_connect_and_run(
+                        &mut central,
+                        &stack,
+                        &mut flash,
+                        target,
+                        active_profile,
+                        false,
+                    )
+                    .await;
+                    // Recover scanner for next scan
+                    scanner = Scanner::new(central);
+                }
+
+                BleCommand::AutoConnect => {
+                    if loaded_bonds.is_empty() {
+                        warn!("AutoConnect: no bonds stored");
+                        rpc_log::warn("AutoConnect: no bonds stored");
+                        continue;
+                    }
+                    let lb = &loaded_bonds[0];
+                    let addr = lb.bond.identity.bd_addr;
+                    active_profile = DeviceProfile::from_id(lb.profile_id);
+                    info!(
+                        "Auto-connecting to bonded device {:?} (profile: {:?})",
+                        addr, active_profile
+                    );
+                    rpc_log::info("Auto-connecting to bonded device");
+
+                    let addr_bytes = addr.raw();
+                    let kind = if (addr_bytes[5] & 0xC0) == 0xC0 {
+                        AddrKind::RANDOM
+                    } else {
+                        AddrKind::PUBLIC
+                    };
+                    let target = Address { kind, addr };
+
+                    let mut central = scanner.into_inner();
+                    ble_connect_and_run(
+                        &mut central,
+                        &stack,
+                        &mut flash,
+                        target,
+                        active_profile,
+                        true,
+                    )
+                    .await;
+                    scanner = Scanner::new(central);
+                }
+
+                BleCommand::Disconnect => {
+                    info!("Not connected, nothing to disconnect");
+                }
             }
-            warn!("Pairing failed, retrying in 500ms...");
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
-            // conn is dropped here, releasing the connection
         }
     })
     .await;
+}
+
+/// Connect to a BLE HID device, pair, discover GATT, and run the HID report loop.
+///
+/// Returns when the connection is lost, pairing fails, or an error occurs.
+async fn ble_connect_and_run<'a, C: Controller>(
+    central: &mut Central<'a, C, DefaultPacketPool>,
+    stack: &'a Stack<'a, C, DefaultPacketPool>,
+    flash: &mut Flash<'_, FLASH, Async, FLASH_SIZE>,
+    target: Address,
+    active_profile: DeviceProfile,
+    has_stored_bond: bool,
+) {
+    let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
+    rpc_log::info("Connecting to BLE device");
+
+    let mut config = ConnectConfig {
+        connect_params: Default::default(),
+        scan_config: ScanConfig {
+            active: true,
+            filter_accept_list: &[(target.kind, &target.addr)],
+            ..Default::default()
+        },
+    };
+    config.connect_params.min_connection_interval = embassy_time::Duration::from_micros(7500);
+    config.connect_params.max_connection_interval = embassy_time::Duration::from_millis(15);
+    config.connect_params.supervision_timeout = embassy_time::Duration::from_secs(2);
+
+    const MAX_PAIRING_RETRIES: u8 = 5;
+    let mut pairing_attempts: u8 = 0;
+
+    'connect: loop {
+        pairing_attempts += 1;
+        info!(
+            "Connection attempt {} of {}",
+            pairing_attempts, MAX_PAIRING_RETRIES
+        );
+
+        let conn: Connection<'_, DefaultPacketPool> = match central.connect(&config).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                error!("Connection failed: {:?}", defmt::Debug2Format(&e));
+                rpc_log::error("Connection attempt failed");
+                if pairing_attempts >= MAX_PAIRING_RETRIES {
+                    error!("Max connection retries exceeded");
+                    rpc_log::error("Max connection retries exceeded");
+                    return;
+                }
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                continue 'connect;
+            }
+        };
+
+        info!("Connected to HID device!");
+        rpc_log::info("Connected to BLE device");
+        let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connected));
+
+        // Set bondable based on whether we have an existing bond
+        if let Err(e) = conn.set_bondable(!has_stored_bond) {
+            error!("Failed to set bondable: {:?}", e);
+        }
+
+        // Request security (triggers pairing or re-encryption)
+        let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Pairing));
+        rpc_log::info("Pairing / re-encryption in progress");
+        info!("Requesting security (bondable: {})...", !has_stored_bond);
+        match conn.request_security() {
+            Ok(_) => info!("Security request sent"),
+            Err(e) => {
+                error!("Failed to request security: {:?}", e);
+                if pairing_attempts >= MAX_PAIRING_RETRIES {
+                    return;
+                }
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                continue 'connect;
+            }
+        }
+
+        // Wait for pairing outcome
+        let pairing_ok = loop {
+            match conn.next().await {
+                ConnectionEvent::PairingComplete {
+                    security_level,
+                    bond,
+                } => {
+                    info!("Pairing complete! Level: {:?}", security_level);
+                    rpc_log::info("Pairing complete");
+                    let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingComplete);
+                    if let Some(bond_info) = bond {
+                        match bonding::store_bond(flash, &bond_info, active_profile.to_id()).await {
+                            Ok(slot) => {
+                                info!("Bond stored in slot {}", slot);
+                                let mut addr_buf = [0u8; 6];
+                                addr_buf.copy_from_slice(bond_info.identity.bd_addr.raw());
+                                let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::BondStored {
+                                    address: addr_buf,
+                                    profile_id: active_profile.to_id(),
+                                });
+                            }
+                            Err(_) => error!("Failed to store bond"),
+                        }
+                    }
+                    break true;
+                }
+                ConnectionEvent::PairingFailed(e) => {
+                    error!("Pairing failed: {:?}", e);
+                    rpc_log::error("Pairing failed");
+                    let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingFailed);
+                    break false;
+                }
+                ConnectionEvent::Disconnected { reason } => {
+                    error!("Disconnected during pairing: {:?}", reason);
+                    rpc_log::error("Disconnected during pairing");
+                    let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingFailed);
+                    break false;
+                }
+                _ => {}
+            }
+        };
+
+        if pairing_ok {
+            info!("Creating GATT client...");
+
+            let client = match GattClient::<C, DefaultPacketPool, 10>::new(stack, &conn).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!(
+                        "Failed to create GATT client: {:?}",
+                        defmt::Debug2Format(&e)
+                    );
+                    return;
+                }
+            };
+
+            // Run GATT client and HID loop concurrently
+            let _ = join(client.task(), async {
+                // Discover HID service
+                let hid_uuid = Uuid::new_short(0x1812);
+                let services = match embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(10),
+                    client.services_by_uuid(&hid_uuid),
+                )
+                .await
+                {
+                    Ok(Ok(s)) if !s.is_empty() => s,
+                    Ok(Ok(_)) => {
+                        error!("No HID service found!");
+                        return;
+                    }
+                    Ok(Err(e)) => {
+                        error!(
+                            "HID service discovery failed: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                        return;
+                    }
+                    Err(_) => {
+                        error!("HID service discovery timeout");
+                        return;
+                    }
+                };
+
+                let hid_service = &services[0];
+                info!("Found HID service");
+                rpc_log::info("HID service discovered");
+
+                // Discover HID Report characteristic
+                // NOTE: The Full Scroll Dial has multiple Report characteristics.
+                // characteristic_by_uuid() returns the FIRST one, which may not be
+                // the correct one for scroll wheel deltas!
+                let report_uuid = Uuid::new_short(0x2A4D);
+                let report_char: Characteristic<[u8; 64]> = match client
+                    .characteristic_by_uuid(hid_service, &report_uuid)
+                    .await
+                {
+                    Ok(c) => {
+                        info!("Found Report characteristic (UUID 0x2A4D)");
+                        info!("CRITICAL: Characteristic handle = {:?}", c.handle);
+                        info!("Linux uses handle 0x0020 for symmetric scroll values");
+                        info!("If we're using a different handle, that explains the asymmetry!");
+                        c
+                    }
+                    Err(e) => {
+                        error!(
+                            "Report characteristic not found: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                        return;
+                    }
+                };
+
+                // TODO: This subscribes to the FIRST Report characteristic, but the device
+                // likely has multiple. We may need to enumerate all Report characteristics
+                // and check their Report Reference descriptors to find the scroll wheel report.
+
+                // Subscribe to notifications
+                match client.subscribe(&report_char, false).await {
+                    Ok(mut listener) => {
+                        info!("=== HID CONNECTION ESTABLISHED ===");
+                        info!("Subscribed to notifications on handle {:?}", report_char.handle);
+                        rpc_log::info("HID connection ready - receiving reports");
+                        let _ = BLE_EVENT_CHANNEL
+                            .try_send(BleEvent::StateChanged(ConnectionState::Ready));
+
+                        // HID report loop - also check for Disconnect commands
+                        loop {
+                            match select(listener.next(), BLE_CMD_CHANNEL.receive()).await {
+                                Either::First(notification) => {
+                                    let data = notification.as_ref();
+                                    if !data.is_empty() {
+                                        let preview_len = data.len().min(8);
+                                        debug!("Raw notification: len={}, first {} bytes: {:?}",
+                                            data.len(), preview_len, &data[..preview_len]);
+                                        let report = parse_hid_report(data, 0, active_profile);
+                                        HID_REPORT_CHANNEL.send(report).await;
+                                    }
+                                }
+                                Either::Second(BleCommand::Disconnect) => {
+                                    info!("Disconnect command received");
+                                    rpc_log::info("Disconnecting by request");
+                                    break;
+                                }
+                                Either::Second(_) => {
+                                    // Ignore other commands while connected
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to subscribe to notifications: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                    }
+                }
+            })
+            .await;
+
+            // Connection ended
+            break;
+        }
+
+        // Pairing failed — retry
+        if pairing_attempts >= MAX_PAIRING_RETRIES {
+            error!("Max pairing retries exceeded");
+            return;
+        }
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+    }
 }

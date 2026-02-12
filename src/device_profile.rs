@@ -222,15 +222,25 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
 
     // Device sends 16-bit scroll delta in little-endian format
     let raw = i16::from_le_bytes([data[0], data[1]]);
+    debug!("Scroll dial 16-bit: raw bytes=[{:02x},{:02x}] -> i16={}", data[0], data[1], raw);
 
     let wheel = if HIRES_SCROLL_ENABLED.load(Ordering::Relaxed) {
-        // High-res: 120 units per detent. Pass through raw values directly
-        // for full precision. Device values range from ~5 to 500+.
+        // High-res: 120 units per detent.
+        // When working correctly (handle 0x0020), device reports symmetric values
+        // (±14 to ±38 for moderate scroll). Passthrough these values directly.
+        //
+        // NOTE: If asymmetric values return (~8 upward, ~-262 downward), check
+        // the handle ID in logs. This indicates USB/BLE interference is either:
+        // 1. Corrupting GATT discovery (wrong handle selected), or
+        // 2. Corrupting notification data (if handle is still 0x0020)
+        debug!("16-bit mode (hires): {} passthrough", raw);
         raw
     } else {
         // Standard: 1 unit per detent. Divide by 120 to convert high-res
         // units to detent-level scrolling.
-        raw / 120
+        let scaled = raw / 120;
+        debug!("16-bit mode (standard): {} / 120 = {}", raw, scaled);
+        scaled
     };
 
     MouseReport16 {

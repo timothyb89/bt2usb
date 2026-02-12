@@ -41,13 +41,47 @@ Longer term desired TODOs:
 
 ## Building
 
+### Prerequisites
+
+1. Install Rust target for RP2040:
+```bash
+rustup target add thumbv6m-none-eabi
+```
+
+2. Install `elf2uf2-rs` for generating .uf2 files:
+```bash
+cargo install elf2uf2-rs
+```
+
+### Build the firmware
+
 ```bash
 cargo build --release
 ```
 
+### Generate .uf2 file
+
+After building, convert the ELF binary to UF2 format:
+
+```bash
+elf2uf2-rs target/thumbv6m-none-eabi/release/bt2usb bt2usb.uf2
+```
+
+This will create a `bt2usb.uf2` file in the current directory that can be drag-and-dropped onto the Pico W.
+
 ## Flashing
 
-With a Picoprobe connected:
+### Method 1: Drag-and-Drop (No debugger required)
+
+1. Hold the BOOTSEL button on the Pico W while plugging it into USB
+2. The Pico will appear as a USB mass storage device (drive letter like `RPI-RP2`)
+3. Drag and drop the `bt2usb.uf2` file onto the drive
+4. The Pico will automatically reboot and start running the firmware
+
+### Method 2: With Picoprobe (for debugging)
+
+If you have a Picoprobe or another debug probe connected:
+
 ```bash
 cargo run --release
 ```

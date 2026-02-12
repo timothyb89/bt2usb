@@ -338,6 +338,31 @@ impl RequestHandler for HiresMouseRequestHandler {
     }
 }
 
+/// Vendor-specific HID report descriptor for the RPC interface.
+///
+/// Uses Vendor Defined usage page (0xFF00) with 64-byte input and output reports.
+/// No report IDs — single report per interface, so the full 64 bytes are payload.
+/// This replaces CDC ACM for RPC communication, eliminating the extra endpoints
+/// and host-initiated control transfers that interfere with BLE pairing.
+pub const VENDOR_RPC_REPORT_DESC: &[u8] = &[
+    0x06, 0x00, 0xFF, // Usage Page (Vendor Defined 0xFF00)
+    0x09, 0x01,       // Usage (Vendor Usage 1)
+    0xA1, 0x01,       // Collection (Application)
+    0x09, 0x01,       //   Usage (Vendor Usage 1)
+    0x15, 0x00,       //   Logical Minimum (0)
+    0x26, 0xFF, 0x00, //   Logical Maximum (255)
+    0x75, 0x08,       //   Report Size (8)
+    0x95, 0x40,       //   Report Count (64)
+    0x81, 0x02,       //   Input (Data, Variable, Absolute)
+    0x09, 0x01,       //   Usage (Vendor Usage 1)
+    0x15, 0x00,       //   Logical Minimum (0)
+    0x26, 0xFF, 0x00, //   Logical Maximum (255)
+    0x75, 0x08,       //   Report Size (8)
+    0x95, 0x40,       //   Report Count (64)
+    0x91, 0x02,       //   Output (Data, Variable, Absolute)
+    0xC0,             // End Collection
+];
+
 /// Device handler for USB state changes
 pub struct UsbDeviceHandler;
 
@@ -405,5 +430,9 @@ pub fn serialize_mouse_report_16bit(report: &MouseReport16) -> [u8; 7] {
     buf[2] = report.y as u8;
     buf[3..5].copy_from_slice(&report.wheel.to_le_bytes());
     buf[5..7].copy_from_slice(&report.pan.to_le_bytes());
+
+    debug!("USB HID 16-bit: wheel={} -> bytes=[{:02x},{:02x}], full=[{:02x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x}]",
+        report.wheel, buf[3], buf[4], buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6]);
+
     buf
 }

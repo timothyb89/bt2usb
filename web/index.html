@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bt2usb - BLE to USB Bridge</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --text: #eee;
+    --text2: #aaa;
+    --green: #4ecca3;
+    --yellow: #f0c929;
+    --red: #e94560;
+    --blue: #4ea8de;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .container { max-width: 900px; margin: 0 auto; padding: 1rem; }
+
+  /* Header */
+  header { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 0; border-bottom: 1px solid var(--surface2); margin-bottom: 1rem; }
+  header h1 { font-size: 1.2rem; font-weight: 600; }
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); display: inline-block; }
+  .status-dot.connected { background: var(--green); }
+  #connectBtn { background: var(--accent); color: white; border: none; padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+  #connectBtn:hover { opacity: 0.9; }
+  #connectBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+  #deviceState { margin-left: auto; font-size: 0.85rem; color: var(--text2); }
+
+  /* Panels */
+  .panel { background: var(--surface); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  .panel h2 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--text2); font-weight: 500; }
+  .panel-row { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+
+  /* Buttons */
+  .btn { background: var(--surface2); color: var(--text); border: 1px solid rgba(255,255,255,0.1); padding: 0.35rem 0.75rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+  .btn:hover { background: rgba(255,255,255,0.1); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: var(--blue); border-color: var(--blue); }
+  .btn-danger { background: var(--red); border-color: var(--red); }
+  .btn-sm { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+
+  /* Device table */
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; }
+  th { color: var(--text2); font-weight: 500; border-bottom: 1px solid var(--surface2); }
+  td { border-bottom: 1px solid rgba(255,255,255,0.05); }
+  tr:hover td { background: rgba(255,255,255,0.03); }
+  .addr { font-family: 'Cascadia Code', 'Fira Code', monospace; color: var(--blue); }
+  .rssi { color: var(--text2); }
+  .hid-tag { background: var(--green); color: #000; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
+
+  /* Log viewer */
+  #logOutput { background: #0d0d1a; border-radius: 4px; padding: 0.5rem; height: 200px; overflow-y: auto; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.8rem; line-height: 1.4; }
+  .log-info { color: var(--blue); }
+  .log-warn { color: var(--yellow); }
+  .log-error { color: var(--red); }
+  .log-debug { color: var(--text2); }
+
+  /* Status info */
+  .info-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 1rem; font-size: 0.9rem; }
+  .info-label { color: var(--text2); }
+
+  /* Unsupported */
+  .unsupported { text-align: center; padding: 3rem 1rem; }
+  .unsupported h2 { color: var(--red); margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>bt2usb</h1>
+    <span class="status-dot" id="statusDot"></span>
+    <button id="connectBtn" onclick="toggleConnection()">Connect</button>
+    <span id="deviceState">Not connected</span>
+  </header>
+
+  <div id="unsupported" class="unsupported" style="display:none">
+    <h2>Browser Not Supported</h2>
+    <p>WebHID API is required. Please use Chrome or Edge (version 89+).</p>
+  </div>
+
+  <div id="app" style="display:none">
+    <!-- Status Panel -->
+    <div class="panel">
+      <h2>Device Status</h2>
+      <div class="info-grid">
+        <span class="info-label">Connection:</span> <span id="bleState">-</span>
+        <span class="info-label">Bonded devices:</span> <span id="bondedCount">-</span>
+        <span class="info-label">Firmware:</span> <span id="fwVersion">-</span>
+      </div>
+      <div class="panel-row" style="margin-top:0.5rem">
+        <button class="btn" onclick="refreshStatus()" id="btnRefresh">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Scan Panel -->
+    <div class="panel">
+      <h2>BLE Scan</h2>
+      <div class="panel-row">
+        <button class="btn btn-primary" id="btnScan" onclick="startScan()">Start Scan</button>
+        <button class="btn" id="btnStopScan" onclick="stopScan()" disabled>Stop</button>
+        <span id="scanStatus" style="font-size:0.85rem;color:var(--text2)"></span>
+      </div>
+      <table id="scanTable" style="margin-top:0.5rem">
+        <thead><tr><th>Address</th><th>Name</th><th>RSSI</th><th>Type</th><th></th></tr></thead>
+        <tbody id="scanBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Log Viewer -->
+    <div class="panel">
+      <h2>Logs</h2>
+      <div class="panel-row">
+        <label style="font-size:0.85rem">
+          <input type="checkbox" id="logSubscribe" onchange="toggleLogs()"> Subscribe
+        </label>
+        <select id="logLevel" style="font-size:0.85rem; background:var(--surface2); color:var(--text); border:1px solid rgba(255,255,255,0.1); border-radius:4px; padding:0.2rem;">
+          <option value="0">Debug</option>
+          <option value="1" selected>Info</option>
+          <option value="2">Warn</option>
+          <option value="3">Error</option>
+        </select>
+        <button class="btn btn-sm" onclick="clearLogs()">Clear</button>
+      </div>
+      <div id="logOutput"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ CBOR Minimal Implementation ============
+const CBOR = {
+  // Encode a value to CBOR bytes
+  encode(value) {
+    const parts = [];
+    this._enc(parts, value);
+    return new Uint8Array(parts.flat());
+  },
+  _enc(parts, v) {
+    if (Array.isArray(v)) {
+      this._writeHead(parts, 4, v.length);
+      for (const item of v) this._enc(parts, item);
+    } else if (v instanceof Uint8Array) {
+      this._writeHead(parts, 2, v.length);
+      parts.push([...v]);
+    } else if (typeof v === 'number') {
+      if (Number.isInteger(v) && v >= 0 && v <= 255) {
+        this._writeHead(parts, 0, v);
+      } else if (Number.isInteger(v) && v < 0 && v >= -128) {
+        this._writeHead(parts, 1, -1 - v);
+      } else {
+        // float - not needed for our protocol
+        throw new Error('Unsupported number: ' + v);
+      }
+    } else if (typeof v === 'string') {
+      const bytes = new TextEncoder().encode(v);
+      this._writeHead(parts, 3, bytes.length);
+      parts.push([...bytes]);
+    } else if (typeof v === 'boolean') {
+      parts.push([v ? 0xf5 : 0xf4]);
+    } else {
+      throw new Error('Unsupported type: ' + typeof v);
+    }
+  },
+  _writeHead(parts, major, len) {
+    const mt = major << 5;
+    if (len < 24) { parts.push([mt | len]); }
+    else if (len < 256) { parts.push([mt | 24, len]); }
+    else if (len < 65536) { parts.push([mt | 25, (len >> 8) & 0xff, len & 0xff]); }
+    else { throw new Error('Value too large'); }
+  },
+
+  // Decode CBOR bytes to a value
+  decode(data) {
+    const view = { data, pos: 0 };
+    return this._dec(view);
+  },
+  _dec(v) {
+    const b = v.data[v.pos++];
+    const major = b >> 5;
+    let info = b & 0x1f;
+    let len = info;
+    if (info === 24) { len = v.data[v.pos++]; }
+    else if (info === 25) { len = (v.data[v.pos] << 8) | v.data[v.pos + 1]; v.pos += 2; }
+    else if (info === 26) { len = (v.data[v.pos] << 24) | (v.data[v.pos+1] << 16) | (v.data[v.pos+2] << 8) | v.data[v.pos+3]; v.pos += 4; }
+
+    switch (major) {
+      case 0: return len; // unsigned int
+      case 1: return -1 - len; // negative int
+      case 2: { // byte string
+        const bytes = v.data.slice(v.pos, v.pos + len);
+        v.pos += len;
+        return new Uint8Array(bytes);
+      }
+      case 3: { // text string
+        const bytes = v.data.slice(v.pos, v.pos + len);
+        v.pos += len;
+        return new TextDecoder().decode(new Uint8Array(bytes));
+      }
+      case 4: { // array
+        const arr = [];
+        for (let i = 0; i < len; i++) arr.push(this._dec(v));
+        return arr;
+      }
+      case 7: { // simple/float
+        if (info === 20) return false;
+        if (info === 21) return true;
+        if (info === 22) return null;
+        return undefined;
+      }
+      default: throw new Error('Unsupported CBOR major type: ' + major);
+    }
+  }
+};
+
+// ============ COBS Encode/Decode ============
+function cobsEncode(data) {
+  const output = [];
+  let codeIdx = 0;
+  let code = 1;
+  output.push(0); // placeholder for first code byte
+  for (let i = 0; i < data.length; i++) {
+    if (data[i] === 0) {
+      output[codeIdx] = code;
+      code = 1;
+      codeIdx = output.length;
+      output.push(0);
+    } else {
+      output.push(data[i]);
+      code++;
+      if (code === 0xff) {
+        output[codeIdx] = code;
+        code = 1;
+        codeIdx = output.length;
+        output.push(0);
+      }
+    }
+  }
+  output[codeIdx] = code;
+  return new Uint8Array(output);
+}
+
+function cobsDecode(data) {
+  const output = [];
+  let i = 0;
+  while (i < data.length) {
+    let code = data[i++];
+    if (code === 0) break;
+    for (let j = 1; j < code && i < data.length; j++) {
+      output.push(data[i++]);
+    }
+    if (code < 0xff && i < data.length) {
+      output.push(0);
+    }
+  }
+  // Remove trailing zero if present
+  if (output.length > 0 && output[output.length - 1] === 0) {
+    output.pop();
+  }
+  return new Uint8Array(output);
+}
+
+// ============ Protocol Constants ============
+const MSG_REQUEST = 0x01, MSG_RESPONSE = 0x02, MSG_EVENT = 0x03;
+const CMD_GET_STATUS = 0, CMD_START_SCAN = 1, CMD_STOP_SCAN = 2, CMD_CONNECT = 3;
+const CMD_DISCONNECT = 4, CMD_GET_BONDS = 5, CMD_CLEAR_BONDS = 6;
+const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
+const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_VERSION = 5;
+const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4;
+const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
+const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+
+// ============ WebHID Transport ============
+let device = null;
+let seqCounter = 1;
+let pendingRequests = new Map(); // seq_id -> {resolve, reject, timer}
+let readBuffer = [];
+
+function encodeFrame(msgType, seqId, cborBody) {
+  const payload = new Uint8Array(3 + cborBody.length);
+  payload[0] = msgType;
+  payload[1] = seqId & 0xff;
+  payload[2] = (seqId >> 8) & 0xff;
+  payload.set(cborBody, 3);
+  const encoded = cobsEncode(payload);
+  const frame = new Uint8Array(encoded.length + 1);
+  frame.set(encoded);
+  frame[encoded.length] = 0x00; // delimiter
+  return frame;
+}
+
+async function sendFrame(frame) {
+  // Split into 64-byte HID reports, zero-padded
+  for (let i = 0; i < frame.length; i += 64) {
+    const chunk = new Uint8Array(64);
+    const end = Math.min(i + 64, frame.length);
+    chunk.set(frame.slice(i, end));
+    await device.sendReport(0x00, chunk);
+  }
+}
+
+async function sendRequest(cborBody, timeout = 3000) {
+  const seqId = seqCounter++;
+  if (seqCounter > 0xffff) seqCounter = 1;
+
+  const frame = encodeFrame(MSG_REQUEST, seqId, cborBody);
+  await sendFrame(frame);
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingRequests.delete(seqId);
+      reject(new Error('Request timeout'));
+    }, timeout);
+    pendingRequests.set(seqId, { resolve, reject, timer });
+  });
+}
+
+async function sendSimpleRequest(cmdId) {
+  return sendRequest(CBOR.encode([cmdId]));
+}
+
+function processIncomingByte(byte) {
+  if (byte === 0x00) {
+    if (readBuffer.length > 0) {
+      try {
+        const decoded = cobsDecode(new Uint8Array(readBuffer));
+        if (decoded.length >= 3) {
+          const msgType = decoded[0];
+          const seqId = decoded[1] | (decoded[2] << 8);
+          const cbor = decoded.slice(3);
+          handleMessage(msgType, seqId, cbor);
+        }
+      } catch (e) {
+        console.error('Decode error:', e);
+      }
+      readBuffer = [];
+    }
+  } else {
+    readBuffer.push(byte);
+  }
+}
+
+function handleMessage(msgType, seqId, cborBytes) {
+  try {
+    const body = CBOR.decode(cborBytes);
+    if (msgType === MSG_RESPONSE) {
+      const pending = pendingRequests.get(seqId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingRequests.delete(seqId);
+        pending.resolve(body);
+      }
+    } else if (msgType === MSG_EVENT) {
+      handleEvent(body);
+    }
+  } catch (e) {
+    console.error('CBOR decode error:', e);
+  }
+}
+
+// ============ Event Handling ============
+function handleEvent(body) {
+  if (!Array.isArray(body) || body.length < 1) return;
+  const evtId = body[0];
+
+  switch (evtId) {
+    case EVT_SCAN_RESULT: {
+      const [, addrBytes, addrKind, name, rssi, isHid] = body;
+      addScanResult(addrBytes, addrKind, name, rssi, isHid);
+      break;
+    }
+    case EVT_CONNECTION_STATE: {
+      const [, state] = body;
+      updateBleState(state);
+      break;
+    }
+    case EVT_PAIRING_STATUS: {
+      const [, status] = body;
+      const labels = ['Started', 'Keys Exchanged', 'Complete', 'Failed'];
+      appendLog(status >= 3 ? 3 : 1, `Pairing: ${labels[status] || '?'}`);
+      break;
+    }
+    case EVT_LOG: {
+      const [, level, message] = body;
+      appendLog(level, message);
+      break;
+    }
+    case EVT_BOND_STORED: {
+      const [, addrBytes, profileId] = body;
+      appendLog(1, `Bond stored: ${formatAddr(addrBytes)} (profile ${profileId})`);
+      break;
+    }
+  }
+}
+
+// ============ Connection ============
+async function toggleConnection() {
+  if (device) {
+    await disconnect();
+  } else {
+    await connect();
+  }
+}
+
+async function connect() {
+  try {
+    const devices = await navigator.hid.requestDevice({
+      filters: [{ vendorId: 0x1209, productId: 0x0001, usagePage: 0xFF00 }]
+    });
+    if (!devices.length) return;
+    device = devices[0];
+    await device.open();
+
+    // Listen for incoming HID reports (event-driven, not stream-based)
+    device.addEventListener('inputreport', handleInputReport);
+    setConnected(true);
+
+    // Auto-refresh status
+    await refreshStatus();
+  } catch (e) {
+    console.error('Connect failed:', e);
+    appendLog(3, 'Connect failed: ' + e.message);
+    device = null;
+  }
+}
+
+function handleInputReport(event) {
+  const data = new Uint8Array(event.data.buffer);
+  for (const byte of data) processIncomingByte(byte);
+}
+
+async function disconnect() {
+  try {
+    device?.removeEventListener('inputreport', handleInputReport);
+    await device?.close();
+  } catch (e) { /* ignore */ }
+  device = null;
+  setConnected(false);
+}
+
+function setConnected(connected) {
+  document.getElementById('statusDot').classList.toggle('connected', connected);
+  document.getElementById('connectBtn').textContent = connected ? 'Disconnect' : 'Connect';
+  document.getElementById('deviceState').textContent = connected ? 'HID connected' : 'Not connected';
+  // Enable/disable buttons
+  document.querySelectorAll('.btn:not(#connectBtn)').forEach(b => b.disabled = !connected);
+  document.getElementById('logSubscribe').disabled = !connected;
+}
+
+// ============ Commands ============
+async function refreshStatus() {
+  try {
+    const resp = await sendSimpleRequest(CMD_GET_STATUS);
+    if (resp[0] === RESP_STATUS) {
+      updateBleState(resp[1]);
+      document.getElementById('bondedCount').textContent = resp[2];
+    }
+    const vResp = await sendSimpleRequest(CMD_GET_VERSION);
+    if (vResp[0] === RESP_VERSION) {
+      document.getElementById('fwVersion').textContent = 'v' + vResp[1];
+    }
+  } catch (e) {
+    appendLog(3, 'Status refresh failed: ' + e.message);
+  }
+}
+
+function updateBleState(state) {
+  const el = document.getElementById('bleState');
+  const name = STATE_NAMES[state] || '?';
+  el.textContent = name;
+  el.style.color = state === 5 ? 'var(--green)' : state === 0 ? 'var(--red)' : 'var(--yellow)';
+}
+
+let scanning = false;
+async function startScan() {
+  document.getElementById('scanBody').innerHTML = '';
+  scanning = true;
+  document.getElementById('btnScan').disabled = true;
+  document.getElementById('btnStopScan').disabled = false;
+  document.getElementById('scanStatus').textContent = 'Scanning...';
+  try {
+    await sendSimpleRequest(CMD_START_SCAN);
+  } catch (e) {
+    appendLog(3, 'Scan failed: ' + e.message);
+    scanning = false;
+    document.getElementById('btnScan').disabled = false;
+    document.getElementById('btnStopScan').disabled = true;
+    document.getElementById('scanStatus').textContent = '';
+  }
+}
+
+async function stopScan() {
+  scanning = false;
+  document.getElementById('btnScan').disabled = false;
+  document.getElementById('btnStopScan').disabled = true;
+  document.getElementById('scanStatus').textContent = '';
+  try { await sendSimpleRequest(CMD_STOP_SCAN); } catch (e) { /* ignore */ }
+}
+
+function addScanResult(addrBytes, addrKind, name, rssi, isHid) {
+  const tbody = document.getElementById('scanBody');
+  const addr = formatAddr(addrBytes);
+
+  // Update existing row or create new
+  let row = document.querySelector(`tr[data-addr="${addr}"]`);
+  if (!row) {
+    row = document.createElement('tr');
+    row.dataset.addr = addr;
+    row.innerHTML = `
+      <td class="addr"></td>
+      <td></td>
+      <td class="rssi"></td>
+      <td></td>
+      <td></td>
+    `;
+    tbody.appendChild(row);
+  }
+  const cells = row.querySelectorAll('td');
+  cells[0].textContent = addr;
+  cells[1].textContent = name || '(unknown)';
+  cells[2].textContent = rssi + ' dBm';
+  cells[3].innerHTML = isHid ? '<span class="hid-tag">HID</span>' : '';
+  cells[4].innerHTML = isHid
+    ? `<button class="btn btn-sm btn-primary" onclick="connectDevice('${addr}',${addrKind})">Connect</button>`
+    : '';
+}
+
+async function connectDevice(addrStr, addrKind) {
+  const parts = addrStr.split(':').map(s => parseInt(s, 16));
+  const addrBytes = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
+
+  await stopScan();
+  appendLog(1, `Connecting to ${addrStr}...`);
+
+  try {
+    await sendRequest(CBOR.encode([CMD_CONNECT, addrBytes, addrKind]));
+  } catch (e) {
+    appendLog(3, 'Connect failed: ' + e.message);
+  }
+}
+
+async function toggleLogs() {
+  const sub = document.getElementById('logSubscribe').checked;
+  const level = parseInt(document.getElementById('logLevel').value);
+  try {
+    if (sub) {
+      await sendRequest(CBOR.encode([CMD_SUBSCRIBE_LOGS, level]));
+    } else {
+      await sendSimpleRequest(CMD_UNSUBSCRIBE_LOGS);
+    }
+  } catch (e) {
+    appendLog(3, 'Log toggle failed: ' + e.message);
+  }
+}
+
+// ============ UI Helpers ============
+function formatAddr(bytes) {
+  if (!bytes || bytes.length < 6) return '??:??:??:??:??:??';
+  return Array.from(bytes).reverse().map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
+}
+
+function appendLog(level, message) {
+  const el = document.getElementById('logOutput');
+  const cls = ['log-debug', 'log-info', 'log-warn', 'log-error'][level] || 'log-info';
+  const label = LOG_LEVELS[level] || '?';
+  const time = new Date().toLocaleTimeString();
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = `[${time}] [${label}] ${message}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearLogs() {
+  document.getElementById('logOutput').innerHTML = '';
+}
+
+// ============ Init ============
+if ('hid' in navigator) {
+  document.getElementById('app').style.display = '';
+  setConnected(false);
+} else {
+  document.getElementById('unsupported').style.display = '';
+}
+</script>
+</body>
+</html>
