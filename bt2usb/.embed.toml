@@ -1,0 +1,8 @@
+[default.general]
+chip = "RP2040"
+
+[default.rtt]
+enabled = true
+
+#[default.gdb]
+#enabled = true

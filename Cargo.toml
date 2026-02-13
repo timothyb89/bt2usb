@@ -1,80 +1,25 @@
-[package]
-name = "bt2usb"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+[workspace]
+resolver = "2"
+members = ["bt2usb", "bt2usb-cli", "trouble/host", "trouble/host-macros"]
 
-[dependencies]
-# Embassy async runtime - all from crates.io
-embassy-executor = { version = "0.9", features = [
-    "arch-cortex-m",
-    "executor-thread",
-    "defmt",
-] }
-embassy-rp = { version = "0.9", features = [
-    "defmt",
-    "time-driver",
-    "critical-section-impl",
-    "rp2040",
-] }
-embassy-time = { version = "0.5", features = ["defmt"] }
-embassy-usb = { version = "0.5", features = ["defmt"] }
-embassy-sync = { version = "0.7", features = ["defmt"] }
-embassy-futures = { version = "0.1" }
-embassy-embedded-hal = { version = "0.5", features = ["defmt"] }
+# Shared profile settings can be useful but not strictly required unless desired.
+# The user asked to keep it simple.
 
-# Bluetooth support - all from crates.io
-cyw43 = { version = "0.6", features = ["defmt", "bluetooth"] }
-cyw43-pio = { version = "0.9", features = ["defmt"] }
-
-# BLE host stack - from crates.io to match cyw43 0.6
-trouble-host = { path = "trouble/host", features = [
-    "defmt",
-    "scan",
-    "security",
-] }
-
-# USB HID
-usbd-hid = { version = "0.9" }
-
-# Core embedded
-cortex-m = { version = "0.7", features = ["inline-asm"] }
-cortex-m-rt = { version = "0.7" }
-critical-section = "1.1"
-panic-probe = { version = "1", features = ["print-defmt"] }
-defmt = "1"
-defmt-rtt = "1"
-
-# Utilities
-heapless = "0.9"
-static_cell = "2"
-portable-atomic = { version = "1", features = ["critical-section"] }
-
-# Random number generation for BLE security
-rand_core = "0.6"
-rand_chacha = { version = "0.3", default-features = false }
-
-# Flash storage for bonding
-embedded-storage = "0.3"
-embedded-storage-async = "0.4"
-sequential-storage = { version = "4", features = ["defmt-03"] }
-
-# RPC protocol
-minicbor = { version = "0.25", default-features = false, features = ["derive"] }
-cobs = { version = "0.3", default-features = false }
-
-[profile.dev]
-debug = 2
-opt-level = 1
+# However, bt2usb/Cargo.toml had [profile.release] lto = true etc.
+# Those apply when building that crate specifically or workspace-wide?
+# Profiles in root Cargo.toml apply to workspace.
+# Profiles in member Cargo.toml are IGNORED if building from workspace root?
+# No, profiles are merging, but generally workspace root profile wins for workspace commands.
+# Let's copy the profiles from `bt2usb/Cargo.toml` to root because they are important for firmware size.
+# Wait, `bt2usb/Cargo.toml` has `[profile.release] lto = true` etc.
+# If I don't put them in root, they might be lost when building from root.
+# Let's check `bt2usb/Cargo.toml` content again.
 
 [profile.release]
 debug = 2
 lto = true
 opt-level = "s"
 
-# Set defmt log level to INFO to hide DEBUG spam from dependencies
-[features]
-default = []
-
-[package.metadata.defmt]
-log-level = "info"
+[profile.dev]
+debug = 2
+opt-level = 1
