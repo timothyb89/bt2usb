@@ -5,11 +5,13 @@
 //! - How to parse its raw BLE HID reports into USB HID reports
 //! - A storage ID for persisting the profile alongside bond data
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicI32, Ordering};
 use defmt::*;
 use usbd_hid::descriptor::MouseReport;
 
 use crate::usb_hid::{MouseReport16, HIRES_SCROLL_ENABLED};
+
+static PREV_SCROLL_RAW: AtomicI32 = AtomicI32::new(0);
 
 /// Known device profiles
 #[derive(Clone, Copy, Debug, PartialEq, defmt::Format)]
@@ -222,7 +224,38 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
 
     // Device sends 16-bit scroll delta in little-endian format
     let raw = i16::from_le_bytes([data[0], data[1]]);
-    debug!("Scroll dial 16-bit: raw bytes=[{:02x},{:02x}] -> i16={}", data[0], data[1], raw);
+    debug!(
+        "Scroll dial 16-bit: raw bytes=[{:02x},{:02x}] -> i16={}",
+        data[0], data[1], raw
+    );
+
+    // SPI Corruption Workaround:
+    // The specific corruption observed matches Bit 0 of Byte 1 (the high byte) being cleared (0xFE instead of 0xFF).
+    // This turns small negative numbers (e.g. -5 [0xFFFB]) into large negative spikes (-261 [0xFEFB]).
+    // We detect this by checking if the high byte is 0xFE, and if restoring it to 0xFF makes the value
+    // significantly closer to the previous value.
+    let mut clean_raw = raw;
+
+    // Check if high byte is 0xFE (values within [-512, -257])
+    if (raw & 0xFF00u16 as i16) == 0xFE00u16 as i16 {
+        // Proposed fix: set bit 8 to restore 0xFF high byte
+        let proposed = (raw | 0x0100) as i16;
+        let prev = PREV_SCROLL_RAW.load(Ordering::Relaxed) as i16;
+
+        let diff_raw = (raw as i32 - prev as i32).abs();
+        let diff_proposed = (proposed as i32 - prev as i32).abs();
+
+        // If the proposed adjustment is closer to previous value, assume it's the correct one
+        if diff_proposed < diff_raw {
+            warn!(
+                "SPI corruption detected: {} -> {} (delta {} vs {})",
+                raw, proposed, diff_proposed, diff_raw
+            );
+            clean_raw = proposed;
+        }
+    }
+
+    PREV_SCROLL_RAW.store(clean_raw as i32, Ordering::Relaxed);
 
     let wheel = if HIRES_SCROLL_ENABLED.load(Ordering::Relaxed) {
         // High-res: 120 units per detent.
@@ -233,13 +266,20 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         // the handle ID in logs. This indicates USB/BLE interference is either:
         // 1. Corrupting GATT discovery (wrong handle selected), or
         // 2. Corrupting notification data (if handle is still 0x0020)
-        debug!("16-bit mode (hires): {} passthrough", raw);
-        raw
+        if clean_raw != raw {
+            debug!(
+                "16-bit mode (hires): {} passthrough (corrected to {})",
+                raw, clean_raw
+            );
+        } else {
+            debug!("16-bit mode (hires): {} passthrough", clean_raw);
+        }
+        clean_raw
     } else {
         // Standard: 1 unit per detent. Divide by 120 to convert high-res
         // units to detent-level scrolling.
-        let scaled = raw / 120;
-        debug!("16-bit mode (standard): {} / 120 = {}", raw, scaled);
+        let scaled = clean_raw / 120;
+        debug!("16-bit mode (standard): {} / 120 = {}", clean_raw, scaled);
         scaled
     };
 

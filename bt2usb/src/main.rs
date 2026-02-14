@@ -36,9 +36,9 @@ use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join;
 use embassy_futures::select::{select, Either};
 use embassy_rp::bind_interrupts;
-use embassy_rp::interrupt::InterruptExt;
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::gpio::{Level, Output};
+use embassy_rp::interrupt::InterruptExt;
 use embassy_rp::multicore::{spawn_core1, Stack as Core1Stack};
 use embassy_rp::peripherals::{DMA_CH0, FLASH, PIN_23, PIN_24, PIN_25, PIN_29, PIO0, USB};
 use embassy_rp::pio::Pio;
@@ -144,7 +144,7 @@ async fn core0_ble_main(
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
-        cyw43_pio::DEFAULT_CLOCK_DIVIDER,
+        cyw43_pio::DEFAULT_CLOCK_DIVIDER * 2, // Slower clock (half speed) for better signal integrity
         pio.irq0,
         cs,
         pin_24,
@@ -330,9 +330,15 @@ async fn core0_ble_main(
                     active_profile = DEFAULT_PROFILE;
 
                     let mut central = scanner.into_inner();
-                    pending_cmd =
-                        ble_connect_and_run(&mut central, &stack, &mut flash, target, active_profile, false)
-                            .await;
+                    pending_cmd = ble_connect_and_run(
+                        &mut central,
+                        &stack,
+                        &mut flash,
+                        target,
+                        active_profile,
+                        false,
+                    )
+                    .await;
                     scanner = Scanner::new(central);
                 }
 
@@ -360,9 +366,15 @@ async fn core0_ble_main(
                     let target = Address { kind, addr };
 
                     let mut central = scanner.into_inner();
-                    pending_cmd =
-                        ble_connect_and_run(&mut central, &stack, &mut flash, target, active_profile, true)
-                            .await;
+                    pending_cmd = ble_connect_and_run(
+                        &mut central,
+                        &stack,
+                        &mut flash,
+                        target,
+                        active_profile,
+                        true,
+                    )
+                    .await;
                     scanner = Scanner::new(central);
                 }
 
@@ -476,7 +488,8 @@ fn main() -> ! {
             // (e.g. RPC timeouts). embassy_rp::init() only enables it on Core 0.
             // The timer driver uses hardware spinlocks, safe for dual-core.
             unsafe {
-                embassy_rp::interrupt::TIMER_IRQ_0.set_priority(embassy_rp::interrupt::Priority::P3);
+                embassy_rp::interrupt::TIMER_IRQ_0
+                    .set_priority(embassy_rp::interrupt::Priority::P3);
                 embassy_rp::interrupt::TIMER_IRQ_0.enable();
             }
 
@@ -588,14 +601,7 @@ fn main() -> ! {
     executor0.run(|spawner| {
         spawner
             .spawn(core0_ble_main(
-                spawner,
-                p.PIO0,
-                p.PIN_23,
-                p.PIN_24,
-                p.PIN_25,
-                p.PIN_29,
-                p.DMA_CH0,
-                flash,
+                spawner, p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, flash,
             ))
             .unwrap();
     });
