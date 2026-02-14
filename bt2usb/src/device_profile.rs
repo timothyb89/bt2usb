@@ -234,6 +234,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
     // This turns small negative numbers (e.g. -5 [0xFFFB]) into large negative spikes (-261 [0xFEFB]).
     // We detect this by checking if the high byte is 0xFE, and if restoring it to 0xFF makes the value
     // significantly closer to the previous value.
+    // NOTE: This has been largely resolved by lowering the SPI clock speed to the cyw43.
     let mut clean_raw = raw;
 
     // Check if high byte is 0xFE (values within [-512, -257])
