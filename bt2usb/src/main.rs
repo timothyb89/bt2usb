@@ -172,8 +172,10 @@ async fn core0_ble_main(
     // Flash operations - safe now that CYW43 firmware is fully downloaded.
     // Flash erase/write pauses Core 1 (USB) via FIFO, which is tolerable.
     // CYW43 on this core just has interrupts briefly disabled during flash ops.
-    info!("[core0] Clearing all bonds...");
-    bonding::clear_all_bonds(&mut flash).await.ok();
+
+    // Disabled failsafe method to clear bonds; uncomment if needed.
+    // info!("[core0] Clearing all bonds...");
+    // bonding::clear_all_bonds(&mut flash).await.ok();
 
     let loaded_bonds = bonding::load_bonds(&mut flash).await;
     info!(
@@ -680,24 +682,31 @@ async fn ble_connect_and_run<'a, C: Controller>(
         rpc_log::info("Connected to BLE device");
         let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connected));
 
-        // Set bondable based on whether we have an existing bond
-        if let Err(e) = conn.set_bondable(!has_stored_bond) {
-            error!("Failed to set bondable: {:?}", e);
-        }
+        // Handle security based on bond status
+        if has_stored_bond {
+            // With existing bond, peripheral will automatically request encryption
+            // We just wait for PairingComplete event
+            info!("Existing bond detected - waiting for automatic re-encryption...");
+            rpc_log::info("Re-encryption in progress");
+        } else {
+            // No bond exists - initiate pairing
+            if let Err(e) = conn.set_bondable(true) {
+                error!("Failed to set bondable: {:?}", e);
+            }
 
-        // Request security (triggers pairing or re-encryption)
-        let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Pairing));
-        rpc_log::info("Pairing / re-encryption in progress");
-        info!("Requesting security (bondable: {})...", !has_stored_bond);
-        match conn.request_security() {
-            Ok(_) => info!("Security request sent"),
-            Err(e) => {
-                error!("Failed to request security: {:?}", e);
-                if pairing_attempts >= MAX_PAIRING_RETRIES {
-                    return None;
+            let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Pairing));
+            rpc_log::info("Initiating pairing");
+            info!("Requesting security (bondable: true)...");
+            match conn.request_security() {
+                Ok(_) => info!("Security request sent"),
+                Err(e) => {
+                    error!("Failed to request security: {:?}", e);
+                    if pairing_attempts >= MAX_PAIRING_RETRIES {
+                        return None;
+                    }
+                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                    continue 'connect;
                 }
-                embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
-                continue 'connect;
             }
         }
 
