@@ -135,10 +135,26 @@ fn main() -> Result<()> {
 fn cmd_status(transport: &mut Transport) -> Result<()> {
     let (resp, _events) = transport.request_simple(CMD_GET_STATUS, DEFAULT_TIMEOUT)?;
     match resp {
-        Response::Status { state, bonded_count, active_profile } => {
+        Response::Status {
+            state,
+            bonded_count,
+            active_profile,
+            active_device_set,
+            active_device_address,
+        } => {
             println!("  State:          {}", state.label().bold());
             println!("  Bonded devices: {bonded_count}");
-            println!("  Active profile: {active_profile}");
+            println!("  Active profile: {} ({})", active_profile, profile_name(active_profile));
+
+            if active_device_set {
+                println!(
+                    "  Active device:  {} {}",
+                    format_address(&active_device_address).bold(),
+                    "(auto-connect enabled)".green()
+                );
+            } else {
+                println!("  Active device:  {} (auto-connect disabled)", "None".dimmed());
+            }
         }
         Response::Error { code, message } => {
             eprintln!("{} (code {code}): {message}", "Error".red());

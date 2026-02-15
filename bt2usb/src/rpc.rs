@@ -10,7 +10,7 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_usb::class::hid::{HidReader, HidWriter};
 
-use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, BONDS_RESPONSE_CHANNEL};
+use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, BONDS_RESPONSE_CHANNEL, STATUS_RESPONSE_CHANNEL};
 use crate::framing::{self, FrameAccumulator, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE};
 use crate::protocol::{self, ConnectionState, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 use crate::rpc_log::LOG_CHANNEL;
@@ -239,7 +239,29 @@ async fn dispatch_request(
 ) {
     let cbor_len = match request {
         protocol::Request::GetStatus => {
-            protocol::encode_response_status(cbor_buf, last_state, 0, 0).unwrap_or(0)
+            // Request status from BLE task (which has access to bonds and profile)
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::GetStatus);
+
+            // Wait for response (with timeout)
+            match embassy_time::with_timeout(
+                embassy_time::Duration::from_millis(500),
+                STATUS_RESPONSE_CHANNEL.receive()
+            ).await {
+                Ok(status) => {
+                    protocol::encode_response_status(
+                        cbor_buf,
+                        last_state,
+                        status.bonded_count,
+                        status.active_profile,
+                        status.active_device_set,
+                        &status.active_device_address,
+                    ).unwrap_or(0)
+                }
+                Err(_) => {
+                    // Timeout - use defaults
+                    protocol::encode_response_status(cbor_buf, last_state, 0, 0, false, &[0u8; 6]).unwrap_or(0)
+                }
+            }
         }
 
         protocol::Request::StartScan => {

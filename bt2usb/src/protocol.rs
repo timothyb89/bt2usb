@@ -235,14 +235,17 @@ pub fn encode_response_error(buf: &mut [u8], code: u8, message: &str) -> EncResu
 }
 
 /// Encode a status response.
+/// Extended format includes active device info (backward compatible - clients can ignore extra fields).
 pub fn encode_response_status(
     buf: &mut [u8],
     state: ConnectionState,
     bonded_count: u8,
     active_profile: u8,
+    active_device_set: bool,
+    active_device_address: &[u8; 6],
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(4)
+        e.array(6)
             .unwrap()
             .u8(RESP_STATUS)
             .unwrap()
@@ -251,6 +254,10 @@ pub fn encode_response_status(
             .u8(bonded_count)
             .unwrap()
             .u8(active_profile)
+            .unwrap()
+            .bool(active_device_set)
+            .unwrap()
+            .bytes(active_device_address)
             .unwrap();
     })
 }

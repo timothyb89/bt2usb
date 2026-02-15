@@ -26,6 +26,8 @@ pub enum BleCommand {
     },
     /// Disconnect the current device.
     Disconnect,
+    /// Get current status (bond count, active profile, active device).
+    GetStatus,
     /// Get list of bonded devices.
     GetBonds,
     /// Clear all bonded devices.
@@ -84,6 +86,18 @@ pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>), 10>;
 
 /// Response channel for GetBonds (capacity 1, only one request at a time).
 pub static BONDS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, BondList, 1> = Channel::new();
+
+/// Status information response
+#[derive(Clone, Debug, defmt::Format)]
+pub struct StatusInfo {
+    pub bonded_count: u8,
+    pub active_profile: u8,
+    pub active_device_set: bool,
+    pub active_device_address: [u8; 6],
+}
+
+/// Response channel for GetStatus (capacity 1, only one request at a time).
+pub static STATUS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, StatusInfo, 1> = Channel::new();
 
 // ============ Scanner Event Handler ============
 

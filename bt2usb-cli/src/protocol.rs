@@ -240,7 +240,13 @@ pub fn encode_request_update_bond_profile(buf: &mut [u8], address: &[u8; 6], pro
 pub enum Response {
     Ok,
     Error { code: u8, message: String },
-    Status { state: ConnectionState, bonded_count: u8, active_profile: u8 },
+    Status {
+        state: ConnectionState,
+        bonded_count: u8,
+        active_profile: u8,
+        active_device_set: bool,
+        active_device_address: [u8; 6],
+    },
     Bonds { bonds: Vec<BondEntry> },
     Version { version: String },
     ActiveDevice { address: [u8; 6], addr_kind: u8 },
@@ -270,7 +276,24 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             let state = ConnectionState::from_u8(d.u8().map_err(|e| format!("state: {e}"))?);
             let bonded_count = d.u8().map_err(|e| format!("bonded: {e}"))?;
             let active_profile = d.u8().map_err(|e| format!("profile: {e}"))?;
-            Ok(Response::Status { state, bonded_count, active_profile })
+
+            // New fields (backward compatible - optional for older firmware)
+            let active_device_set = d.bool().unwrap_or(false);
+            let addr_bytes = d.bytes().ok();
+            let mut active_device_address = [0u8; 6];
+            if let Some(bytes) = addr_bytes {
+                if bytes.len() >= 6 {
+                    active_device_address.copy_from_slice(&bytes[..6]);
+                }
+            }
+
+            Ok(Response::Status {
+                state,
+                bonded_count,
+                active_profile,
+                active_device_set,
+                active_device_address,
+            })
         }
         RESP_BONDS => {
             let _bond_arr = d.array().map_err(|e| format!("bonds array: {e}"))?;

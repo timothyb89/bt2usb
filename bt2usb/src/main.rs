@@ -56,7 +56,7 @@ use trouble_host::scan::Scanner;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
 use ble_hid::{parse_hid_report, HidReportType, HID_REPORT_CHANNEL};
-use ble_state::{BleCommand, BleEvent, RpcScannerHandler, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};
+use ble_state::{BleCommand, BleEvent, RpcScannerHandler, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, STATUS_RESPONSE_CHANNEL};
 use device_profile::DeviceProfile;
 use embassy_time::Timer;
 use protocol::ConnectionState;
@@ -402,6 +402,7 @@ async fn core0_ble_main(
                         active_profile,
                         has_stored_bond,
                         &loaded_bonds,
+                        &active_device_pref,
                     )
                     .await;
                     scanner = Scanner::new(central);
@@ -468,6 +469,7 @@ async fn core0_ble_main(
                         active_profile,
                         true,
                         &loaded_bonds,
+                        &active_device_pref,
                     )
                     .await;
                     scanner = Scanner::new(central);
@@ -523,6 +525,25 @@ async fn core0_ble_main(
                             rpc_log::error("Bond not found");
                         }
                     }
+                }
+
+                BleCommand::GetStatus => {
+                    info!("Getting status info");
+                    // Determine if active device is set (non-zero address)
+                    let (has_active, active_addr) = if let Some(ref pref) = active_device_pref {
+                        (pref.address != [0u8; 6], pref.address)
+                    } else {
+                        (false, [0u8; 6])
+                    };
+
+                    let status = ble_state::StatusInfo {
+                        bonded_count: loaded_bonds.len() as u8,
+                        active_profile: active_profile.to_id(),
+                        active_device_set: has_active,
+                        active_device_address: active_addr,
+                    };
+
+                    let _ = ble_state::STATUS_RESPONSE_CHANNEL.try_send(status);
                 }
 
                 BleCommand::GetBonds => {
@@ -827,6 +848,7 @@ async fn ble_connect_and_run<'a, C: Controller>(
     mut active_profile: DeviceProfile,
     has_stored_bond: bool,
     loaded_bonds: &[bonding::LoadedBond],
+    active_device_pref: &Option<preferences::ActiveDevice>,
 ) -> Option<BleCommand> {
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
     rpc_log::info("Connecting to BLE device");
@@ -1157,10 +1179,21 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                             .await;
                                             return Some(cmd);
                                         }
-                                        BleCommand::UpdateBondProfile { profile_id, .. } => {
+                                        BleCommand::UpdateBondProfile { address, profile_id } => {
                                             info!("Updating active profile to {}", profile_id);
                                             active_profile = DeviceProfile::from_id(profile_id);
-                                            rpc_log::info("Profile updated (active immediately)");
+
+                                            // Persist to flash
+                                            match bonding::update_bond_profile(flash, &address, profile_id).await {
+                                                Ok(slot) => {
+                                                    info!("Bond profile persisted to slot {}", slot);
+                                                    rpc_log::info("Profile updated and saved");
+                                                }
+                                                Err(_) => {
+                                                    error!("Failed to persist bond profile");
+                                                    rpc_log::error("Failed to save profile");
+                                                }
+                                            }
                                         }
                                         BleCommand::Restart => {
                                             info!("Manual restart requested during connection");
@@ -1191,6 +1224,23 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                                     return None;
                                                 }
                                             }
+                                        }
+                                        BleCommand::GetStatus => {
+                                            info!("Getting status info (connected)");
+                                            let (has_active, active_addr) = if let Some(ref pref) = active_device_pref {
+                                                (pref.address != [0u8; 6], pref.address)
+                                            } else {
+                                                (false, [0u8; 6])
+                                            };
+
+                                            let status = ble_state::StatusInfo {
+                                                bonded_count: loaded_bonds.len() as u8,
+                                                active_profile: active_profile.to_id(),
+                                                active_device_set: has_active,
+                                                active_device_address: active_addr,
+                                            };
+
+                                            let _ = ble_state::STATUS_RESPONSE_CHANNEL.try_send(status);
                                         }
                                         BleCommand::GetBonds => {
                                             info!("Getting bonds list");
