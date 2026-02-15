@@ -2,3 +2,9 @@ target
 bt2usb-cli/target
 bt2usb/target
 .claude
+
+# CYW43 firmware (downloaded via justfile)
+bt2usb/cyw43-firmware/
+
+# Generated UF2 files
+*.uf2

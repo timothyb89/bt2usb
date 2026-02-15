@@ -41,49 +41,78 @@ Longer term desired TODOs:
 
 ## Building
 
-### Prerequisites
+### Quick Start with Just
 
-1. Install Rust target for RP2040:
+This project uses [`just`](https://github.com/casey/just) as a command runner. Install it with:
+
+```bash
+cargo install just
+```
+
+Then run the setup command to download firmware and check for required tools:
+
+```bash
+just setup
+```
+
+### Build Commands
+
+```bash
+# Build for development with debug probe
+just dev
+
+# Build release UF2 for drag-and-drop flashing
+just release
+
+# Download CYW43 firmware files (run once, or after clean)
+just download-firmware
+
+# Flash with debug probe (probe-rs)
+just run release
+```
+
+### Manual Build (without just)
+
+1. Install prerequisites:
 ```bash
 rustup target add thumbv6m-none-eabi
+cargo install elf2uf2-rs probe-rs
 ```
 
-2. Install `elf2uf2-rs` for generating .uf2 files:
+2. Download CYW43 firmware:
 ```bash
-cargo install elf2uf2-rs
+# Windows PowerShell
+$fw_dir = "bt2usb/cyw43-firmware"
+$base_url = "https://raw.githubusercontent.com/embassy-rs/embassy/main/cyw43-firmware"
+New-Item -ItemType Directory -Force -Path $fw_dir
+foreach ($file in @("43439A0.bin", "43439A0_btfw.bin", "43439A0_clm.bin")) {
+    Invoke-WebRequest -Uri "$base_url/$file" -OutFile "$fw_dir/$file"
+}
 ```
 
-### Build the firmware
-
+3. Build and generate UF2:
 ```bash
-cargo build --release
+cargo build --package bt2usb --release
+elf2uf2-rs target/thumbv6m-none-eabi/release/bt2usb bt2usb/bt2usb.uf2
 ```
-
-### Generate .uf2 file
-
-After building, convert the ELF binary to UF2 format:
-
-```bash
-elf2uf2-rs target/thumbv6m-none-eabi/release/bt2usb bt2usb.uf2
-```
-
-This will create a `bt2usb.uf2` file in the current directory that can be drag-and-dropped onto the Pico W.
 
 ## Flashing
 
 ### Method 1: Drag-and-Drop (No debugger required)
 
-1. Hold the BOOTSEL button on the Pico W while plugging it into USB
-2. The Pico will appear as a USB mass storage device (drive letter like `RPI-RP2`)
-3. Drag and drop the `bt2usb.uf2` file onto the drive
-4. The Pico will automatically reboot and start running the firmware
+1. Build the UF2 file: `just release`
+2. Hold the BOOTSEL button on the Pico W while plugging it into USB
+3. The Pico will appear as a USB mass storage device (drive letter like `RPI-RP2`)
+4. Drag and drop `bt2usb/bt2usb.uf2` onto the drive
+5. The Pico will automatically reboot and start running the firmware
 
-### Method 2: With Picoprobe (for debugging)
+### Method 2: With Debug Probe (for development)
 
-If you have a Picoprobe or another debug probe connected:
+If you have a debug probe connected:
 
 ```bash
-cargo run --release
+just dev          # Development build with RTT logging
+just run release  # Release build
 ```
 
 ## License
