@@ -401,6 +401,7 @@ async fn core0_ble_main(
                         target,
                         active_profile,
                         has_stored_bond,
+                        &loaded_bonds,
                     )
                     .await;
                     scanner = Scanner::new(central);
@@ -466,6 +467,7 @@ async fn core0_ble_main(
                         target,
                         active_profile,
                         true,
+                        &loaded_bonds,
                     )
                     .await;
                     scanner = Scanner::new(central);
@@ -824,6 +826,7 @@ async fn ble_connect_and_run<'a, C: Controller>(
     target: Address,
     mut active_profile: DeviceProfile,
     has_stored_bond: bool,
+    loaded_bonds: &[bonding::LoadedBond],
 ) -> Option<BleCommand> {
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
     rpc_log::info("Connecting to BLE device");
@@ -1190,13 +1193,47 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                             }
                                         }
                                         BleCommand::GetBonds => {
-                                            // Handled by the main loop (need flash access)
-                                            debug!("GetBonds command during connection (handled by main loop)");
+                                            info!("Getting bonds list");
+                                            let mut bond_list: ble_state::BondList = heapless::Vec::new();
+                                            for lb in loaded_bonds.iter() {
+                                                let addr_bytes = lb.bond.identity.bd_addr.raw();
+                                                let mut addr = [0u8; 6];
+                                                addr.copy_from_slice(addr_bytes);
+                                                let addr_kind = if (addr_bytes[5] & 0xC0) == 0xC0 { 1u8 } else { 0u8 };
+                                                let profile = DeviceProfile::from_id(lb.profile_id);
+                                                let name_str = profile.name();
+                                                let mut name: heapless::String<32> = heapless::String::new();
+                                                let _ = name.push_str(if name_str.is_empty() { "Unknown Device" } else { name_str });
+                                                let _ = bond_list.push((addr, addr_kind, lb.profile_id, name));
+                                            }
+                                            let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);
                                         }
-                                        BleCommand::SetActiveDevice { .. }
-                                        | BleCommand::ClearActiveDevice => {
-                                            // Preference updates don't affect current connection
-                                            debug!("Preference update during connection");
+                                        BleCommand::SetActiveDevice { address, addr_kind } => {
+                                            info!("Setting active device: {:?}", address);
+                                            let device = preferences::ActiveDevice { address, addr_kind };
+                                            match preferences::set_active_device(flash, &device).await {
+                                                Ok(()) => {
+                                                    info!("Active device preference saved");
+                                                    rpc_log::info("Active device set");
+                                                }
+                                                Err(()) => {
+                                                    error!("Failed to save active device preference");
+                                                    rpc_log::error("Failed to set active device");
+                                                }
+                                            }
+                                        }
+                                        BleCommand::ClearActiveDevice => {
+                                            info!("Clearing active device preference");
+                                            match preferences::clear_active_device(flash).await {
+                                                Ok(()) => {
+                                                    info!("Active device preference cleared");
+                                                    rpc_log::info("Active device cleared");
+                                                }
+                                                Err(()) => {
+                                                    error!("Failed to clear active device preference");
+                                                    rpc_log::error("Failed to clear active device");
+                                                }
+                                            }
                                         }
                                         _ => {}
                                     }
