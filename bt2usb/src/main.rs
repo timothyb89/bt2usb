@@ -1028,7 +1028,7 @@ async fn ble_connect_and_run<'a, C: Controller>(
 
             // Run GATT client and HID loop concurrently
 
-            let run_result = join(client.task(), async {
+            let run_result = select(client.task(), async {
                 // Discover HID service
                 let hid_uuid = Uuid::new_short(0x1812);
                 let services = match embassy_time::with_timeout(
@@ -1215,8 +1215,16 @@ async fn ble_connect_and_run<'a, C: Controller>(
             })
             .await;
 
-            if let Some(cmd) = run_result.1 {
-                return Some(cmd);
+            match run_result {
+                Either::First(_) => {
+                    // GATT client task ended (connection dropped)
+                    info!("GATT client task ended - connection lost");
+                }
+                Either::Second(cmd) => {
+                    if let Some(cmd) = cmd {
+                        return Some(cmd);
+                    }
+                }
             }
 
             // Connection ended naturally
