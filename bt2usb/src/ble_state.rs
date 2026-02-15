@@ -38,6 +38,8 @@ pub enum BleCommand {
     ClearActiveDevice,
     /// Update the profile for an existing bond.
     UpdateBondProfile { address: [u8; 6], profile_id: u8 },
+    /// Restart the system.
+    Restart,
 }
 
 // ============ Events (BLE -> RPC) ============

@@ -55,6 +55,7 @@ pub const CMD_SET_ACTIVE_DEVICE: u8 = 13;
 pub const CMD_CLEAR_ACTIVE_DEVICE: u8 = 14;
 pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
 pub const CMD_AUTO_CONNECT: u8 = 16;
+pub const CMD_RESTART: u8 = 17;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -75,6 +76,7 @@ pub enum Request {
     ClearActiveDevice,
     UpdateBondProfile { address: [u8; 6], profile_id: u8 },
     AutoConnect,
+    Restart,
 }
 
 // ============ Response (device -> host) ============
@@ -193,6 +195,7 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             })
         }
         CMD_AUTO_CONNECT => Ok(Request::AutoConnect),
+        CMD_RESTART => Ok(Request::Restart),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }

@@ -101,6 +101,9 @@ enum Command {
 
     /// Show firmware version
     Version,
+
+    /// Restart the device
+    Restart,
 }
 
 fn main() -> Result<()> {
@@ -125,6 +128,7 @@ fn main() -> Result<()> {
         Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::Logs { level, timeout } => cmd_logs(&mut transport, level, timeout),
         Command::Version => cmd_version(&mut transport),
+        Command::Restart => cmd_restart(&mut transport),
     }
 }
 
@@ -350,6 +354,14 @@ fn cmd_version(transport: &mut Transport) -> Result<()> {
             eprintln!("Unexpected response: {other:?}");
         }
     }
+    Ok(())
+}
+
+fn cmd_restart(transport: &mut Transport) -> Result<()> {
+    println!("{}", "Restarting device...".cyan());
+    let (resp, _) = transport.request_simple(CMD_RESTART, DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!("{}", "Device restart initiated.".green());
     Ok(())
 }
 

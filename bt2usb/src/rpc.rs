@@ -343,6 +343,11 @@ async fn dispatch_request(
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
+
+        protocol::Request::Restart => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Restart);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
     };
 
     if cbor_len > 0 {

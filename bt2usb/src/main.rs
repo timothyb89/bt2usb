@@ -75,6 +75,36 @@ bind_interrupts!(struct Irqs {
 /// Flash size for RP2040 (2MB)
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
+// ============ System Reset ============
+
+/// Trigger a full system reset.
+/// Called from Core 0 (BLE task) to ensure proper reset of both cores.
+fn system_reset() -> ! {
+    unsafe {
+        const WATCHDOG_BASE: u32 = 0x40058000;
+        const PSM_BASE: u32 = 0x40010000;
+
+        // Disable all interrupts globally on this core
+        cortex_m::interrupt::disable();
+
+        // Configure PSM to reset everything on watchdog timeout
+        core::ptr::write_volatile((PSM_BASE + 0x08) as *mut u32, 0xFFFFFFFF);
+
+        // Trigger watchdog with minimal timeout
+        // Writing to LOAD starts the countdown
+        core::ptr::write_volatile((WATCHDOG_BASE + 0x04) as *mut u32, 1);
+
+        // Enable watchdog (bit 30)
+        core::ptr::write_volatile((WATCHDOG_BASE + 0x00) as *mut u32, 1 << 30);
+
+        // Spin until watchdog fires - use a compiler fence to prevent optimization
+        loop {
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            cortex_m::asm::nop();
+        }
+    }
+}
+
 // ============ Dual-Core Infrastructure ============
 
 /// Core 1 stack (16KB - needs room for P-256 crypto, GATT discovery, CYW43 SPI)
@@ -531,14 +561,27 @@ async fn core0_ble_main(
                     match bonding::clear_all_bonds(&mut flash).await {
                         Ok(()) => {
                             info!("All bonds cleared successfully");
-                            rpc_log::info("All bonds cleared");
+                            rpc_log::info("All bonds cleared - restarting...");
                             loaded_bonds.clear();
+                            // Give time for log message to be sent
+                            Timer::after_millis(100).await;
+                            // Trigger system reset
+                            system_reset();
                         }
                         Err(()) => {
                             error!("Failed to clear bonds");
                             rpc_log::error("Failed to clear bonds");
                         }
                     }
+                }
+
+                BleCommand::Restart => {
+                    info!("Manual restart requested");
+                    rpc_log::info("Restarting device...");
+                    // Give time for log message and RPC response to be sent
+                    Timer::after_millis(100).await;
+                    // Trigger system reset
+                    system_reset();
                 }
             }
         }
@@ -1116,9 +1159,39 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                             active_profile = DeviceProfile::from_id(profile_id);
                                             rpc_log::info("Profile updated (active immediately)");
                                         }
-                                        BleCommand::ClearBonds | BleCommand::GetBonds => {
-                                            // These are handled by the main loop, just continue here
-                                            debug!("Bond management command during connection (handled by main loop)");
+                                        BleCommand::Restart => {
+                                            info!("Manual restart requested during connection");
+                                            rpc_log::info("Restarting device...");
+                                            // Give time for log message and RPC response to be sent
+                                            Timer::after_millis(100).await;
+                                            // Trigger system reset immediately
+                                            system_reset();
+                                        }
+                                        BleCommand::ClearBonds => {
+                                            // Disconnect, clear bonds, and restart immediately
+                                            rpc_log::info("Disconnecting to clear bonds...");
+                                            conn.disconnect();
+                                            // Wait briefly for disconnect to complete
+                                            Timer::after_millis(200).await;
+
+                                            // Clear bonds from flash
+                                            rpc_log::info("Clearing bonds...");
+                                            match bonding::clear_all_bonds(flash).await {
+                                                Ok(_) => {
+                                                    // Restart device
+                                                    rpc_log::info("Restarting device...");
+                                                    Timer::after_millis(100).await;
+                                                    system_reset();
+                                                }
+                                                Err(_) => {
+                                                    rpc_log::error("Failed to clear bonds");
+                                                    return None;
+                                                }
+                                            }
+                                        }
+                                        BleCommand::GetBonds => {
+                                            // Handled by the main loop (need flash access)
+                                            debug!("GetBonds command during connection (handled by main loop)");
                                         }
                                         BleCommand::SetActiveDevice { .. }
                                         | BleCommand::ClearActiveDevice => {

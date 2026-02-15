@@ -95,6 +95,7 @@
       </div>
       <div class="panel-row" style="margin-top:0.5rem">
         <button class="btn" onclick="refreshStatus()" id="btnRefresh">Refresh</button>
+        <button class="btn btn-danger" onclick="restartDevice()" id="btnRestart">Restart Device</button>
       </div>
     </div>
 
@@ -285,7 +286,7 @@ const CMD_GET_STATUS = 0, CMD_START_SCAN = 1, CMD_STOP_SCAN = 2, CMD_CONNECT = 3
 const CMD_DISCONNECT = 4, CMD_GET_BONDS = 5, CMD_CLEAR_BONDS = 6;
 const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
 const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
-const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16;
+const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17;
 const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
 const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4;
 const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
@@ -665,6 +666,18 @@ async function clearAllBonds() {
     refreshBonds();
   } catch (e) {
     appendLog(3, 'Clear bonds failed: ' + e.message);
+  }
+}
+
+async function restartDevice() {
+  if (!confirm('Restart the device? This will disconnect all active connections.')) return;
+  try {
+    await sendSimpleRequest(CMD_RESTART);
+    appendLog(1, 'Device restart initiated');
+    // Device will disconnect after restart, so refresh status after a short delay
+    setTimeout(() => refreshStatus(), 2000);
+  } catch (e) {
+    appendLog(3, 'Restart failed: ' + e.message);
   }
 }
 
