@@ -48,6 +48,10 @@ enum Command {
         /// Address type: 0=public, 1=random
         #[arg(short = 'k', long, default_value = "1")]
         addr_kind: u8,
+
+        /// Device profile: 0=generic, 1=MxMaster3S, 2=FullScrollDial, 3=FullScrollDial16Bit
+        #[arg(short, long)]
+        profile: Option<u8>,
     },
 
     /// Disconnect the current device
@@ -58,6 +62,31 @@ enum Command {
 
     /// Clear all bonds
     ClearBonds,
+
+    /// Set the profile for a bonded device
+    SetProfile {
+        /// BLE address (AA:BB:CC:DD:EE:FF)
+        address: String,
+
+        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial, 3=FullScrollDial16Bit
+        profile_id: u8,
+    },
+
+    /// Set the active device for auto-reconnect
+    SetActiveDevice {
+        /// BLE address (AA:BB:CC:DD:EE:FF)
+        address: String,
+
+        /// Address type: 0=public, 1=random
+        #[arg(short = 'k', long, default_value = "1")]
+        addr_kind: u8,
+    },
+
+    /// Clear the active device (disable auto-reconnect)
+    ClearActiveDevice,
+
+    /// Auto-connect to the active device from preferences
+    AutoConnect,
 
     /// Stream live logs from device
     Logs {
@@ -86,10 +115,14 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Status => cmd_status(&mut transport),
         Command::Scan { timeout } => cmd_scan(&mut transport, timeout),
-        Command::Connect { address, addr_kind } => cmd_connect(&mut transport, &address, addr_kind),
+        Command::Connect { address, addr_kind, profile } => cmd_connect(&mut transport, &address, addr_kind, profile),
         Command::Disconnect => cmd_disconnect(&mut transport),
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),
+        Command::SetProfile { address, profile_id } => cmd_set_profile(&mut transport, &address, profile_id),
+        Command::SetActiveDevice { address, addr_kind } => cmd_set_active_device(&mut transport, &address, addr_kind),
+        Command::ClearActiveDevice => cmd_clear_active_device(&mut transport),
+        Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::Logs { level, timeout } => cmd_logs(&mut transport, level, timeout),
         Command::Version => cmd_version(&mut transport),
     }
@@ -164,17 +197,19 @@ fn cmd_scan(transport: &mut Transport, timeout_secs: u64) -> Result<()> {
     Ok(())
 }
 
-fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8) -> Result<()> {
+fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8, profile: Option<u8>) -> Result<()> {
     let addr = parse_address(address)?;
 
     let mut cbor_buf = [0u8; 32];
     let len = encode_request_connect(&mut cbor_buf, &addr, addr_kind)
         .map_err(|_| anyhow::anyhow!("encode failed"))?;
 
-    println!(
-        "Connecting to {}...",
-        format_address(&addr).bold()
-    );
+    println!("Connecting to {}...", format_address(&addr).bold());
+
+    if let Some(profile_id) = profile {
+        let profile_name = profile_name(profile_id);
+        println!("  Profile: {profile_name}");
+    }
 
     let (resp, events) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
@@ -185,6 +220,7 @@ fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8) -> Resul
 
     // Stream events until we see Ready or an error
     let connect_timeout = Duration::from_secs(30);
+    let mut pairing_complete = false;
     transport.stream_messages(connect_timeout, |msg| {
         if let Message::Event { cbor } = msg {
             if let Ok(evt) = decode_event(&cbor) {
@@ -194,6 +230,9 @@ fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8) -> Resul
                         matches!(state, self::ConnectionState::Connecting | self::ConnectionState::Connected | self::ConnectionState::Pairing | self::ConnectionState::Scanning)
                     }
                     Event::PairingStatus { status } => {
+                        if matches!(status, PairingState::Complete) {
+                            pairing_complete = true;
+                        }
                         !matches!(status, PairingState::Complete | PairingState::Failed)
                     }
                     _ => true,
@@ -205,6 +244,18 @@ fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8) -> Resul
             true
         }
     })?;
+
+    // If profile specified and pairing completed, update the bond profile
+    if let Some(profile_id) = profile {
+        if pairing_complete {
+            println!("Setting profile...");
+            let len = encode_request_update_bond_profile(&mut cbor_buf, &addr, profile_id)
+                .map_err(|_| anyhow::anyhow!("encode failed"))?;
+            let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+            check_ok(&resp)?;
+            println!("{}", "Profile set successfully.".green());
+        }
+    }
 
     Ok(())
 }
@@ -361,11 +412,103 @@ fn print_event(event: &Event) {
             println!("  {colored} {message}");
         }
         Event::BondStored { address, profile_id } => {
+            let profile = profile_name(*profile_id);
             println!(
-                "  {} Bond stored for {} (profile {profile_id})",
+                "  {} Bond stored for {} (profile: {profile})",
                 "OK".green(),
                 format_address(address).bold()
             );
         }
+    }
+}
+
+fn cmd_set_profile(transport: &mut Transport, address: &str, profile_id: u8) -> Result<()> {
+    let addr = parse_address(address)?;
+    let profile = profile_name(profile_id);
+
+    println!(
+        "Setting profile for {} to {}...",
+        format_address(&addr).bold(),
+        profile.bold()
+    );
+
+    let mut cbor_buf = [0u8; 32];
+    let len = encode_request_update_bond_profile(&mut cbor_buf, &addr, profile_id)
+        .map_err(|_| anyhow::anyhow!("encode failed"))?;
+
+    let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+
+    println!("{}", "Profile updated successfully.".green());
+    Ok(())
+}
+
+fn cmd_set_active_device(transport: &mut Transport, address: &str, addr_kind: u8) -> Result<()> {
+    let addr = parse_address(address)?;
+
+    println!(
+        "Setting active device to {}...",
+        format_address(&addr).bold()
+    );
+
+    let mut cbor_buf = [0u8; 32];
+    let len = encode_request_set_active_device(&mut cbor_buf, &addr, addr_kind)
+        .map_err(|_| anyhow::anyhow!("encode failed"))?;
+
+    let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+
+    println!("{}", "Active device set.".green());
+    Ok(())
+}
+
+fn cmd_clear_active_device(transport: &mut Transport) -> Result<()> {
+    let (resp, _) = transport.request_simple(CMD_CLEAR_ACTIVE_DEVICE, DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!("{}", "Active device cleared.".green());
+    Ok(())
+}
+
+fn cmd_auto_connect(transport: &mut Transport) -> Result<()> {
+    println!("{}", "Auto-connecting to active device...".cyan());
+
+    let (resp, events) = transport.request_simple(CMD_AUTO_CONNECT, DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+
+    for evt in events {
+        print_event(&evt);
+    }
+
+    // Stream events until connected
+    let connect_timeout = Duration::from_secs(30);
+    transport.stream_messages(connect_timeout, |msg| {
+        if let Message::Event { cbor } = msg {
+            if let Ok(evt) = decode_event(&cbor) {
+                print_event(&evt);
+                match &evt {
+                    Event::ConnectionState { state, .. } => {
+                        matches!(state, self::ConnectionState::Connecting | self::ConnectionState::Connected | self::ConnectionState::Pairing | self::ConnectionState::Scanning)
+                    }
+                    _ => true,
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    })?;
+
+    Ok(())
+}
+
+/// Get profile name from ID
+fn profile_name(id: u8) -> &'static str {
+    match id {
+        0 => "Generic",
+        1 => "MX Master 3S",
+        2 => "Full Scroll Dial",
+        3 => "Full Scroll Dial 16-bit",
+        _ => "Unknown",
     }
 }

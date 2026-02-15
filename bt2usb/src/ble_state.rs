@@ -19,11 +19,25 @@ pub enum BleCommand {
     /// Stop an active scan.
     StopScan,
     /// Connect to a specific BLE device by address.
-    Connect { address: [u8; 6], addr_kind: u8 },
+    Connect {
+        address: [u8; 6],
+        addr_kind: u8,
+        ignore_bond: bool,
+    },
     /// Disconnect the current device.
     Disconnect,
-    /// Auto-connect to the first bonded device (startup behavior).
+    /// Get list of bonded devices.
+    GetBonds,
+    /// Clear all bonded devices.
+    ClearBonds,
+    /// Auto-connect to the active device from preferences.
     AutoConnect,
+    /// Set the active device for auto-connect.
+    SetActiveDevice { address: [u8; 6], addr_kind: u8 },
+    /// Clear the active device preference (disable auto-connect).
+    ClearActiveDevice,
+    /// Update the profile for an existing bond.
+    UpdateBondProfile { address: [u8; 6], profile_id: u8 },
 }
 
 // ============ Events (BLE -> RPC) ============
@@ -62,6 +76,12 @@ pub static BLE_CMD_CHANNEL: Channel<CriticalSectionRawMutex, BleCommand, 4> = Ch
 
 /// Events from BLE state machine to RPC handler (capacity 8).
 pub static BLE_EVENT_CHANNEL: Channel<CriticalSectionRawMutex, BleEvent, 8> = Channel::new();
+
+/// Bond list response for GetBonds command
+pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>), 10>;
+
+/// Response channel for GetBonds (capacity 1, only one request at a time).
+pub static BONDS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, BondList, 1> = Channel::new();
 
 // ============ Scanner Event Handler ============
 

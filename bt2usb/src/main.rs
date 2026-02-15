@@ -22,6 +22,7 @@ mod ble_state;
 mod bonding;
 mod device_profile;
 mod framing;
+mod preferences;
 mod protocol;
 mod rpc;
 mod rpc_log;
@@ -61,13 +62,10 @@ use embassy_time::Timer;
 use protocol::ConnectionState;
 use usb_hid::{
     serialize_keyboard_report, serialize_mouse_report, serialize_mouse_report_16bit,
-    KeyboardHidReport, MOUSE_HIRES_16BIT_REPORT_DESC, MOUSE_HIRES_REPORT_DESC,
-    VENDOR_RPC_REPORT_DESC,
+    KeyboardHidReport, MOUSE_HIRES_16BIT_REPORT_DESC, VENDOR_RPC_REPORT_DESC,
 };
 
-// ============ Target HID Device Configuration ============
-/// Default device profile (used for fresh pairing when no stored profile exists)
-const DEFAULT_PROFILE: DeviceProfile = DeviceProfile::FullScrollDial16Bit;
+// ============ Interrupts ============
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
@@ -168,7 +166,6 @@ async fn core0_ble_main(
     static CONTROL: StaticCell<cyw43::Control<'static>> = StaticCell::new();
     let control = CONTROL.init(control);
     unwrap!(spawner.spawn(led_task(control)));
-
     // Flash operations - safe now that CYW43 firmware is fully downloaded.
     // Flash erase/write pauses Core 1 (USB) via FIFO, which is tolerable.
     // CYW43 on this core just has interrupts briefly disabled during flash ops.
@@ -177,7 +174,7 @@ async fn core0_ble_main(
     // info!("[core0] Clearing all bonds...");
     // bonding::clear_all_bonds(&mut flash).await.ok();
 
-    let loaded_bonds = bonding::load_bonds(&mut flash).await;
+    let mut loaded_bonds = bonding::load_bonds(&mut flash).await;
     info!(
         "[core0] Loaded {} stored bond(s) from flash",
         loaded_bonds.len()
@@ -189,6 +186,17 @@ async fn core0_ble_main(
             DeviceProfile::from_id(lb.profile_id)
         );
     }
+
+    // Load user preferences (active device, auto-reconnect)
+    let active_device_pref = preferences::load_active_device(&mut flash).await;
+    let auto_reconnect = preferences::load_auto_reconnect(&mut flash).await;
+
+    if let Some(ref dev) = active_device_pref {
+        info!("[core0] Active device preference: {:?}", dev.address);
+    } else {
+        info!("[core0] No active device preference set");
+    }
+    info!("[core0] Auto-reconnect: {}", auto_reconnect);
 
     // ============ BLE Central Logic ============
     let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
@@ -246,18 +254,25 @@ async fn core0_ble_main(
 
     info!("[core0] BLE Central initialized");
 
-    // If we have stored bonds, auto-connect on startup
-    if !loaded_bonds.is_empty() {
+    // Auto-connect on startup if enabled and we have an active device preference
+    if auto_reconnect && active_device_pref.is_some() {
         let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
     }
 
     // Run BLE host (with scanner handler) and command-driven state machine concurrently
     let _ = join(runner.run_with_handler(&scanner_handler), async {
         // ============ Command-driven BLE state machine ============
-        let mut active_profile = if !loaded_bonds.is_empty() {
+        let mut active_profile = if let Some(ref pref) = active_device_pref {
+            // Use profile from the active device's bond if available
+            loaded_bonds
+                .iter()
+                .find(|lb| lb.bond.identity.bd_addr.raw() == &pref.address)
+                .map(|lb| DeviceProfile::from_id(lb.profile_id))
+                .unwrap_or(DeviceProfile::Generic)
+        } else if !loaded_bonds.is_empty() {
             DeviceProfile::from_id(loaded_bonds[0].profile_id)
         } else {
-            DEFAULT_PROFILE
+            DeviceProfile::Generic
         };
 
         let mut pending_cmd: Option<BleCommand> = None;
@@ -297,10 +312,17 @@ async fn core0_ble_main(
                                     rpc_log::info("Scan stopped");
                                     break;
                                 }
-                                Either::First(BleCommand::Connect { address, addr_kind }) => {
+                                Either::First(BleCommand::Connect {
+                                    address,
+                                    addr_kind,
+                                    ignore_bond,
+                                }) => {
                                     info!("Connect command during scan");
-                                    let _ = BLE_CMD_CHANNEL
-                                        .try_send(BleCommand::Connect { address, addr_kind });
+                                    let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
+                                        address,
+                                        addr_kind,
+                                        ignore_bond,
+                                    });
                                     break;
                                 }
                                 Either::First(_) => {}
@@ -319,7 +341,11 @@ async fn core0_ble_main(
 
                 BleCommand::StopScan => {}
 
-                BleCommand::Connect { address, addr_kind } => {
+                BleCommand::Connect {
+                    address,
+                    addr_kind,
+                    ignore_bond: _,  // Ignored - can't remove bonds from running stack
+                } => {
                     let kind = if addr_kind == 1 {
                         AddrKind::RANDOM
                     } else {
@@ -329,7 +355,13 @@ async fn core0_ble_main(
                         kind,
                         addr: BdAddr::new(address),
                     };
-                    active_profile = DEFAULT_PROFILE;
+                    // Use Generic profile for manual connections (user can update via UpdateBondProfile)
+                    active_profile = DeviceProfile::Generic;
+
+                    // Check if we have a bond for this device
+                    let has_stored_bond = loaded_bonds
+                        .iter()
+                        .any(|lb| lb.bond.identity.bd_addr.raw() == &address);
 
                     let mut central = scanner.into_inner();
                     pending_cmd = ble_connect_and_run(
@@ -338,34 +370,63 @@ async fn core0_ble_main(
                         &mut flash,
                         target,
                         active_profile,
-                        false,
+                        has_stored_bond,
                     )
                     .await;
                     scanner = Scanner::new(central);
                 }
 
                 BleCommand::AutoConnect => {
-                    if loaded_bonds.is_empty() {
-                        warn!("AutoConnect: no bonds stored");
-                        rpc_log::warn("AutoConnect: no bonds stored");
+                    // Use active device preference if set, otherwise fall back to first bond
+                    let (target_addr, target_kind) = if let Some(ref pref) = active_device_pref {
+                        (pref.address, pref.addr_kind)
+                    } else if !loaded_bonds.is_empty() {
+                        let lb = &loaded_bonds[0];
+                        let addr_bytes = lb.bond.identity.bd_addr.raw();
+                        let kind = if (addr_bytes[5] & 0xC0) == 0xC0 {
+                            1u8
+                        } else {
+                            0u8
+                        };
+                        let mut addr = [0u8; 6];
+                        addr.copy_from_slice(addr_bytes);
+                        (addr, kind)
+                    } else {
+                        warn!("AutoConnect: no active device or bonds");
+                        rpc_log::warn("AutoConnect: no active device or bonds");
+                        continue;
+                    };
+
+                    // Find the bond and profile for this device
+                    let bond_info = loaded_bonds
+                        .iter()
+                        .find(|lb| lb.bond.identity.bd_addr.raw() == &target_addr);
+
+                    if bond_info.is_none() {
+                        warn!(
+                            "AutoConnect: no bond found for active device {:?}",
+                            target_addr
+                        );
+                        rpc_log::warn("AutoConnect: device not bonded");
                         continue;
                     }
-                    let lb = &loaded_bonds[0];
-                    let addr = lb.bond.identity.bd_addr;
-                    active_profile = DeviceProfile::from_id(lb.profile_id);
+
+                    active_profile = DeviceProfile::from_id(bond_info.unwrap().profile_id);
                     info!(
-                        "Auto-connecting to bonded device {:?} (profile: {:?})",
-                        addr, active_profile
+                        "Auto-connecting to {:?} (profile: {:?})",
+                        target_addr, active_profile
                     );
                     rpc_log::info("Auto-connecting to bonded device");
 
-                    let addr_bytes = addr.raw();
-                    let kind = if (addr_bytes[5] & 0xC0) == 0xC0 {
+                    let kind = if target_kind == 1 {
                         AddrKind::RANDOM
                     } else {
                         AddrKind::PUBLIC
                     };
-                    let target = Address { kind, addr };
+                    let target = Address {
+                        kind,
+                        addr: BdAddr::new(target_addr),
+                    };
 
                     let mut central = scanner.into_inner();
                     pending_cmd = ble_connect_and_run(
@@ -382,6 +443,102 @@ async fn core0_ble_main(
 
                 BleCommand::Disconnect => {
                     info!("Not connected, nothing to disconnect");
+                }
+
+                BleCommand::SetActiveDevice { address, addr_kind } => {
+                    info!("Setting active device: {:?}", address);
+                    let device = preferences::ActiveDevice { address, addr_kind };
+                    match preferences::set_active_device(&mut flash, &device).await {
+                        Ok(()) => {
+                            info!("Active device preference saved");
+                            rpc_log::info("Active device set");
+                        }
+                        Err(()) => {
+                            error!("Failed to save active device preference");
+                            rpc_log::error("Failed to set active device");
+                        }
+                    }
+                }
+
+                BleCommand::ClearActiveDevice => {
+                    info!("Clearing active device preference");
+                    match preferences::clear_active_device(&mut flash).await {
+                        Ok(()) => {
+                            info!("Active device preference cleared");
+                            rpc_log::info("Active device cleared");
+                        }
+                        Err(()) => {
+                            error!("Failed to clear active device preference");
+                            rpc_log::error("Failed to clear active device");
+                        }
+                    }
+                }
+
+                BleCommand::UpdateBondProfile {
+                    address,
+                    profile_id,
+                } => {
+                    info!("Updating bond profile for {:?} to {}", address, profile_id);
+                    match bonding::update_bond_profile(&mut flash, &address, profile_id).await {
+                        Ok(slot) => {
+                            info!("Bond profile updated in slot {}", slot);
+                            rpc_log::info("Bond profile updated");
+                            // Reload bonds to update in-memory list
+                            loaded_bonds = bonding::load_bonds(&mut flash).await;
+                        }
+                        Err(()) => {
+                            error!("Failed to update bond profile");
+                            rpc_log::error("Bond not found");
+                        }
+                    }
+                }
+
+                BleCommand::GetBonds => {
+                    info!("Getting bonds list");
+                    // Build bond list with device names
+                    let mut bond_list: ble_state::BondList = heapless::Vec::new();
+                    for lb in &loaded_bonds {
+                        let addr_bytes = lb.bond.identity.bd_addr.raw();
+                        let mut addr = [0u8; 6];
+                        addr.copy_from_slice(addr_bytes);
+
+                        let addr_kind = if (addr_bytes[5] & 0xC0) == 0xC0 {
+                            1u8
+                        } else {
+                            0u8
+                        };
+
+                        // Try to get device name from profile
+                        let profile = DeviceProfile::from_id(lb.profile_id);
+                        let name_str = profile.name();
+                        let mut name: heapless::String<32> = heapless::String::new();
+                        let _ = name.push_str(if name_str.is_empty() {
+                            "Unknown Device"
+                        } else {
+                            name_str
+                        });
+
+                        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name));
+                    }
+
+                    // Send response back to RPC handler
+                    let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);
+                }
+
+                BleCommand::ClearBonds => {
+                    info!("Clearing all bonds");
+                    rpc_log::info("Clearing all bonds...");
+                    match bonding::clear_all_bonds(&mut flash).await {
+                        Ok(()) => {
+                            info!("All bonds cleared successfully");
+                            rpc_log::info("All bonds cleared");
+                            loaded_bonds.clear();
+                        }
+                        Err(()) => {
+                            error!("Failed to clear bonds");
+                            rpc_log::error("Failed to clear bonds");
+                        }
+                    }
                 }
             }
         }
@@ -512,13 +669,10 @@ fn main() -> ! {
                 poll_ms: 1,
                 max_packet_size: 64,
             };
-            // Mouse (select descriptor based on profile)
+            // Mouse (always use 16-bit descriptor for maximum capability)
+            // Profile settings control how reports are scaled/interpreted
             static MOUSE_HANDLER: StaticCell<usb_hid::HiresMouseRequestHandler> = StaticCell::new();
-            let mouse_descriptor = if DEFAULT_PROFILE.uses_16bit_reports() {
-                MOUSE_HIRES_16BIT_REPORT_DESC
-            } else {
-                MOUSE_HIRES_REPORT_DESC
-            };
+            let mouse_descriptor = MOUSE_HIRES_16BIT_REPORT_DESC;
             let mouse_config = embassy_usb::class::hid::Config {
                 report_descriptor: mouse_descriptor,
                 request_handler: Some(MOUSE_HANDLER.init(usb_hid::HiresMouseRequestHandler)),
@@ -625,7 +779,7 @@ async fn ble_connect_and_run<'a, C: Controller>(
     stack: &'a Stack<'a, C, DefaultPacketPool>,
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     target: Address,
-    active_profile: DeviceProfile,
+    mut active_profile: DeviceProfile,
     has_stored_bond: bool,
 ) -> Option<BleCommand> {
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
@@ -956,6 +1110,20 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                             )
                                             .await;
                                             return Some(cmd);
+                                        }
+                                        BleCommand::UpdateBondProfile { profile_id, .. } => {
+                                            info!("Updating active profile to {}", profile_id);
+                                            active_profile = DeviceProfile::from_id(profile_id);
+                                            rpc_log::info("Profile updated (active immediately)");
+                                        }
+                                        BleCommand::ClearBonds | BleCommand::GetBonds => {
+                                            // These are handled by the main loop, just continue here
+                                            debug!("Bond management command during connection (handled by main loop)");
+                                        }
+                                        BleCommand::SetActiveDevice { .. }
+                                        | BleCommand::ClearActiveDevice => {
+                                            // Preference updates don't affect current connection
+                                            debug!("Preference update during connection");
                                         }
                                         _ => {}
                                     }

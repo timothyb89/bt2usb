@@ -5,7 +5,6 @@
 //! - HID report event types for communication between tasks
 //! - BLE HID report parsing
 
-use defmt::*;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use trouble_host::prelude::*;

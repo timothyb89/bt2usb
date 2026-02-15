@@ -10,7 +10,7 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_usb::class::hid::{HidReader, HidWriter};
 
-use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};
+use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, BONDS_RESPONSE_CHANNEL};
 use crate::framing::{self, FrameAccumulator, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE};
 use crate::protocol::{self, ConnectionState, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 use crate::rpc_log::LOG_CHANNEL;
@@ -252,10 +252,11 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::Connect { address, addr_kind } => {
+        protocol::Request::Connect { address, addr_kind, ignore_bond } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
                 address: *address,
                 addr_kind: *addr_kind,
+                ignore_bond: *ignore_bond,
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
@@ -266,12 +267,31 @@ async fn dispatch_request(
         }
 
         protocol::Request::GetBonds => {
-            // Return empty list for now (bond listing requires flash access)
-            protocol::encode_response_bonds(cbor_buf, &[]).unwrap_or(0)
+            // Request bonds from BLE task (which has flash access)
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::GetBonds);
+
+            // Wait for response (with timeout)
+            match embassy_time::with_timeout(
+                embassy_time::Duration::from_millis(500),
+                BONDS_RESPONSE_CHANNEL.receive()
+            ).await {
+                Ok(bonds) => {
+                    // Convert heapless types to slices for encoding
+                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str), 10> = heapless::Vec::new();
+                    for (addr, kind, profile, name) in &bonds {
+                        let _ = bond_refs.push((*addr, *kind, *profile, name.as_str()));
+                    }
+                    protocol::encode_response_bonds(cbor_buf, bond_refs.as_slice()).unwrap_or(0)
+                }
+                Err(_) => {
+                    protocol::encode_response_error(cbor_buf, 3, "timeout").unwrap_or(0)
+                }
+            }
         }
 
         protocol::Request::ClearBonds => {
-            protocol::encode_response_error(cbor_buf, 2, "not implemented").unwrap_or(0)
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBonds);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
         protocol::Request::SetProfile { .. } => {
@@ -296,6 +316,32 @@ async fn dispatch_request(
 
         protocol::Request::GetVersion => {
             protocol::encode_response_version(cbor_buf, VERSION).unwrap_or(0)
+        }
+
+        protocol::Request::SetActiveDevice { address, addr_kind } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetActiveDevice {
+                address: *address,
+                addr_kind: *addr_kind,
+            });
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ClearActiveDevice => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearActiveDevice);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::UpdateBondProfile { address, profile_id } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::UpdateBondProfile {
+                address: *address,
+                profile_id: *profile_id,
+            });
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::AutoConnect => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
     };
 

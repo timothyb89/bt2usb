@@ -98,6 +98,20 @@
       </div>
     </div>
 
+    <!-- Bonded Devices Panel -->
+    <div class="panel">
+      <h2>Bonded Devices</h2>
+      <div class="panel-row">
+        <button class="btn" onclick="refreshBonds()" id="btnRefreshBonds">Refresh</button>
+        <button class="btn btn-danger" onclick="clearAllBonds()" id="btnClearBonds">Clear All</button>
+        <button class="btn btn-primary" onclick="autoConnect()" id="btnAutoConnect">Auto-Connect</button>
+      </div>
+      <table id="bondsTable" style="margin-top:0.5rem">
+        <thead><tr><th>Address</th><th>Name</th><th>Profile</th><th>Active</th><th></th></tr></thead>
+        <tbody id="bondsBody"></tbody>
+      </table>
+    </div>
+
     <!-- Scan Panel -->
     <div class="panel">
       <h2>BLE Scan</h2>
@@ -107,7 +121,7 @@
         <span id="scanStatus" style="font-size:0.85rem;color:var(--text2)"></span>
       </div>
       <table id="scanTable" style="margin-top:0.5rem">
-        <thead><tr><th>Address</th><th>Name</th><th>RSSI</th><th>Type</th><th></th></tr></thead>
+        <thead><tr><th>Address</th><th>Name</th><th>RSSI</th><th>Type</th><th>Profile</th><th></th></tr></thead>
         <tbody id="scanBody"></tbody>
       </table>
     </div>
@@ -270,10 +284,13 @@ const MSG_REQUEST = 0x01, MSG_RESPONSE = 0x02, MSG_EVENT = 0x03;
 const CMD_GET_STATUS = 0, CMD_START_SCAN = 1, CMD_STOP_SCAN = 2, CMD_CONNECT = 3;
 const CMD_DISCONNECT = 4, CMD_GET_BONDS = 5, CMD_CLEAR_BONDS = 6;
 const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
-const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_VERSION = 5;
+const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
+const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16;
+const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
 const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4;
 const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
 const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+const PROFILE_NAMES = ['Generic', 'MX Master 3S', 'Full Scroll Dial', 'Full Scroll Dial 16-bit'];
 
 // ============ WebHID Transport ============
 let device = null;
@@ -392,10 +409,35 @@ function handleEvent(body) {
     }
     case EVT_BOND_STORED: {
       const [, addrBytes, profileId] = body;
-      appendLog(1, `Bond stored: ${formatAddr(addrBytes)} (profile ${profileId})`);
+      appendLog(1, `Bond stored: ${formatAddr(addrBytes)} (profile ${PROFILE_NAMES[profileId]})`);
+
+      // If we have a pending profile update, send it now
+      if (window.pendingProfileUpdate) {
+        const pending = window.pendingProfileUpdate;
+        if (arraysEqual(pending.address, Array.from(addrBytes))) {
+          setTimeout(async () => {
+            try {
+              await sendRequest(CBOR.encode([CMD_UPDATE_BOND_PROFILE, new Uint8Array(pending.address), pending.profileId]));
+              appendLog(1, `Profile updated to ${PROFILE_NAMES[pending.profileId]}`);
+              window.pendingProfileUpdate = null;
+              refreshBonds();
+            } catch (e) {
+              appendLog(3, 'Profile update failed: ' + e.message);
+            }
+          }, 500);
+        }
+      }
       break;
     }
   }
+}
+
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 // ============ Connection ============
@@ -420,8 +462,9 @@ async function connect() {
     device.addEventListener('inputreport', handleInputReport);
     setConnected(true);
 
-    // Auto-refresh status
+    // Auto-refresh status and bonds
     await refreshStatus();
+    await refreshBonds();
   } catch (e) {
     console.error('Connect failed:', e);
     appendLog(3, 'Connect failed: ' + e.message);
@@ -517,6 +560,7 @@ function addScanResult(addrBytes, addrKind, name, rssi, isHid) {
       <td class="rssi"></td>
       <td></td>
       <td></td>
+      <td></td>
     `;
     tbody.appendChild(row);
   }
@@ -526,6 +570,14 @@ function addScanResult(addrBytes, addrKind, name, rssi, isHid) {
   cells[2].textContent = rssi + ' dBm';
   cells[3].innerHTML = isHid ? '<span class="hid-tag">HID</span>' : '';
   cells[4].innerHTML = isHid
+    ? `<select id="profile-${addr}" style="font-size:0.8rem;background:var(--surface2);color:var(--text);border:1px solid rgba(255,255,255,0.1);border-radius:3px;padding:0.2rem;">
+         <option value="0">Generic</option>
+         <option value="1">MX Master 3S</option>
+         <option value="2">Full Scroll Dial</option>
+         <option value="3">Full Scroll Dial 16-bit</option>
+       </select>`
+    : '';
+  cells[5].innerHTML = isHid
     ? `<button class="btn btn-sm btn-primary" onclick="connectDevice('${addr}',${addrKind})">Connect</button>`
     : '';
 }
@@ -535,11 +587,19 @@ async function connectDevice(addrStr, addrKind) {
   const addrBytes = new Uint8Array(6);
   for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
 
+  // Get selected profile
+  const profileSelect = document.getElementById(`profile-${addrStr}`);
+  const profileId = profileSelect ? parseInt(profileSelect.value) : 0;
+
   await stopScan();
-  appendLog(1, `Connecting to ${addrStr}...`);
+  appendLog(1, `Connecting to ${addrStr} (profile: ${PROFILE_NAMES[profileId]})...`);
 
   try {
+    // Send connect command
     await sendRequest(CBOR.encode([CMD_CONNECT, addrBytes, addrKind]));
+
+    // Wait for pairing to complete, then set profile
+    window.pendingProfileUpdate = { address: Array.from(addrBytes), profileId };
   } catch (e) {
     appendLog(3, 'Connect failed: ' + e.message);
   }
@@ -556,6 +616,103 @@ async function toggleLogs() {
     }
   } catch (e) {
     appendLog(3, 'Log toggle failed: ' + e.message);
+  }
+}
+
+async function refreshBonds() {
+  try {
+    const resp = await sendSimpleRequest(CMD_GET_BONDS);
+    if (resp[0] === RESP_BONDS) {
+      const bonds = resp[1];
+      const tbody = document.getElementById('bondsBody');
+      tbody.innerHTML = '';
+
+      if (bonds.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:1rem">No bonded devices</td></tr>';
+      } else {
+        for (const bond of bonds) {
+          const [addrBytes, addrKind, profileId, name] = bond;
+          const addr = formatAddr(addrBytes);
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td class="addr">${addr}</td>
+            <td>${name || '(unknown)'}</td>
+            <td>
+              <select onchange="updateBondProfile('${addr}', this.value)" style="font-size:0.8rem;background:var(--surface2);color:var(--text);border:1px solid rgba(255,255,255,0.1);border-radius:3px;padding:0.2rem;">
+                <option value="0" ${profileId === 0 ? 'selected' : ''}>Generic</option>
+                <option value="1" ${profileId === 1 ? 'selected' : ''}>MX Master 3S</option>
+                <option value="2" ${profileId === 2 ? 'selected' : ''}>Full Scroll Dial</option>
+                <option value="3" ${profileId === 3 ? 'selected' : ''}>Full Scroll Dial 16-bit</option>
+              </select>
+            </td>
+            <td><button class="btn btn-sm" onclick="setActiveDevice('${addr}', ${addrKind})">Set Active</button></td>
+            <td><button class="btn btn-sm btn-primary" onclick="connectToAddr('${addr}', ${addrKind})">Connect</button></td>
+          `;
+          tbody.appendChild(row);
+        }
+      }
+    }
+  } catch (e) {
+    appendLog(3, 'Refresh bonds failed: ' + e.message);
+  }
+}
+
+async function clearAllBonds() {
+  if (!confirm('Clear all bonded devices? This cannot be undone.')) return;
+  try {
+    await sendSimpleRequest(CMD_CLEAR_BONDS);
+    appendLog(1, 'All bonds cleared');
+    refreshBonds();
+  } catch (e) {
+    appendLog(3, 'Clear bonds failed: ' + e.message);
+  }
+}
+
+async function updateBondProfile(addrStr, profileId) {
+  const parts = addrStr.split(':').map(s => parseInt(s, 16));
+  const addrBytes = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
+
+  try {
+    await sendRequest(CBOR.encode([CMD_UPDATE_BOND_PROFILE, addrBytes, parseInt(profileId)]));
+    appendLog(1, `Profile updated to ${PROFILE_NAMES[profileId]} for ${addrStr}`);
+  } catch (e) {
+    appendLog(3, 'Profile update failed: ' + e.message);
+  }
+}
+
+async function setActiveDevice(addrStr, addrKind) {
+  const parts = addrStr.split(':').map(s => parseInt(s, 16));
+  const addrBytes = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
+
+  try {
+    await sendRequest(CBOR.encode([CMD_SET_ACTIVE_DEVICE, addrBytes, addrKind]));
+    appendLog(1, `Active device set to ${addrStr}`);
+  } catch (e) {
+    appendLog(3, 'Set active device failed: ' + e.message);
+  }
+}
+
+async function connectToAddr(addrStr, addrKind) {
+  const parts = addrStr.split(':').map(s => parseInt(s, 16));
+  const addrBytes = new Uint8Array(6);
+  for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
+
+  try {
+    await sendRequest(CBOR.encode([CMD_CONNECT, addrBytes, addrKind]));
+    appendLog(1, `Connecting to ${addrStr}...`);
+  } catch (e) {
+    appendLog(3, 'Connect failed: ' + e.message);
+  }
+}
+
+async function autoConnect() {
+  try {
+    await sendSimpleRequest(CMD_AUTO_CONNECT);
+    appendLog(1, 'Auto-connecting to active device...');
+  } catch (e) {
+    appendLog(3, 'Auto-connect failed: ' + e.message);
   }
 }
 

@@ -15,19 +15,19 @@ use sequential_storage::map::{
 use trouble_host::prelude::{BdAddr, BondInformation, Identity, LongTermKey, SecurityLevel};
 
 /// Maximum number of bonded devices we support
-pub const MAX_BONDS: usize = 4;
+pub const MAX_BONDS: usize = 10;
 
 /// Flash storage range for bonding data
-/// Uses last 8KB (2 x 4KB erase sectors) for wear leveling
-/// RP2040 has 2MB flash, so this is at offset 0x1FE000
-const BONDING_FLASH_OFFSET: u32 = 2 * 1024 * 1024 - 8 * 1024; // 0x1FE000
-const BONDING_FLASH_SIZE: u32 = 8 * 1024; // 8KB
+/// Uses 16KB (4 x 4KB erase sectors) for wear leveling with up to 10 bonds
+/// RP2040 has 2MB flash, allocated at offset 0x1F0000
+const BONDING_FLASH_OFFSET: u32 = 2 * 1024 * 1024 - 64 * 1024; // 0x1F0000
+const BONDING_FLASH_SIZE: u32 = 16 * 1024; // 16KB
 
 fn flash_range() -> Range<u32> {
     BONDING_FLASH_OFFSET..(BONDING_FLASH_OFFSET + BONDING_FLASH_SIZE)
 }
 
-/// Key type - a simple slot index (0-3) for storing up to MAX_BONDS devices
+/// Key type - a simple slot index (0-9) for storing up to MAX_BONDS devices
 /// We use simple u8 keys instead of device addresses for simplicity
 pub type BondSlot = u8;
 
@@ -37,7 +37,7 @@ pub struct StoredBondInfo {
     pub addr: [u8; 6],      // BdAddr raw bytes
     pub ltk: [u8; 16],      // LongTermKey raw bytes
     pub security_level: u8, // 0=None, 1=Encrypted, 2=EncryptedAuthenticated
-    pub profile_id: u8,     // DeviceProfile discriminant (0=Generic, 1=MxMaster3S, 2=FullScrollDial)
+    pub profile_id: u8, // DeviceProfile discriminant (0=Generic, 1=MxMaster3S, 2=FullScrollDial)
 }
 
 impl<'a> Value<'a> for StoredBondInfo {
@@ -243,4 +243,94 @@ pub async fn clear_all_bonds(
             Err(())
         }
     }
+}
+
+/// Update the profile ID for an existing bond by address
+/// Returns Ok(slot) if bond was found and updated, Err(()) if not found
+pub async fn update_bond_profile(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+    new_profile_id: u8,
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 64];
+
+    // Find bond with matching address
+    for slot in 0..MAX_BONDS as u8 {
+        match fetch_item::<u8, StoredBondInfo, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &slot,
+        )
+        .await
+        {
+            Ok(Some(mut stored)) => {
+                if stored.addr == *address {
+                    // Found the bond, update profile
+                    stored.profile_id = new_profile_id;
+
+                    match store_item(
+                        flash,
+                        flash_range(),
+                        &mut NoCache::new(),
+                        &mut buffer,
+                        &slot,
+                        &stored,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!(
+                                "Updated bond profile in slot {} to {}",
+                                slot, new_profile_id
+                            );
+                            return Ok(slot);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to update bond profile: {:?}",
+                                defmt::Debug2Format(&e)
+                            );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("Bond not found for address {:?}", address);
+    Err(())
+}
+
+/// Find a bond by address and return its slot and profile
+/// Returns Ok((slot, profile_id)) if found, Err(()) if not found
+pub async fn find_bond(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+) -> Result<(u8, u8), ()> {
+    let mut buffer = [0u8; 64];
+
+    for slot in 0..MAX_BONDS as u8 {
+        match fetch_item::<u8, StoredBondInfo, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &slot,
+        )
+        .await
+        {
+            Ok(Some(stored)) => {
+                if stored.addr == *address {
+                    return Ok((slot, stored.profile_id));
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    Err(())
 }

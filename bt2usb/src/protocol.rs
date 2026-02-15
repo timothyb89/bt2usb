@@ -51,14 +51,17 @@ pub const CMD_SET_CONFIG: u8 = 9;
 pub const CMD_SUBSCRIBE_LOGS: u8 = 10;
 pub const CMD_UNSUBSCRIBE_LOGS: u8 = 11;
 pub const CMD_GET_VERSION: u8 = 12;
+pub const CMD_SET_ACTIVE_DEVICE: u8 = 13;
+pub const CMD_CLEAR_ACTIVE_DEVICE: u8 = 14;
+pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
+pub const CMD_AUTO_CONNECT: u8 = 16;
 
-#[derive(Clone, Debug)]
-#[derive(defmt::Format)]
+#[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
     GetStatus,
     StartScan,
     StopScan,
-    Connect { address: [u8; 6], addr_kind: u8 },
+    Connect { address: [u8; 6], addr_kind: u8, ignore_bond: bool },
     Disconnect,
     GetBonds,
     ClearBonds,
@@ -68,6 +71,10 @@ pub enum Request {
     SubscribeLogs { level: u8 },
     UnsubscribeLogs,
     GetVersion,
+    SetActiveDevice { address: [u8; 6], addr_kind: u8 },
+    ClearActiveDevice,
+    UpdateBondProfile { address: [u8; 6], profile_id: u8 },
+    AutoConnect,
 }
 
 // ============ Response (device -> host) ============
@@ -78,9 +85,9 @@ pub const RESP_STATUS: u8 = 2;
 pub const RESP_BONDS: u8 = 3;
 pub const RESP_CONFIG: u8 = 4;
 pub const RESP_VERSION: u8 = 5;
+pub const RESP_ACTIVE_DEVICE: u8 = 6;
 
-#[derive(Clone, Copy, Debug)]
-#[derive(defmt::Format)]
+#[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum ConnectionState {
     Disconnected = 0,
     Scanning = 1,
@@ -98,8 +105,7 @@ pub const EVT_PAIRING_STATUS: u8 = 2;
 pub const EVT_LOG: u8 = 3;
 pub const EVT_BOND_STORED: u8 = 4;
 
-#[derive(Clone, Copy, Debug)]
-#[derive(defmt::Format)]
+#[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum PairingState {
     Started = 0,
     KeysExchanged = 1,
@@ -139,7 +145,9 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
             let addr_kind = d.u8().map_err(|_| ProtocolError::MissingField)?;
-            Ok(Request::Connect { address, addr_kind })
+            // ignore_bond field is optional for backwards compatibility
+            let ignore_bond = d.bool().unwrap_or(false);
+            Ok(Request::Connect { address, addr_kind, ignore_bond })
         }
         CMD_DISCONNECT => Ok(Request::Disconnect),
         CMD_GET_BONDS => Ok(Request::GetBonds),
@@ -160,6 +168,31 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         }
         CMD_UNSUBSCRIBE_LOGS => Ok(Request::UnsubscribeLogs),
         CMD_GET_VERSION => Ok(Request::GetVersion),
+        CMD_SET_ACTIVE_DEVICE => {
+            let addr_bytes = d.bytes().map_err(|_| ProtocolError::MissingField)?;
+            if addr_bytes.len() < 6 {
+                return Err(ProtocolError::MissingField);
+            }
+            let mut address = [0u8; 6];
+            address.copy_from_slice(&addr_bytes[..6]);
+            let addr_kind = d.u8().map_err(|_| ProtocolError::MissingField)?;
+            Ok(Request::SetActiveDevice { address, addr_kind })
+        }
+        CMD_CLEAR_ACTIVE_DEVICE => Ok(Request::ClearActiveDevice),
+        CMD_UPDATE_BOND_PROFILE => {
+            let addr_bytes = d.bytes().map_err(|_| ProtocolError::MissingField)?;
+            if addr_bytes.len() < 6 {
+                return Err(ProtocolError::MissingField);
+            }
+            let mut address = [0u8; 6];
+            address.copy_from_slice(&addr_bytes[..6]);
+            let profile_id = d.u8().map_err(|_| ProtocolError::MissingField)?;
+            Ok(Request::UpdateBondProfile {
+                address,
+                profile_id,
+            })
+        }
+        CMD_AUTO_CONNECT => Ok(Request::AutoConnect),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }
@@ -187,7 +220,14 @@ pub fn encode_response_ok(buf: &mut [u8]) -> EncResult {
 /// Encode an error response with a message.
 pub fn encode_response_error(buf: &mut [u8], code: u8, message: &str) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(3).unwrap().u8(RESP_ERROR).unwrap().u8(code).unwrap().str(message).unwrap();
+        e.array(3)
+            .unwrap()
+            .u8(RESP_ERROR)
+            .unwrap()
+            .u8(code)
+            .unwrap()
+            .str(message)
+            .unwrap();
     })
 }
 
@@ -214,10 +254,7 @@ pub fn encode_response_status(
 
 /// Encode a bonds response.
 /// Each bond: [address(6 bytes), addr_kind, profile_id, name_str]
-pub fn encode_response_bonds(
-    buf: &mut [u8],
-    bonds: &[([u8; 6], u8, u8, &str)],
-) -> EncResult {
+pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str)]) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(2).unwrap().u8(RESP_BONDS).unwrap();
         e.array(bonds.len() as u64).unwrap();
@@ -239,7 +276,31 @@ pub fn encode_response_bonds(
 /// Encode a version response.
 pub fn encode_response_version(buf: &mut [u8], version: &str) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(2).unwrap().u8(RESP_VERSION).unwrap().str(version).unwrap();
+        e.array(2)
+            .unwrap()
+            .u8(RESP_VERSION)
+            .unwrap()
+            .str(version)
+            .unwrap();
+    })
+}
+
+/// Encode an active device response.
+/// If no active device, address will be all zeros.
+pub fn encode_response_active_device(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    addr_kind: u8,
+) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(3)
+            .unwrap()
+            .u8(RESP_ACTIVE_DEVICE)
+            .unwrap()
+            .bytes(address)
+            .unwrap()
+            .u8(addr_kind)
+            .unwrap();
     })
 }
 
@@ -305,16 +366,19 @@ pub fn encode_event_pairing_status(buf: &mut [u8], status: PairingState) -> EncR
 /// Encode a log event.
 pub fn encode_event_log(buf: &mut [u8], level: u8, message: &str) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(3).unwrap().u8(EVT_LOG).unwrap().u8(level).unwrap().str(message).unwrap();
+        e.array(3)
+            .unwrap()
+            .u8(EVT_LOG)
+            .unwrap()
+            .u8(level)
+            .unwrap()
+            .str(message)
+            .unwrap();
     })
 }
 
 /// Encode a bond stored event.
-pub fn encode_event_bond_stored(
-    buf: &mut [u8],
-    address: &[u8; 6],
-    profile_id: u8,
-) -> EncResult {
+pub fn encode_event_bond_stored(buf: &mut [u8], address: &[u8; 6], profile_id: u8) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(3)
             .unwrap()

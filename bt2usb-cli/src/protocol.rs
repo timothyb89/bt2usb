@@ -42,6 +42,10 @@ pub const CMD_SET_CONFIG: u8 = 9;
 pub const CMD_SUBSCRIBE_LOGS: u8 = 10;
 pub const CMD_UNSUBSCRIBE_LOGS: u8 = 11;
 pub const CMD_GET_VERSION: u8 = 12;
+pub const CMD_SET_ACTIVE_DEVICE: u8 = 13;
+pub const CMD_CLEAR_ACTIVE_DEVICE: u8 = 14;
+pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
+pub const CMD_AUTO_CONNECT: u8 = 16;
 
 // ============ Response IDs ============
 
@@ -51,6 +55,7 @@ pub const RESP_STATUS: u8 = 2;
 pub const RESP_BONDS: u8 = 3;
 pub const RESP_CONFIG: u8 = 4;
 pub const RESP_VERSION: u8 = 5;
+pub const RESP_ACTIVE_DEVICE: u8 = 6;
 
 // ============ Event IDs ============
 
@@ -157,13 +162,30 @@ pub fn encode_request_simple(buf: &mut [u8], cmd_id: u8) -> EncResult {
 
 pub fn encode_request_connect(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(3)
+        e.array(4)
             .unwrap()
             .u8(CMD_CONNECT)
             .unwrap()
             .bytes(address)
             .unwrap()
             .u8(addr_kind)
+            .unwrap()
+            .bool(false) // ignore_bond = false
+            .unwrap();
+    })
+}
+
+pub fn encode_request_connect_fresh(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(4)
+            .unwrap()
+            .u8(CMD_CONNECT)
+            .unwrap()
+            .bytes(address)
+            .unwrap()
+            .u8(addr_kind)
+            .unwrap()
+            .bool(true) // ignore_bond = true
             .unwrap();
     })
 }
@@ -179,6 +201,38 @@ pub fn encode_request_subscribe_logs(buf: &mut [u8], level: u8) -> EncResult {
     })
 }
 
+pub fn encode_request_connect_with_profile(buf: &mut [u8], address: &[u8; 6], addr_kind: u8, profile_id: u8) -> EncResult {
+    // For now, use regular connect then set profile after pairing
+    // This is a helper that will be used in the CLI flow
+    encode_request_connect(buf, address, addr_kind)
+}
+
+pub fn encode_request_set_active_device(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(3)
+            .unwrap()
+            .u8(CMD_SET_ACTIVE_DEVICE)
+            .unwrap()
+            .bytes(address)
+            .unwrap()
+            .u8(addr_kind)
+            .unwrap();
+    })
+}
+
+pub fn encode_request_update_bond_profile(buf: &mut [u8], address: &[u8; 6], profile_id: u8) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(3)
+            .unwrap()
+            .u8(CMD_UPDATE_BOND_PROFILE)
+            .unwrap()
+            .bytes(address)
+            .unwrap()
+            .u8(profile_id)
+            .unwrap();
+    })
+}
+
 // ============ Response decoding (device -> host) ============
 
 #[derive(Debug)]
@@ -188,6 +242,7 @@ pub enum Response {
     Status { state: ConnectionState, bonded_count: u8, active_profile: u8 },
     Bonds { bonds: Vec<BondEntry> },
     Version { version: String },
+    ActiveDevice { address: [u8; 6], addr_kind: u8 },
 }
 
 #[derive(Debug)]
@@ -239,6 +294,15 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
         RESP_VERSION => {
             let version = d.str().map_err(|e| format!("version: {e}"))?.to_string();
             Ok(Response::Version { version })
+        }
+        RESP_ACTIVE_DEVICE => {
+            let addr_bytes = d.bytes().map_err(|e| format!("addr: {e}"))?;
+            let mut address = [0u8; 6];
+            if addr_bytes.len() >= 6 {
+                address.copy_from_slice(&addr_bytes[..6]);
+            }
+            let addr_kind = d.u8().map_err(|e| format!("kind: {e}"))?;
+            Ok(Response::ActiveDevice { address, addr_kind })
         }
         _ => Err(format!("unknown response id: {resp_id}")),
     }
