@@ -14,6 +14,8 @@ This firmware connects to Bluetooth LE HID devices (keyboards, mice, custom devi
 
 I built this to pair with the fantastic [Full Scroll Dial by Engineer Bo](https://www.youtube.com/watch?v=tzqJ1rJURgs) so I could easily switch it between computers with a USB switch. The idea is inspired by the excellent [`hid-remapper`](https://github.com/jfedor2/hid-remapper), but written in embedded Rust and with specific device profiles.
 
+Notably, it fully supports the high resolution scrolling events emitted by the Full Scroll Dial and translates them to USB HID. With the experimental 16-bit profile (mode `3`), there should be no loss of scrolling precision versus using the dial natively via Bluetooth. Additionally, the reporting rate (both for input via Bluetooth and output via USB HID) is enough to ensure fairly minimal added latency compared to connecting directly to the target system via Bluetooth.  
+
 ## Requirements
 
 - A Raspberry Pi Pico W with the CYW43439 wireless chipset. Other RP2040 boards with different wireless chipsets will not work. 
@@ -22,18 +24,15 @@ No other hardware is required, aside from the BLE device you want to convert to 
 
 ## Features
 
-- Rough profiles for the Full Scroll Dial and Logitech MX Master 3S
+- Profiles for the Full Scroll Dial and Logitech MX Master 3S
 - High reporting rate for connected devices
-- Experimental 16-bit reporting mode for the Full Scroll Dial for native scroll velocity
+- Experimental 16-bit reporting mode for the Full Scroll Dial for native scroll velocity (profile `3`)
 
 ## TODOs
 
-- Bonding and stored bonds. Currently devices must pair from scratch on each start. The Full Scroll Dial will happily pair whenever no other devices is connected. The MX Master 3S must be paired each time.
-- Bond management / deletion / reset
-- Various resiliency fixes. The Pico's BLE stack is a bit finnicky.
-- Select between devices and profiles at runtime (with a HID/serial interface + WebUSB)
-- Some solution for status reporting
+- Improved bond storage robustness
 - Generic mouse/keyboard device profiles
+- Battery reporting
 
 Longer term desired TODOs:
 
