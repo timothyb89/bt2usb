@@ -1,7 +1,7 @@
 # BT2USB Project Justfile
 # Commands to automate firmware building and flashing
 
-set shell := ["bash", "-c"]
+set windows-shell := ["bash", "-c"]
 
 # Default recipe - show available commands
 default:
