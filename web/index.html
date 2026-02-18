@@ -266,6 +266,7 @@
         <div class="info-grid">
           <span class="info-label">Connection:</span> <span id="bleState">-</span>
           <span class="info-label">Bonded devices:</span> <span id="bondedCount">-</span>
+          <span class="info-label">Battery:</span> <span id="batteryLevel">-</span>
           <span class="info-label">Firmware:</span> <span id="fwVersion">-</span>
         </div>
         <div class="panel-row" style="margin-top:0.5rem">
@@ -482,7 +483,7 @@
     const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
     const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17;
     const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
-    const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4;
+    const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4, EVT_BATTERY_LEVEL = 5;
     const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
     const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
     const PROFILE_NAMES = ['Generic', 'MX Master 3S', 'Full Scroll Dial', 'Full Scroll Dial 16-bit'];
@@ -624,6 +625,12 @@
           }
           break;
         }
+        case EVT_BATTERY_LEVEL: {
+          const [, level] = body;
+          const batteryEl = document.getElementById('batteryLevel');
+          batteryEl.textContent = (level === 0xFF) ? 'Unknown' : level + '%';
+          break;
+        }
       }
     }
 
@@ -697,6 +704,9 @@
         if (resp[0] === RESP_STATUS) {
           updateBleState(resp[1]);
           document.getElementById('bondedCount').textContent = resp[2];
+          const batteryEl = document.getElementById('batteryLevel');
+          const batteryLevel = resp[6];
+          batteryEl.textContent = (batteryLevel === undefined || batteryLevel === 0xFF) ? 'Unknown' : batteryLevel + '%';
         }
         const vResp = await sendSimpleRequest(CMD_GET_VERSION);
         if (vResp[0] === RESP_VERSION) {

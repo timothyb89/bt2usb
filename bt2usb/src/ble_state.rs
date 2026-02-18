@@ -71,6 +71,8 @@ pub enum BleEvent {
         address: [u8; 6],
         profile_id: u8,
     },
+    /// Battery level changed (0–100%).
+    BatteryLevel(u8),
 }
 
 // ============ Channels ============
@@ -94,6 +96,8 @@ pub struct StatusInfo {
     pub active_profile: u8,
     pub active_device_set: bool,
     pub active_device_address: [u8; 6],
+    /// Last known battery level (0–100), or 0xFF if unknown/disconnected.
+    pub battery_level: u8,
 }
 
 /// Response channel for GetStatus (capacity 1, only one request at a time).

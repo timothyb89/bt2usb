@@ -106,6 +106,7 @@ pub const EVT_CONNECTION_STATE: u8 = 1;
 pub const EVT_PAIRING_STATUS: u8 = 2;
 pub const EVT_LOG: u8 = 3;
 pub const EVT_BOND_STORED: u8 = 4;
+pub const EVT_BATTERY_LEVEL: u8 = 5;
 
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum PairingState {
@@ -235,7 +236,8 @@ pub fn encode_response_error(buf: &mut [u8], code: u8, message: &str) -> EncResu
 }
 
 /// Encode a status response.
-/// Extended format includes active device info (backward compatible - clients can ignore extra fields).
+/// Extended format includes active device info and battery level
+/// (backward compatible - clients can ignore extra fields).
 pub fn encode_response_status(
     buf: &mut [u8],
     state: ConnectionState,
@@ -243,9 +245,10 @@ pub fn encode_response_status(
     active_profile: u8,
     active_device_set: bool,
     active_device_address: &[u8; 6],
+    battery_level: u8,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(6)
+        e.array(7)
             .unwrap()
             .u8(RESP_STATUS)
             .unwrap()
@@ -258,6 +261,8 @@ pub fn encode_response_status(
             .bool(active_device_set)
             .unwrap()
             .bytes(active_device_address)
+            .unwrap()
+            .u8(battery_level)
             .unwrap();
     })
 }
@@ -383,6 +388,18 @@ pub fn encode_event_log(buf: &mut [u8], level: u8, message: &str) -> EncResult {
             .u8(level)
             .unwrap()
             .str(message)
+            .unwrap();
+    })
+}
+
+/// Encode a battery level event.
+pub fn encode_event_battery_level(buf: &mut [u8], level: u8) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(2)
+            .unwrap()
+            .u8(EVT_BATTERY_LEVEL)
+            .unwrap()
+            .u8(level)
             .unwrap();
     })
 }

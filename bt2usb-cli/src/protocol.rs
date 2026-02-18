@@ -65,6 +65,7 @@ pub const EVT_CONNECTION_STATE: u8 = 1;
 pub const EVT_PAIRING_STATUS: u8 = 2;
 pub const EVT_LOG: u8 = 3;
 pub const EVT_BOND_STORED: u8 = 4;
+pub const EVT_BATTERY_LEVEL: u8 = 5;
 
 // ============ Connection state ============
 
@@ -246,6 +247,7 @@ pub enum Response {
         active_profile: u8,
         active_device_set: bool,
         active_device_address: [u8; 6],
+        battery_level: u8,
     },
     Bonds { bonds: Vec<BondEntry> },
     Version { version: String },
@@ -287,12 +289,15 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 }
             }
 
+            let battery_level = d.u8().unwrap_or(0xFF);
+
             Ok(Response::Status {
                 state,
                 bonded_count,
                 active_profile,
                 active_device_set,
                 active_device_address,
+                battery_level,
             })
         }
         RESP_BONDS => {
@@ -358,6 +363,9 @@ pub enum Event {
         address: [u8; 6],
         profile_id: u8,
     },
+    BatteryLevel {
+        level: u8,
+    },
 }
 
 pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
@@ -404,6 +412,10 @@ pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
             }
             let profile_id = d.u8().map_err(|e| format!("profile: {e}"))?;
             Ok(Event::BondStored { address, profile_id })
+        }
+        EVT_BATTERY_LEVEL => {
+            let level = d.u8().map_err(|e| format!("level: {e}"))?;
+            Ok(Event::BatteryLevel { level })
         }
         _ => Err(format!("unknown event id: {evt_id}")),
     }

@@ -5,6 +5,8 @@
 //! - HID report event types for communication between tasks
 //! - BLE HID report parsing
 
+use core::sync::atomic::AtomicU8;
+
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use trouble_host::prelude::*;
@@ -22,6 +24,13 @@ pub const HID_REPORT_MAP_CHAR_UUID: Uuid = Uuid::new_short(0x2A4B);
 
 /// Battery Service UUID (0x180F)
 pub const BATTERY_SERVICE_UUID: Uuid = Uuid::new_short(0x180F);
+
+/// Battery Level Characteristic UUID (0x2A19)
+pub const BATTERY_LEVEL_CHAR_UUID: Uuid = Uuid::new_short(0x2A19);
+
+/// Last known battery level from the connected device.
+/// 0xFF = unknown / not connected. Updated by the BLE task, read by any core.
+pub static BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
 
 /// Maximum HID report size we'll handle
 pub const MAX_HID_REPORT_SIZE: usize = 64;

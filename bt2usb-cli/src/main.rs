@@ -141,6 +141,7 @@ fn cmd_status(transport: &mut Transport) -> Result<()> {
             active_profile,
             active_device_set,
             active_device_address,
+            battery_level,
         } => {
             println!("  State:          {}", state.label().bold());
             println!("  Bonded devices: {bonded_count}");
@@ -155,6 +156,13 @@ fn cmd_status(transport: &mut Transport) -> Result<()> {
             } else {
                 println!("  Active device:  {} (auto-connect disabled)", "None".dimmed());
             }
+
+            let battery_str = if battery_level == 0xFF {
+                "Unknown".dimmed().to_string()
+            } else {
+                format!("{}%", battery_level).bold().to_string()
+            };
+            println!("  Battery:        {battery_str}");
         }
         Response::Error { code, message } => {
             eprintln!("{} (code {code}): {message}", "Error".red());
@@ -446,6 +454,9 @@ fn print_event(event: &Event) {
                 "OK".green(),
                 format_address(address).bold()
             );
+        }
+        Event::BatteryLevel { level } => {
+            println!("  Battery: {}%", level.to_string().bold());
         }
     }
 }

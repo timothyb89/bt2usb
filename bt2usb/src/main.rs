@@ -35,7 +35,8 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select4, Either, Either4};
+use embassy_time::Ticker;
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::gpio::{Level, Output};
@@ -541,6 +542,7 @@ async fn core0_ble_main(
                         active_profile: active_profile.to_id(),
                         active_device_set: has_active,
                         active_device_address: active_addr,
+                        battery_level: ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed),
                     };
 
                     let _ = ble_state::STATUS_RESPONSE_CHANNEL.try_send(status);
@@ -1118,10 +1120,103 @@ async fn ble_connect_and_run<'a, C: Controller>(
                         let _ = BLE_EVENT_CHANNEL
                             .try_send(BleEvent::StateChanged(ConnectionState::Ready));
 
+                        // Battery Service discovery (best-effort — HID continues regardless)
+                        let battery_char: Option<Characteristic<u8>> =
+                            match embassy_time::with_timeout(
+                                embassy_time::Duration::from_secs(5),
+                                client.services_by_uuid(&Uuid::new_short(0x180F)),
+                            )
+                            .await
+                            {
+                                Ok(Ok(svcs)) if !svcs.is_empty() => {
+                                    match client
+                                        .characteristic_by_uuid(&svcs[0], &Uuid::new_short(0x2A19))
+                                        .await
+                                    {
+                                        Ok(c) => {
+                                            info!("Found battery level characteristic");
+                                            Some(c)
+                                        }
+                                        Err(_) => {
+                                            info!("Battery level characteristic not found");
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    info!("Battery service not found");
+                                    None
+                                }
+                            };
+
+                        // Read initial level immediately so GetStatus is populated right away
+                        if let Some(ref c) = battery_char {
+                            let mut data = [0u8; 1];
+                            match embassy_time::with_timeout(
+                                embassy_time::Duration::from_secs(3),
+                                client.read_characteristic(c, &mut data),
+                            )
+                            .await
+                            {
+                                Ok(Ok(_)) => {
+                                    let level = data[0];
+                                    ble_hid::BATTERY_LEVEL.store(level, Ordering::Relaxed);
+                                    info!("Initial battery level: {}%", level);
+                                    let _ = BLE_EVENT_CHANNEL
+                                        .try_send(BleEvent::BatteryLevel(level));
+                                }
+                                _ => info!("Could not read initial battery level"),
+                            }
+                        }
+
+                        // Subscribe for ongoing notifications (best-effort)
+                        let mut battery_listener = if let Some(ref c) = battery_char {
+                            match client.subscribe(c, false).await {
+                                Ok(l) => {
+                                    info!("Subscribed to battery notifications");
+                                    Some(l)
+                                }
+                                Err(_) => {
+                                    info!("Battery notifications not supported by device");
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                        // Polling fallback: if no notifications, poll every 5 minutes
+                        let mut battery_poll_ticker =
+                            if battery_listener.is_none() && battery_char.is_some() {
+                                info!("Battery poll fallback active (5 min interval)");
+                                Some(Ticker::every(embassy_time::Duration::from_secs(5 * 60)))
+                            } else {
+                                None
+                            };
+
                         // HID report loop
                         loop {
-                            match select(listener.next(), BLE_CMD_CHANNEL.receive()).await {
-                                Either::First(notification) => {
+                            match select4(
+                                listener.next(),
+                                BLE_CMD_CHANNEL.receive(),
+                                async {
+                                    if let Some(ref mut bl) = battery_listener {
+                                        bl.next().await
+                                    } else {
+                                        core::future::pending().await
+                                    }
+                                },
+                                async {
+                                    if let Some(ref mut t) = battery_poll_ticker {
+                                        t.next().await
+                                    } else {
+                                        core::future::pending().await
+                                    }
+                                },
+                            )
+                            .await
+                            {
+                                Either4::First(notification) => {
                                     let data = notification.as_ref();
                                     if !data.is_empty() {
                                         let preview_len = data.len().min(8);
@@ -1135,7 +1230,7 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                         HID_REPORT_CHANNEL.send(report).await;
                                     }
                                 }
-                                Either::Second(cmd) => {
+                                Either4::Second(cmd) => {
                                     info!("Command received: {:?}", cmd);
                                     match cmd {
                                         BleCommand::Disconnect => {
@@ -1238,6 +1333,7 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                                 active_profile: active_profile.to_id(),
                                                 active_device_set: has_active,
                                                 active_device_address: active_addr,
+                                                battery_level: ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed),
                                             };
 
                                             let _ = ble_state::STATUS_RESPONSE_CHANNEL.try_send(status);
@@ -1288,6 +1384,38 @@ async fn ble_connect_and_run<'a, C: Controller>(
                                         _ => {}
                                     }
                                 }
+                                Either4::Third(battery_notif) => {
+                                    let data = battery_notif.as_ref();
+                                    if !data.is_empty() {
+                                        let level = data[0];
+                                        ble_hid::BATTERY_LEVEL.store(level, Ordering::Relaxed);
+                                        info!("Battery level update: {}%", level);
+                                        let _ = BLE_EVENT_CHANNEL
+                                            .try_send(BleEvent::BatteryLevel(level));
+                                    }
+                                }
+                                Either4::Fourth(()) => {
+                                    // Polling fallback: read battery level from characteristic
+                                    if let Some(ref c) = battery_char {
+                                        let mut data = [0u8; 1];
+                                        match embassy_time::with_timeout(
+                                            embassy_time::Duration::from_secs(3),
+                                            client.read_characteristic(c, &mut data),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(_)) => {
+                                                let level = data[0];
+                                                ble_hid::BATTERY_LEVEL
+                                                    .store(level, Ordering::Relaxed);
+                                                info!("Battery poll: {}%", level);
+                                                let _ = BLE_EVENT_CHANNEL
+                                                    .try_send(BleEvent::BatteryLevel(level));
+                                            }
+                                            _ => info!("Battery poll read failed"),
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1301,6 +1429,9 @@ async fn ble_connect_and_run<'a, C: Controller>(
                 }
             })
             .await;
+
+            // Clear battery level on any disconnect path
+            ble_hid::BATTERY_LEVEL.store(0xFF, Ordering::Relaxed);
 
             match run_result {
                 Either::First(_) => {

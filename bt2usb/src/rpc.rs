@@ -225,6 +225,9 @@ fn encode_ble_event(
             address,
             profile_id,
         } => protocol::encode_event_bond_stored(cbor_buf, address, *profile_id).unwrap_or(0),
+        BleEvent::BatteryLevel(level) => {
+            protocol::encode_event_battery_level(cbor_buf, *level).unwrap_or(0)
+        }
     }
 }
 
@@ -255,11 +258,12 @@ async fn dispatch_request(
                         status.active_profile,
                         status.active_device_set,
                         &status.active_device_address,
+                        status.battery_level,
                     ).unwrap_or(0)
                 }
                 Err(_) => {
                     // Timeout - use defaults
-                    protocol::encode_response_status(cbor_buf, last_state, 0, 0, false, &[0u8; 6]).unwrap_or(0)
+                    protocol::encode_response_status(cbor_buf, last_state, 0, 0, false, &[0u8; 6], 0xFF).unwrap_or(0)
                 }
             }
         }
