@@ -14,6 +14,7 @@ pub mod commands;
 pub mod connection;
 pub mod gatt;
 
+use cyw43_pio::PioSpi;
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
@@ -24,12 +25,13 @@ use embassy_rp::peripherals::{DMA_CH0, FLASH, PIN_23, PIN_24, PIN_25, PIN_29, PI
 use embassy_rp::pio::Pio;
 use embassy_rp::Peri;
 use embassy_time::Timer;
-use cyw43_pio::PioSpi;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 use trouble_host::scan::Scanner;
 
-use crate::ble_state::{BleCommand, BleEvent, RpcScannerHandler, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};
+use crate::ble_state::{
+    BleCommand, BleEvent, RpcScannerHandler, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL,
+};
 use crate::bonding;
 use crate::device_profile::DeviceProfile;
 use crate::preferences;
@@ -94,7 +96,7 @@ pub async fn core0_ble_main(
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
-        cyw43_pio::DEFAULT_CLOCK_DIVIDER * 2, // Half-speed for signal integrity
+        cyw43_pio::DEFAULT_CLOCK_DIVIDER * 4, // Work around marginal SPI signal integrity
         pio.irq0,
         cs,
         pin_24,
@@ -212,7 +214,8 @@ pub async fn core0_ble_main(
         let mut pending_cmd: Option<BleCommand> = None;
 
         loop {
-            let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Disconnected));
+            let _ =
+                BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Disconnected));
             info!("[core0] BLE state: Idle. Waiting for command...");
 
             let cmd = if let Some(c) = pending_cmd.take() {
@@ -232,9 +235,20 @@ pub async fn core0_ble_main(
 
                 BleCommand::StopScan => None,
 
-                BleCommand::Connect { address, addr_kind, ignore_bond: _ } => {
-                    let kind = if addr_kind == 1 { AddrKind::RANDOM } else { AddrKind::PUBLIC };
-                    let target = Address { kind, addr: BdAddr::new(address) };
+                BleCommand::Connect {
+                    address,
+                    addr_kind,
+                    ignore_bond: _,
+                } => {
+                    let kind = if addr_kind == 1 {
+                        AddrKind::RANDOM
+                    } else {
+                        AddrKind::PUBLIC
+                    };
+                    let target = Address {
+                        kind,
+                        addr: BdAddr::new(address),
+                    };
                     active_profile = DeviceProfile::Generic;
 
                     let has_stored_bond = loaded_bonds
@@ -243,9 +257,16 @@ pub async fn core0_ble_main(
 
                     let mut central = scanner.into_inner();
                     let result = connection::ble_connect_and_run(
-                        &mut central, &stack, &mut flash, target,
-                        &mut active_profile, has_stored_bond, &loaded_bonds, &active_device_pref,
-                    ).await;
+                        &mut central,
+                        &stack,
+                        &mut flash,
+                        target,
+                        &mut active_profile,
+                        has_stored_bond,
+                        &loaded_bonds,
+                        &active_device_pref,
+                    )
+                    .await;
                     scanner = Scanner::new(central);
                     result
                 }
@@ -253,9 +274,14 @@ pub async fn core0_ble_main(
                 BleCommand::AutoConnect => {
                     let mut central = scanner.into_inner();
                     let result = resolve_auto_connect_and_run(
-                        &mut central, &stack, &mut flash, &mut active_profile,
-                        &mut loaded_bonds, &active_device_pref,
-                    ).await;
+                        &mut central,
+                        &stack,
+                        &mut flash,
+                        &mut active_profile,
+                        &mut loaded_bonds,
+                        &active_device_pref,
+                    )
+                    .await;
                     scanner = Scanner::new(central);
                     result
                 }
@@ -275,7 +301,10 @@ pub async fn core0_ble_main(
                     None
                 }
 
-                BleCommand::UpdateBondProfile { address, profile_id } => {
+                BleCommand::UpdateBondProfile {
+                    address,
+                    profile_id,
+                } => {
                     if let Some(new_bonds) =
                         commands::handle_update_bond_profile(&mut flash, &address, profile_id).await
                     {
@@ -341,7 +370,9 @@ fn determine_initial_profile(
 ///
 /// Scan results are emitted via the scanner_handler's `on_adv_reports` callback.
 /// The scan ends on: StopScan command, Connect command (re-queued), or 30s timeout.
-async fn run_scan_session<C: Controller + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>>(
+async fn run_scan_session<
+    C: Controller + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>,
+>(
     scanner: &mut Scanner<'_, C, DefaultPacketPool>,
 ) {
     info!("Starting BLE scan...");
@@ -411,7 +442,11 @@ async fn resolve_auto_connect_and_run<'a, C: Controller>(
     } else if !loaded_bonds.is_empty() {
         let lb = &loaded_bonds[0];
         let addr_bytes = lb.bond.identity.bd_addr.raw();
-        let kind = if (addr_bytes[5] & 0xC0) == 0xC0 { 1u8 } else { 0u8 };
+        let kind = if (addr_bytes[5] & 0xC0) == 0xC0 {
+            1u8
+        } else {
+            0u8
+        };
         let mut addr = [0u8; 6];
         addr.copy_from_slice(addr_bytes);
         (addr, kind)
@@ -427,20 +462,40 @@ async fn resolve_auto_connect_and_run<'a, C: Controller>(
         .find(|lb| lb.bond.identity.bd_addr.raw() == &target_addr);
 
     if bond_info.is_none() {
-        warn!("AutoConnect: no bond found for active device {:?}", target_addr);
+        warn!(
+            "AutoConnect: no bond found for active device {:?}",
+            target_addr
+        );
         rpc_log::warn("AutoConnect: device not bonded");
         return None;
     }
 
     *active_profile = DeviceProfile::from_id(bond_info.unwrap().profile_id);
-    info!("Auto-connecting to {:?} (profile: {:?})", target_addr, active_profile);
+    info!(
+        "Auto-connecting to {:?} (profile: {:?})",
+        target_addr, active_profile
+    );
     rpc_log::info("Auto-connecting to bonded device");
 
-    let kind = if target_kind == 1 { AddrKind::RANDOM } else { AddrKind::PUBLIC };
-    let target = Address { kind, addr: BdAddr::new(target_addr) };
+    let kind = if target_kind == 1 {
+        AddrKind::RANDOM
+    } else {
+        AddrKind::PUBLIC
+    };
+    let target = Address {
+        kind,
+        addr: BdAddr::new(target_addr),
+    };
 
     connection::ble_connect_and_run(
-        central, stack, flash, target,
-        active_profile, true, loaded_bonds, active_device_pref,
-    ).await
+        central,
+        stack,
+        flash,
+        target,
+        active_profile,
+        true,
+        loaded_bonds,
+        active_device_pref,
+    )
+    .await
 }
