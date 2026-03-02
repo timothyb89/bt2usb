@@ -1,19 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bt2usb", "bt2usb-cli", "trouble/host", "trouble/host-macros"]
-
-# Shared profile settings can be useful but not strictly required unless desired.
-# The user asked to keep it simple.
-
-# However, bt2usb/Cargo.toml had [profile.release] lto = true etc.
-# Those apply when building that crate specifically or workspace-wide?
-# Profiles in root Cargo.toml apply to workspace.
-# Profiles in member Cargo.toml are IGNORED if building from workspace root?
-# No, profiles are merging, but generally workspace root profile wins for workspace commands.
-# Let's copy the profiles from `bt2usb/Cargo.toml` to root because they are important for firmware size.
-# Wait, `bt2usb/Cargo.toml` has `[profile.release] lto = true` etc.
-# If I don't put them in root, they might be lost when building from root.
-# Let's check `bt2usb/Cargo.toml` content again.
+members = ["bt2usb", "bt2usb-cli"]
 
 [profile.release]
 debug = 2
