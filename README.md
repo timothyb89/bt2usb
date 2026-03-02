@@ -38,6 +38,64 @@ Longer term desired TODOs:
 
 - Bluetooth Classic support. Supported by the Pico W, but not by `trouble`.
 
+## Flashing
+
+### Method 1: Drag-and-Drop (No debugger required)
+
+1. Build the UF2 file: `just release`
+2. Hold the BOOTSEL button on the Pico W while plugging it into USB
+3. The Pico will appear as a USB mass storage device (drive letter like `RPI-RP2`)
+4. Drag and drop `bt2usb/bt2usb.uf2` onto the drive
+5. The Pico will automatically reboot and start running the firmware
+
+### Method 2: With Debug Probe (for development)
+
+If you have a debug probe connected:
+
+```bash
+just dev          # Development build with RTT logging
+just run release  # Release build
+```
+
+## Usage
+
+Once flashed, the Pico should expose both a USB HID input, as well as a HID interface for configuration. To configure it, you can use either the web interface or the CLI tool.
+
+### Web UI
+
+You can open the web UI locally in any Chromium-based browser by downloading [`web/index.html`](./web/index.html). Alternative, you can browse to https://timothyb89.org/bt2usb/ for a publicly-hosted version.
+
+1. Select the "Connect" button at the top of the page to open the "BT2USB Bridge" device.
+2. Once connected, use the "Start Scan" button to search for pairable devices.
+3. When the desired device is found, select a profile if needed (for the Full Scroll Dial, 16bit mode is recommended for modern Linux and Windows hosts), and then select "Connect".
+
+It should connect to the device and begin forwarding input events.
+
+### CLI
+
+Grab `bt2usb-cli` from the releases page and ensure it's in your `$PATH`, then:
+
+```code
+# Ensure you can communicate with the device
+$ bt2usb-cli status 
+
+# Scan for pairable devices
+$ bt2usb-cli scan
+
+# Connect to a device
+$ bt2usb-cli connect <address> 
+
+# If needed, set a profile. For the Full Scroll Dial on modern Windows/Linux
+# hosts, use 16bit mode (profile 3)
+$ bt2usb-cli set-profile <address> <profile>
+
+# Mark the device as active (enables auto connect)
+$ bt2usb-cli set-active-device <address>
+
+# See `help` for all commands
+$ bt2usb-cli help
+```
+
 ## Building
 
 ### Quick Start with Just
@@ -93,25 +151,6 @@ foreach ($file in @("43439A0.bin", "43439A0_btfw.bin", "43439A0_clm.bin")) {
 ```bash
 cargo build --package bt2usb --release
 elf2uf2-rs target/thumbv6m-none-eabi/release/bt2usb bt2usb/bt2usb.uf2
-```
-
-## Flashing
-
-### Method 1: Drag-and-Drop (No debugger required)
-
-1. Build the UF2 file: `just release`
-2. Hold the BOOTSEL button on the Pico W while plugging it into USB
-3. The Pico will appear as a USB mass storage device (drive letter like `RPI-RP2`)
-4. Drag and drop `bt2usb/bt2usb.uf2` onto the drive
-5. The Pico will automatically reboot and start running the firmware
-
-### Method 2: With Debug Probe (for development)
-
-If you have a debug probe connected:
-
-```bash
-just dev          # Development build with RTT logging
-just run release  # Release build
 ```
 
 ## License
