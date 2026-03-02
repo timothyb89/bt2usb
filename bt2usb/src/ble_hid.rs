@@ -9,6 +9,7 @@ use core::sync::atomic::AtomicU8;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use trouble_host::prelude::*;
 
 use crate::device_profile::DeviceProfile;
@@ -31,6 +32,11 @@ pub const BATTERY_LEVEL_CHAR_UUID: Uuid = Uuid::new_short(0x2A19);
 /// Last known battery level from the connected device.
 /// 0xFF = unknown / not connected. Updated by the BLE task, read by any core.
 pub static BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
+
+/// Signal from BLE (Core 0) to USB battery task (Core 1).
+/// Signaled with the new battery level (0-100) whenever it changes.
+/// The USB task wakes up and sends a USB HID battery input report.
+pub static BATTERY_USB_SIGNAL: Signal<CriticalSectionRawMutex, u8> = Signal::new();
 
 /// Maximum HID report size we'll handle
 pub const MAX_HID_REPORT_SIZE: usize = 64;

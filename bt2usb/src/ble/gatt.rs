@@ -283,6 +283,7 @@ async fn read_battery_level<'a, C: Controller>(
         Ok(Ok(_)) => {
             let level = data[0];
             ble_hid::BATTERY_LEVEL.store(level, Ordering::Relaxed);
+            ble_hid::BATTERY_USB_SIGNAL.signal(level);
             info!("Battery level: {}%", level);
             let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::BatteryLevel(level));
         }
@@ -374,6 +375,7 @@ async fn run_hid_event_loop<'a, 'c, C: Controller>(
                 if !data.is_empty() {
                     let level = data[0];
                     ble_hid::BATTERY_LEVEL.store(level, Ordering::Relaxed);
+                    ble_hid::BATTERY_USB_SIGNAL.signal(level);
                     info!("Battery level update: {}%", level);
                     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::BatteryLevel(level));
                 }
