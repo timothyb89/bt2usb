@@ -40,6 +40,7 @@ enum StartError {
 /// Bond storage is done directly via flash (all on Core 0, no cross-core channel needed).
 /// Returns `Some(BleCommand)` if interrupted by a command that should be re-dispatched,
 /// or `None` if the connection ended naturally or after max retries.
+#[allow(clippy::too_many_arguments)]
 pub async fn ble_connect_and_run<'a, C: Controller>(
     central: &mut Central<'a, C, DefaultPacketPool>,
     stack: &'a Stack<'a, C, DefaultPacketPool>,

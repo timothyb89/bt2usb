@@ -72,6 +72,7 @@ async fn led_task(control: &'static mut cyw43::Control<'static>) {
 /// Runs on Core 0 where `embassy_rp::init()` has already set up DMA and timer interrupts.
 /// Flash bond operations are done inline (no cross-core channel needed since flash and
 /// BLE are on the same core).
+#[allow(clippy::too_many_arguments)]
 #[embassy_executor::task]
 pub async fn core0_ble_main(
     spawner: Spawner,
@@ -138,7 +139,6 @@ pub async fn core0_ble_main(
     }
 
     let active_device_pref = preferences::load_active_device(&mut flash).await;
-    let auto_reconnect = preferences::load_auto_reconnect(&mut flash).await;
 
     // Load axis multiplier preferences
     {
@@ -164,8 +164,6 @@ pub async fn core0_ble_main(
     } else {
         info!("[core0] No active device preference set");
     }
-    info!("[core0] Auto-reconnect: {}", auto_reconnect);
-
     // --- Build BLE stack ---
     let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
 
@@ -222,8 +220,8 @@ pub async fn core0_ble_main(
 
     info!("[core0] BLE Central initialized");
 
-    // Auto-connect on startup if enabled and we have an active device preference
-    if auto_reconnect && active_device_pref.is_some() {
+    // Auto-connect on startup if an active device preference is set
+    if active_device_pref.is_some() {
         let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
     }
 
@@ -272,7 +270,7 @@ pub async fn core0_ble_main(
 
                     let has_stored_bond = loaded_bonds
                         .iter()
-                        .any(|lb| lb.bond.identity.bd_addr.raw() == &address);
+                        .any(|lb| lb.bond.identity.bd_addr.raw() == address);
 
                     let mut central = scanner.into_inner();
                     let result = connection::ble_connect_and_run(
@@ -380,7 +378,7 @@ fn determine_initial_profile(
     if let Some(ref pref) = active_device_pref {
         loaded_bonds
             .iter()
-            .find(|lb| lb.bond.identity.bd_addr.raw() == &pref.address)
+            .find(|lb| lb.bond.identity.bd_addr.raw() == pref.address)
             .map(|lb| DeviceProfile::from_id(lb.profile_id))
             .unwrap_or(DeviceProfile::Generic)
     } else if !loaded_bonds.is_empty() {
@@ -403,10 +401,12 @@ async fn run_scan_session<
     rpc_log::info("Scanning for BLE HID devices");
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Scanning));
 
-    let mut scan_config = trouble_host::connection::ScanConfig::default();
-    scan_config.active = true;
-    scan_config.interval = embassy_time::Duration::from_millis(100);
-    scan_config.window = embassy_time::Duration::from_millis(100);
+    let scan_config = trouble_host::connection::ScanConfig {
+        active: true,
+        interval: embassy_time::Duration::from_millis(100),
+        window: embassy_time::Duration::from_millis(100),
+        ..Default::default()
+    };
 
     match scanner.scan(&scan_config).await {
         Ok(_session) => loop {
@@ -483,7 +483,7 @@ async fn resolve_auto_connect_and_run<'a, C: Controller>(
     // Find the bond for this device
     let bond_info = loaded_bonds
         .iter()
-        .find(|lb| lb.bond.identity.bd_addr.raw() == &target_addr);
+        .find(|lb| lb.bond.identity.bd_addr.raw() == target_addr);
 
     if bond_info.is_none() {
         warn!(

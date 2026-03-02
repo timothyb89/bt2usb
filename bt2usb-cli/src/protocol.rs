@@ -276,7 +276,9 @@ pub enum Response {
         version: String,
     },
     ActiveDevice {
+        #[allow(dead_code)]
         address: [u8; 6],
+        #[allow(dead_code)]
         addr_kind: u8,
     },
 }
@@ -387,6 +389,7 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
 pub enum Event {
     ScanResult {
         address: [u8; 6],
+        #[allow(dead_code)]
         addr_kind: u8,
         name: String,
         rssi: i8,
@@ -394,6 +397,7 @@ pub enum Event {
     },
     ConnectionState {
         state: self::ConnectionState,
+        #[allow(dead_code)]
         address: [u8; 6],
     },
     PairingStatus {

@@ -10,7 +10,7 @@ use defmt::*;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::Handler;
-use usbd_hid::descriptor::{KeyboardReport, MouseReport};
+use usbd_hid::descriptor::MouseReport;
 
 /// Whether the host has enabled high-resolution scroll mode via the
 /// Resolution Multiplier Feature report.
