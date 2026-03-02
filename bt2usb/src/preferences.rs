@@ -22,7 +22,6 @@ fn flash_range() -> Range<u32> {
 
 /// Preference keys - each key maps to a different preference
 const PREF_KEY_ACTIVE_DEVICE: u8 = 0;
-const PREF_KEY_AUTO_RECONNECT: u8 = 1;
 pub const PREF_KEY_SCROLL_MULTIPLIER: u8 = 2;
 pub const PREF_KEY_PAN_MULTIPLIER: u8 = 3;
 pub const PREF_KEY_X_MULTIPLIER: u8 = 4;
@@ -57,34 +56,6 @@ impl<'a> Value<'a> for ActiveDevice {
         address.copy_from_slice(&buffer[0..6]);
         let addr_kind = buffer[6];
         Ok(ActiveDevice { address, addr_kind })
-    }
-}
-
-/// Auto-reconnect preference - whether to automatically reconnect on startup
-#[derive(Clone, Debug)]
-pub struct AutoReconnect {
-    pub enabled: bool,
-}
-
-impl<'a> Value<'a> for AutoReconnect {
-    fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        if buffer.len() < 1 {
-            return Err(SerializationError::BufferTooSmall);
-        }
-        buffer[0] = if self.enabled { 1 } else { 0 };
-        Ok(1)
-    }
-
-    fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
-    where
-        Self: Sized,
-    {
-        if buffer.len() < 1 {
-            return Err(SerializationError::BufferTooSmall);
-        }
-        Ok(AutoReconnect {
-            enabled: buffer[0] != 0,
-        })
     }
 }
 
@@ -160,70 +131,6 @@ pub async fn clear_active_device(
         addr_kind: 0,
     };
     set_active_device(flash, &dummy).await
-}
-
-/// Load the auto-reconnect preference
-/// Returns true by default if not set
-pub async fn load_auto_reconnect(flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>) -> bool {
-    let mut buffer = [0u8; 64];
-
-    match fetch_item::<u8, AutoReconnect, _>(
-        flash,
-        flash_range(),
-        &mut NoCache::new(),
-        &mut buffer,
-        &PREF_KEY_AUTO_RECONNECT,
-    )
-    .await
-    {
-        Ok(Some(pref)) => {
-            debug!("Loaded auto-reconnect: {}", pref.enabled);
-            pref.enabled
-        }
-        Ok(None) => {
-            debug!("No auto-reconnect preference set, defaulting to true");
-            true // Default to enabled
-        }
-        Err(e) => {
-            warn!(
-                "Error loading auto-reconnect preference: {:?}",
-                defmt::Debug2Format(&e)
-            );
-            true // Default to enabled
-        }
-    }
-}
-
-/// Set the auto-reconnect preference
-pub async fn set_auto_reconnect(
-    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
-    enabled: bool,
-) -> Result<(), ()> {
-    let mut buffer = [0u8; 64];
-    let pref = AutoReconnect { enabled };
-
-    match store_item(
-        flash,
-        flash_range(),
-        &mut NoCache::new(),
-        &mut buffer,
-        &PREF_KEY_AUTO_RECONNECT,
-        &pref,
-    )
-    .await
-    {
-        Ok(_) => {
-            info!("Set auto-reconnect: {}", enabled);
-            Ok(())
-        }
-        Err(e) => {
-            error!(
-                "Failed to set auto-reconnect: {:?}",
-                defmt::Debug2Format(&e)
-            );
-            Err(())
-        }
-    }
 }
 
 /// Axis multiplier value (percentage, e.g. 100 = 1.0x)

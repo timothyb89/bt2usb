@@ -139,6 +139,7 @@ pub enum PairingState {
 // ============ Error type ============
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum ProtocolError {
     BufferTooSmall,
     InvalidCbor,

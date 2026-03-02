@@ -20,7 +20,7 @@
 //! - [`ble`] — BLE central logic: CYW43 init, connection, GATT discovery, HID loop
 //! - [`usb`] — Core 1 USB device setup and HID report forwarding
 //! - [`bonding`] — Flash-based BLE bond storage
-//! - [`preferences`] — Flash-based user preferences (active device, auto-reconnect)
+//! - [`preferences`] — Flash-based user preferences (active device, axis multipliers)
 //! - [`device_profile`] — Device-specific HID report translation
 //! - [`protocol`] — RPC wire format (COBS-framed CBOR)
 //! - [`rpc`] — RPC handler over USB HID vendor interface
@@ -89,7 +89,7 @@ pub fn system_reset() -> ! {
         core::ptr::write_volatile((WATCHDOG_BASE + 0x04) as *mut u32, 1);
 
         // Enable watchdog (bit 30)
-        core::ptr::write_volatile((WATCHDOG_BASE + 0x00) as *mut u32, 1 << 30);
+        core::ptr::write_volatile(WATCHDOG_BASE as *mut u32, 1 << 30);
 
         // Spin until watchdog fires
         loop {

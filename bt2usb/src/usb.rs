@@ -15,7 +15,6 @@ use embassy_futures::select::{select, Either};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
-use embassy_time;
 use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};

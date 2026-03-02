@@ -38,6 +38,7 @@ impl DeviceProfile {
     }
 
     /// Look up a profile by BLE device name
+    #[allow(dead_code)]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "MX Master 3S" => Some(Self::MxMaster3S),
@@ -240,7 +241,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
     // Check if high byte is 0xFE (values within [-512, -257])
     if (raw & 0xFF00u16 as i16) == 0xFE00u16 as i16 {
         // Proposed fix: set bit 8 to restore 0xFF high byte
-        let proposed = (raw | 0x0100) as i16;
+        let proposed = raw | 0x0100;
         let prev = PREV_SCROLL_RAW.load(Ordering::Relaxed) as i16;
 
         let diff_raw = (raw as i32 - prev as i32).abs();

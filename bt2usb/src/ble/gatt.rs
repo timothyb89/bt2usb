@@ -101,8 +101,8 @@ pub async fn run_gatt_session<'a, C: Controller>(
 ///
 /// This runs inside `select(client.task(), ...)` so the GATT client driver
 /// is active for all operations.
-async fn run_hid_session<'a, 'c, C: Controller>(
-    client: &'c GattClient<'a, C, DefaultPacketPool, 10>,
+async fn run_hid_session<'a, C: Controller>(
+    client: &GattClient<'a, C, DefaultPacketPool, 10>,
     conn: &Connection<'a, DefaultPacketPool>,
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     active_profile: &mut DeviceProfile,
@@ -306,6 +306,7 @@ async fn read_battery_level<'a, C: Controller>(
 /// 4. Battery level poll timer (fallback if notifications not supported)
 ///
 /// Returns a `GattSessionResult` indicating how the loop ended.
+#[allow(clippy::too_many_arguments)]
 async fn run_hid_event_loop<'a, 'c, C: Controller>(
     listener: &mut NotificationListener<'c, 512>,
     battery_listener: &mut Option<NotificationListener<'c, 512>>,
