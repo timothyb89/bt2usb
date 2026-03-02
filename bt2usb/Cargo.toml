@@ -51,7 +51,7 @@ portable-atomic = { version = "1", features = ["critical-section"] }
 
 # Random number generation for BLE security
 rand_core = "0.6"
-rand_chacha = { version = "0.3", default-features = false }
+rand_chacha = { version = "0.10", default-features = false }
 
 # Flash storage for bonding
 embedded-storage = "0.3"
