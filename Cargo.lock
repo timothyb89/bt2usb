@@ -225,7 +225,7 @@ dependencies = [
  "rand_core 0.6.4",
  "sequential-storage",
  "static_cell",
- "trouble-host",
+ "trouble-host 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "usbd-hid 0.9.0",
 ]
 
@@ -2292,13 +2292,52 @@ dependencies = [
  "static_cell",
  "tokio",
  "tokio-serial",
- "trouble-host-macros",
+ "trouble-host-macros 0.3.0",
+ "zerocopy",
+]
+
+[[package]]
+name = "trouble-host"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2881b4859001fe1f48445145cda5149deac9110b1d707ec0a251b7ff6d8bdfa4"
+dependencies = [
+ "aes",
+ "bt-hci",
+ "cmac",
+ "defmt 1.0.1",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-io",
+ "futures",
+ "heapless 0.9.2",
+ "p256",
+ "rand",
+ "rand_chacha",
+ "rand_core 0.6.4",
+ "static_cell",
+ "trouble-host-macros 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "zerocopy",
 ]
 
 [[package]]
 name = "trouble-host-macros"
 version = "0.3.0"
+dependencies = [
+ "convert_case",
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.115",
+ "uuid",
+]
+
+[[package]]
+name = "trouble-host-macros"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcb85bec3a8393c22ca1a7c25c82c2d33689ab412f3487c492fd01a033ede7c2"
 dependencies = [
  "convert_case",
  "darling",
