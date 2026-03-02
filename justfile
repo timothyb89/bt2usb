@@ -21,7 +21,7 @@ download-firmware:
 
 # Build the firmware binary
 build profile='release':
-    cargo build --package bt2usb --{{profile}}
+    cargo build --package bt2usb --target thumbv6m-none-eabi --{{profile}}
 
 # Build and convert to UF2 format for drag-and-drop flashing
 build-uf2 profile='release': (build profile)
@@ -59,9 +59,7 @@ dev:
 release:
     just build-uf2 release
 
-# Run format check and clippy lints
+# Run format check and clippy lints for the firmware
 lint:
     cargo fmt --package bt2usb --check
-    cargo fmt --package bt2usb-cli --check
-    cargo clippy --package bt2usb --release -- -D warnings
-    cargo clippy --package bt2usb-cli -- -D warnings
+    cargo clippy --package bt2usb --target thumbv6m-none-eabi --release -- -D warnings

@@ -32,9 +32,7 @@ jobs:
         run: just download-firmware
 
       - name: Lint
-        run: |
-          cargo fmt --package bt2usb --check
-          cargo clippy --package bt2usb --release -- -D warnings
+        run: just lint
 
       - name: Build
         run: just build release
@@ -47,8 +45,6 @@ jobs:
 
       - name: Install Rust toolchain
         run: rustup show
-
-      - uses: extractions/setup-just@v2
 
       - uses: Swatinem/rust-cache@v2
         with:
