@@ -9,8 +9,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use defmt::*;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
-use embassy_usb::{Config, Handler};
-use usbd_hid::descriptor::{KeyboardReport, MouseReport, SerializedDescriptor};
+use embassy_usb::Handler;
+use usbd_hid::descriptor::{KeyboardReport, MouseReport};
 
 /// Whether the host has enabled high-resolution scroll mode via the
 /// Resolution Multiplier Feature report.
@@ -57,92 +57,8 @@ pub struct MouseReport16 {
     pub pan: i16,
 }
 
-/// USB Vendor ID (using test VID - should be replaced for production)
-const USB_VID: u16 = 0x1209; // pid.codes test VID
-/// USB Product ID
-const USB_PID: u16 = 0x0001;
-
-/// Get keyboard HID report descriptor
-pub fn keyboard_report_descriptor() -> &'static [u8] {
-    KeyboardReport::desc()
-}
-
-/// Get mouse HID report descriptor  
-pub fn mouse_report_descriptor() -> &'static [u8] {
-    MouseReport::desc()
-}
-
 /// Keyboard HID report - re-export from usbd_hid for compatibility
 pub use usbd_hid::descriptor::KeyboardReport as KeyboardHidReport;
-
-/// Mouse HID report - re-export from usbd_hid for compatibility
-pub use usbd_hid::descriptor::MouseReport as MouseHidReport;
-
-/// USB device configuration
-pub fn usb_config() -> Config<'static> {
-    let mut config = Config::new(USB_VID, USB_PID);
-    config.manufacturer = Some("bt2usb");
-    config.product = Some("BLE HID Bridge");
-    config.serial_number = Some("001");
-    config.max_power = 100; // 100mA
-    config.max_packet_size_0 = 64;
-    config
-}
-
-/// HID request handler for keyboard
-/// Handles SET_REPORT for LED status updates from host
-pub struct KeyboardRequestHandler;
-
-impl RequestHandler for KeyboardRequestHandler {
-    fn get_report(&mut self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
-        debug!("Keyboard get_report: {:?}", id);
-        None
-    }
-
-    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-        // Handle LED status report from host
-        if let ReportId::Out(0) = id {
-            if !data.is_empty() {
-                let leds = data[0];
-                debug!("Keyboard LEDs: {:02x}", leds);
-            }
-        }
-        OutResponse::Accepted
-    }
-
-    fn set_idle_ms(&mut self, id: Option<ReportId>, dur: u32) {
-        debug!("Keyboard set_idle: {:?} {}ms", id, dur);
-    }
-
-    fn get_idle_ms(&mut self, id: Option<ReportId>) -> Option<u32> {
-        debug!("Keyboard get_idle: {:?}", id);
-        None
-    }
-}
-
-/// HID request handler for mouse
-pub struct MouseRequestHandler;
-
-impl RequestHandler for MouseRequestHandler {
-    fn get_report(&mut self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
-        debug!("Mouse get_report: {:?}", id);
-        None
-    }
-
-    fn set_report(&mut self, id: ReportId, _data: &[u8]) -> OutResponse {
-        debug!("Mouse set_report: {:?}", id);
-        OutResponse::Accepted
-    }
-
-    fn set_idle_ms(&mut self, id: Option<ReportId>, dur: u32) {
-        debug!("Mouse set_idle: {:?} {}ms", id, dur);
-    }
-
-    fn get_idle_ms(&mut self, id: Option<ReportId>) -> Option<u32> {
-        debug!("Mouse get_idle: {:?}", id);
-        None
-    }
-}
 
 /// Mouse HID report descriptor with Resolution Multiplier for high-res scrolling.
 ///
@@ -151,6 +67,10 @@ impl RequestHandler for MouseRequestHandler {
 ///
 /// When the OS enables the multiplier, each wheel/pan unit = 1/120th of a detent,
 /// enabling smooth per-pixel scrolling.
+///
+/// Kept for reference; the 16-bit variant (`MOUSE_HIRES_16BIT_REPORT_DESC`) is
+/// always used in practice.
+#[allow(dead_code)]
 pub const MOUSE_HIRES_REPORT_DESC: &[u8] = &[
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x02, // Usage (Mouse)
@@ -470,7 +390,7 @@ pub fn serialize_keyboard_report(report: &KeyboardHidReport) -> [u8; 8] {
 
 /// Serialize a MouseReport to bytes for USB transmission
 /// MouseReport layout: buttons (1), x (1), y (1), wheel (1), pan (1) = 5 bytes
-pub fn serialize_mouse_report(report: &MouseHidReport) -> [u8; 5] {
+pub fn serialize_mouse_report(report: &MouseReport) -> [u8; 5] {
     let mut buf = [0u8; 5];
     buf[0] = report.buttons;
     buf[1] = report.x as u8;

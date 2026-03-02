@@ -20,9 +20,6 @@ pub const HID_SERVICE_UUID: Uuid = Uuid::new_short(0x1812);
 /// HID Report Characteristic UUID (0x2A4D)
 pub const HID_REPORT_CHAR_UUID: Uuid = Uuid::new_short(0x2A4D);
 
-/// HID Report Map Characteristic UUID (0x2A4B)
-pub const HID_REPORT_MAP_CHAR_UUID: Uuid = Uuid::new_short(0x2A4B);
-
 /// Battery Service UUID (0x180F)
 pub const BATTERY_SERVICE_UUID: Uuid = Uuid::new_short(0x180F);
 
@@ -49,7 +46,6 @@ pub static HID_REPORT_CHANNEL: Channel<CriticalSectionRawMutex, HidReportEvent, 
 pub enum HidReportType {
     Keyboard,
     Mouse,
-    Consumer,
     Unknown(u8),
 }
 

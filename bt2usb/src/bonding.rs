@@ -27,10 +27,6 @@ fn flash_range() -> Range<u32> {
     BONDING_FLASH_OFFSET..(BONDING_FLASH_OFFSET + BONDING_FLASH_SIZE)
 }
 
-/// Key type - a simple slot index (0-9) for storing up to MAX_BONDS devices
-/// We use simple u8 keys instead of device addresses for simplicity
-pub type BondSlot = u8;
-
 /// Value for storing bond info: all the data needed to restore a bond
 #[derive(Clone)]
 pub struct StoredBondInfo {
@@ -305,32 +301,3 @@ pub async fn update_bond_profile(
     Err(())
 }
 
-/// Find a bond by address and return its slot and profile
-/// Returns Ok((slot, profile_id)) if found, Err(()) if not found
-pub async fn find_bond(
-    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
-    address: &[u8; 6],
-) -> Result<(u8, u8), ()> {
-    let mut buffer = [0u8; 64];
-
-    for slot in 0..MAX_BONDS as u8 {
-        match fetch_item::<u8, StoredBondInfo, _>(
-            flash,
-            flash_range(),
-            &mut NoCache::new(),
-            &mut buffer,
-            &slot,
-        )
-        .await
-        {
-            Ok(Some(stored)) => {
-                if stored.addr == *address {
-                    return Ok((slot, stored.profile_id));
-                }
-            }
-            _ => continue,
-        }
-    }
-
-    Err(())
-}

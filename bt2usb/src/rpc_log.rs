@@ -10,8 +10,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 
-/// Log levels
-pub const LEVEL_DEBUG: u8 = 0;
+/// Log levels (debug intentionally omitted — only INFO and above are forwarded over RPC)
 pub const LEVEL_INFO: u8 = 1;
 pub const LEVEL_WARN: u8 = 2;
 pub const LEVEL_ERROR: u8 = 3;

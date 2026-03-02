@@ -104,7 +104,6 @@ pub const RESP_STATUS: u8 = 2;
 pub const RESP_BONDS: u8 = 3;
 pub const RESP_CONFIG: u8 = 4;
 pub const RESP_VERSION: u8 = 5;
-pub const RESP_ACTIVE_DEVICE: u8 = 6;
 
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum ConnectionState {
@@ -127,7 +126,11 @@ pub const EVT_BATTERY_LEVEL: u8 = 5;
 
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum PairingState {
+    // Started and KeysExchanged are protocol-defined states decoded by the CLI,
+    // but the firmware only ever emits Complete and Failed.
+    #[allow(dead_code)]
     Started = 0,
+    #[allow(dead_code)]
     KeysExchanged = 1,
     Complete = 2,
     Failed = 3,
@@ -317,25 +320,6 @@ pub fn encode_response_version(buf: &mut [u8], version: &str) -> EncResult {
             .u8(RESP_VERSION)
             .unwrap()
             .str(version)
-            .unwrap();
-    })
-}
-
-/// Encode an active device response.
-/// If no active device, address will be all zeros.
-pub fn encode_response_active_device(
-    buf: &mut [u8],
-    address: &[u8; 6],
-    addr_kind: u8,
-) -> EncResult {
-    cbor_encode(buf, |e| {
-        e.array(3)
-            .unwrap()
-            .u8(RESP_ACTIVE_DEVICE)
-            .unwrap()
-            .bytes(address)
-            .unwrap()
-            .u8(addr_kind)
             .unwrap();
     })
 }
