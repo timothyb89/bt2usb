@@ -9,7 +9,7 @@ name = "bt2usb-cli"
 path = "src/main.rs"
 
 [dependencies]
-hidapi = { version = "2", default-features = false, features = ["linux-static-hidraw"] }
+hidapi = "2"
 minicbor = { version = "0.25", features = ["std"] }
 cobs = "0.3"
 clap = { version = "4", features = ["derive"] }
