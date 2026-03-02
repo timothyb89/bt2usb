@@ -319,6 +319,31 @@ pub fn encode_response_active_device(
     })
 }
 
+/// Encode a config response with all multiplier values.
+/// Format: [RESP_CONFIG, scroll_pct, pan_pct, x_pct, y_pct]
+pub fn encode_response_config(
+    buf: &mut [u8],
+    scroll_mult: u32,
+    pan_mult: u32,
+    x_mult: u32,
+    y_mult: u32,
+) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(5)
+            .unwrap()
+            .u8(RESP_CONFIG)
+            .unwrap()
+            .u32(scroll_mult)
+            .unwrap()
+            .u32(pan_mult)
+            .unwrap()
+            .u32(x_mult)
+            .unwrap()
+            .u32(y_mult)
+            .unwrap();
+    })
+}
+
 // ============ Event encoding ============
 
 /// Encode a scan result event.

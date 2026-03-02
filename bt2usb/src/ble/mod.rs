@@ -140,6 +140,20 @@ pub async fn core0_ble_main(
     let active_device_pref = preferences::load_active_device(&mut flash).await;
     let auto_reconnect = preferences::load_auto_reconnect(&mut flash).await;
 
+    // Load axis multiplier preferences
+    {
+        use core::sync::atomic::Ordering::Relaxed;
+        let scroll = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_SCROLL_MULTIPLIER).await;
+        let pan = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_PAN_MULTIPLIER).await;
+        let x = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_X_MULTIPLIER).await;
+        let y = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_Y_MULTIPLIER).await;
+        crate::usb_hid::MULTIPLIER_SCROLL.store(scroll, Relaxed);
+        crate::usb_hid::MULTIPLIER_PAN.store(pan, Relaxed);
+        crate::usb_hid::MULTIPLIER_X.store(x, Relaxed);
+        crate::usb_hid::MULTIPLIER_Y.store(y, Relaxed);
+        info!("[core0] Axis multipliers: scroll={}% pan={}% x={}% y={}%", scroll, pan, x, y);
+    }
+
     if let Some(ref dev) = active_device_pref {
         info!("[core0] Active device preference: {:?}", dev.address);
     } else {
@@ -329,6 +343,11 @@ pub async fn core0_ble_main(
                     commands::handle_clear_bonds(&mut flash).await;
                     // handle_clear_bonds resets on success; if we get here it failed
                     loaded_bonds.clear();
+                    None
+                }
+
+                BleCommand::SetConfig { key, value } => {
+                    commands::handle_set_config(&mut flash, key, value).await;
                     None
                 }
 

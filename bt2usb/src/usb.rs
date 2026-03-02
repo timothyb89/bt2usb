@@ -93,9 +93,18 @@ async fn usb_hid_handler_task(
                     HidReportType::Mouse => {
                         if event.len >= 1 {
                             if event.profile.uses_16bit_reports() {
-                                let report = event
+                                let mut report = event
                                     .profile
                                     .translate_mouse_report_16bit(&event.data, event.len);
+                                // Apply axis multipliers
+                                let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+                                let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
+                                let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
+                                let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
+                                report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
+                                report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
+                                report.wheel = crate::usb_hid::apply_multiplier_i16(report.wheel, scroll_m);
+                                report.pan = crate::usb_hid::apply_multiplier_i16(report.pan, pan_m);
                                 let data = serialize_mouse_report_16bit(&report);
                                 // Report ID 1 prefix for mouse reports
                                 let mut buf = [0u8; 8];
@@ -105,8 +114,17 @@ async fn usb_hid_handler_task(
                                     warn!("Mouse write error (16-bit): {:?}", e);
                                 }
                             } else {
-                                let report =
+                                let mut report =
                                     event.profile.translate_mouse_report(&event.data, event.len);
+                                // Apply axis multipliers
+                                let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+                                let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
+                                let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
+                                let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
+                                report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
+                                report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
+                                report.wheel = crate::usb_hid::apply_multiplier_i8(report.wheel, scroll_m);
+                                report.pan = crate::usb_hid::apply_multiplier_i8(report.pan, pan_m);
                                 let data = serialize_mouse_report(&report);
                                 // Report ID 1 prefix for mouse reports
                                 let mut buf = [0u8; 6];

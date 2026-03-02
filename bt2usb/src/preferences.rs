@@ -23,6 +23,10 @@ fn flash_range() -> Range<u32> {
 /// Preference keys - each key maps to a different preference
 const PREF_KEY_ACTIVE_DEVICE: u8 = 0;
 const PREF_KEY_AUTO_RECONNECT: u8 = 1;
+pub const PREF_KEY_SCROLL_MULTIPLIER: u8 = 2;
+pub const PREF_KEY_PAN_MULTIPLIER: u8 = 3;
+pub const PREF_KEY_X_MULTIPLIER: u8 = 4;
+pub const PREF_KEY_Y_MULTIPLIER: u8 = 5;
 
 /// Active device preference - which device to auto-connect to
 #[derive(Clone, Debug)]
@@ -215,6 +219,100 @@ pub async fn set_auto_reconnect(
         Err(e) => {
             error!(
                 "Failed to set auto-reconnect: {:?}",
+                defmt::Debug2Format(&e)
+            );
+            Err(())
+        }
+    }
+}
+
+/// Axis multiplier value (percentage, e.g. 100 = 1.0x)
+#[derive(Clone, Debug)]
+pub struct MultiplierValue {
+    pub percent: u32,
+}
+
+impl<'a> Value<'a> for MultiplierValue {
+    fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
+        if buffer.len() < 4 {
+            return Err(SerializationError::BufferTooSmall);
+        }
+        buffer[0..4].copy_from_slice(&self.percent.to_le_bytes());
+        Ok(4)
+    }
+
+    fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
+    where
+        Self: Sized,
+    {
+        if buffer.len() < 4 {
+            return Err(SerializationError::BufferTooSmall);
+        }
+        let percent = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+        Ok(MultiplierValue { percent })
+    }
+}
+
+/// Load a multiplier preference from flash. Returns 100 (1.0x) if not set.
+pub async fn load_multiplier(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    key: u8,
+) -> u32 {
+    let mut buffer = [0u8; 64];
+    match fetch_item::<u8, MultiplierValue, _>(
+        flash,
+        flash_range(),
+        &mut NoCache::new(),
+        &mut buffer,
+        &key,
+    )
+    .await
+    {
+        Ok(Some(val)) => {
+            debug!("Loaded multiplier key={}: {}%", key, val.percent);
+            val.percent
+        }
+        Ok(None) => {
+            debug!("No multiplier for key={}, defaulting to 100%", key);
+            100
+        }
+        Err(e) => {
+            warn!(
+                "Error loading multiplier key={}: {:?}",
+                key,
+                defmt::Debug2Format(&e)
+            );
+            100
+        }
+    }
+}
+
+/// Store a multiplier preference to flash.
+pub async fn store_multiplier(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    key: u8,
+    percent: u32,
+) -> Result<(), ()> {
+    let mut buffer = [0u8; 64];
+    let val = MultiplierValue { percent };
+    match store_item(
+        flash,
+        flash_range(),
+        &mut NoCache::new(),
+        &mut buffer,
+        &key,
+        &val,
+    )
+    .await
+    {
+        Ok(_) => {
+            info!("Stored multiplier key={}: {}%", key, percent);
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                "Failed to store multiplier key={}: {:?}",
+                key,
                 defmt::Debug2Format(&e)
             );
             Err(())

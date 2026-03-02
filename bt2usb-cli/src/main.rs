@@ -99,6 +99,18 @@ enum Command {
         timeout: u64,
     },
 
+    /// Show current configuration (axis multipliers)
+    GetConfig,
+
+    /// Set a configuration value (axis multiplier)
+    SetConfig {
+        /// Config key: scroll, pan, x, y
+        key: String,
+
+        /// Multiplier percentage (100 = 1.0x, 200 = 2.0x, 50 = 0.5x)
+        value: u32,
+    },
+
     /// Show firmware version
     Version,
 
@@ -126,6 +138,8 @@ fn main() -> Result<()> {
         Command::SetActiveDevice { address, addr_kind } => cmd_set_active_device(&mut transport, &address, addr_kind),
         Command::ClearActiveDevice => cmd_clear_active_device(&mut transport),
         Command::AutoConnect => cmd_auto_connect(&mut transport),
+        Command::GetConfig => cmd_get_config(&mut transport),
+        Command::SetConfig { key, value } => cmd_set_config(&mut transport, &key, value),
         Command::Logs { level, timeout } => cmd_logs(&mut transport, level, timeout),
         Command::Version => cmd_version(&mut transport),
         Command::Restart => cmd_restart(&mut transport),
@@ -329,6 +343,40 @@ fn cmd_clear_bonds(transport: &mut Transport) -> Result<()> {
     let (resp, _) = transport.request_simple(CMD_CLEAR_BONDS, DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
     println!("{}", "All bonds cleared.".green());
+    Ok(())
+}
+
+fn cmd_get_config(transport: &mut Transport) -> Result<()> {
+    let (resp, _) = transport.request_simple(CMD_GET_CONFIG, DEFAULT_TIMEOUT)?;
+    match resp {
+        Response::Config { scroll_mult, pan_mult, x_mult, y_mult } => {
+            println!("Configuration:");
+            println!("  scroll: {}%", scroll_mult.to_string().bold());
+            println!("  pan:    {}%", pan_mult.to_string().bold());
+            println!("  x:      {}%", x_mult.to_string().bold());
+            println!("  y:      {}%", y_mult.to_string().bold());
+        }
+        Response::Error { code, message } => {
+            eprintln!("{} (code {code}): {message}", "Error".red());
+        }
+        other => {
+            eprintln!("Unexpected response: {other:?}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_set_config(transport: &mut Transport, key_name: &str, value: u32) -> Result<()> {
+    let key = config_key_from_name(key_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown config key: {key_name}. Valid keys: scroll, pan, x, y"))?;
+
+    let mut cbor_buf = [0u8; 16];
+    let len = encode_request_set_config(&mut cbor_buf, key, value)
+        .map_err(|_| anyhow::anyhow!("encode failed"))?;
+
+    let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!("{} {} = {}%", "Set".green(), key_name, value);
     Ok(())
 }
 

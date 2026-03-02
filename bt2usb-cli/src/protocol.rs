@@ -126,6 +126,28 @@ impl PairingState {
     }
 }
 
+// ============ Config keys ============
+
+pub fn config_key_name(key: u8) -> &'static str {
+    match key {
+        0 => "scroll",
+        1 => "pan",
+        2 => "x",
+        3 => "y",
+        _ => "unknown",
+    }
+}
+
+pub fn config_key_from_name(name: &str) -> Option<u8> {
+    match name {
+        "scroll" => Some(0),
+        "pan" => Some(1),
+        "x" => Some(2),
+        "y" => Some(3),
+        _ => None,
+    }
+}
+
 // ============ Log levels ============
 
 pub fn log_level_name(level: u8) -> &'static str {
@@ -235,6 +257,19 @@ pub fn encode_request_update_bond_profile(buf: &mut [u8], address: &[u8; 6], pro
     })
 }
 
+pub fn encode_request_set_config(buf: &mut [u8], key: u8, value: u32) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(3)
+            .unwrap()
+            .u8(CMD_SET_CONFIG)
+            .unwrap()
+            .u8(key)
+            .unwrap()
+            .u32(value)
+            .unwrap();
+    })
+}
+
 // ============ Response decoding (device -> host) ============
 
 #[derive(Debug)]
@@ -250,6 +285,12 @@ pub enum Response {
         battery_level: u8,
     },
     Bonds { bonds: Vec<BondEntry> },
+    Config {
+        scroll_mult: u32,
+        pan_mult: u32,
+        x_mult: u32,
+        y_mult: u32,
+    },
     Version { version: String },
     ActiveDevice { address: [u8; 6], addr_kind: u8 },
 }
@@ -319,6 +360,13 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 bonds.push(BondEntry { address, addr_kind, profile_id, name });
             }
             Ok(Response::Bonds { bonds })
+        }
+        RESP_CONFIG => {
+            let scroll_mult = d.u32().map_err(|e| format!("scroll: {e}"))?;
+            let pan_mult = d.u32().map_err(|e| format!("pan: {e}"))?;
+            let x_mult = d.u32().map_err(|e| format!("x: {e}"))?;
+            let y_mult = d.u32().map_err(|e| format!("y: {e}"))?;
+            Ok(Response::Config { scroll_mult, pan_mult, x_mult, y_mult })
         }
         RESP_VERSION => {
             let version = d.str().map_err(|e| format!("version: {e}"))?.to_string();
