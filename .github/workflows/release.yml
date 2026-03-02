@@ -29,7 +29,7 @@ jobs:
 
       - name: Cache elf2uf2-rs
         id: cache-elf2uf2
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/elf2uf2-rs
           key: elf2uf2-rs-${{ runner.os }}
