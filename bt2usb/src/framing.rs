@@ -85,5 +85,4 @@ impl FrameAccumulator {
         }
         (data.len(), None)
     }
-
 }
