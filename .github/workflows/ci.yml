@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  DEFMT_LOG: info
+
+jobs:
+  firmware:
+    name: Firmware (thumbv6m-none-eabi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: extractions/setup-just@v2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Download CYW43 firmware
+        run: just download-firmware
+
+      - name: Lint
+        run: |
+          cargo fmt --package bt2usb --check
+          cargo clippy --package bt2usb --release -- -D warnings
+
+      - name: Build
+        run: just build release
+
+  cli:
+    name: CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: extractions/setup-just@v2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libudev-dev
+
+      - name: Lint
+        run: |
+          cargo fmt --package bt2usb-cli --check
+          cargo clippy --package bt2usb-cli -- -D warnings
+
+      - name: Build
+        run: cargo build --package bt2usb-cli --release
