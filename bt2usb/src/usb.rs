@@ -195,6 +195,8 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     static STATE_MOUSE: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
     static STATE_RPC: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
 
+    static DEVICE_HANDLER: StaticCell<crate::usb_hid::UsbDeviceHandler> = StaticCell::new();
+
     let mut builder = embassy_usb::Builder::new(
         driver,
         config,
@@ -203,6 +205,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
         MS_DESC.init([0; 256]),
         CONTROL_BUF.init([0; 64]),
     );
+    builder.handler(DEVICE_HANDLER.init(crate::usb_hid::UsbDeviceHandler));
 
     let kb_writer = HidWriter::<_, 8>::new(
         &mut builder,
