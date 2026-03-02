@@ -56,7 +56,7 @@ rand_chacha = { version = "0.3", default-features = false }
 # Flash storage for bonding
 embedded-storage = "0.3"
 embedded-storage-async = "0.4"
-sequential-storage = { version = "4", features = ["defmt-03"] }
+sequential-storage = { version = "5", features = ["defmt-03"] }
 
 # RPC protocol
 minicbor = { version = "0.25", default-features = false, features = ["derive"] }
