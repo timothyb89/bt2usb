@@ -92,9 +92,7 @@ pub async fn handle_set_active_device(
 }
 
 /// Clear the active device preference from flash.
-pub async fn handle_clear_active_device(
-    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
-) {
+pub async fn handle_clear_active_device(flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>) {
     info!("Clearing active device preference");
     match preferences::clear_active_device(flash).await {
         Ok(()) => {
@@ -135,9 +133,7 @@ pub async fn handle_update_bond_profile(
 /// Clear all bonds from flash, log the action, and trigger a system reset.
 ///
 /// This function does not return on success (system resets).
-pub async fn handle_clear_bonds(
-    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
-) {
+pub async fn handle_clear_bonds(flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>) {
     info!("Clearing all bonds");
     rpc_log::info("Clearing all bonds...");
     match bonding::clear_all_bonds(flash).await {

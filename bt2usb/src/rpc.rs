@@ -10,7 +10,10 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_usb::class::hid::{HidReader, HidWriter};
 
-use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, BONDS_RESPONSE_CHANNEL, STATUS_RESPONSE_CHANNEL};
+use crate::ble_state::{
+    BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, BONDS_RESPONSE_CHANNEL,
+    STATUS_RESPONSE_CHANNEL,
+};
 use crate::framing::{self, FrameAccumulator, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE};
 use crate::protocol::{self, ConnectionState, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 use crate::rpc_log::LOG_CHANNEL;
@@ -88,8 +91,7 @@ pub async fn rpc_task(
             Either3::First(Ok(n)) if n > 0 => {
                 let mut offset = 0;
                 while offset < n {
-                    let (consumed, frame) =
-                        accumulator.feed(&rx_buf[offset..n], &mut decoded_buf);
+                    let (consumed, frame) = accumulator.feed(&rx_buf[offset..n], &mut decoded_buf);
                     offset += consumed;
 
                     if let Some(decoded_len) = frame {
@@ -107,17 +109,12 @@ pub async fn rpc_task(
                                     debug!("RPC request: {:?}", request);
 
                                     // Handle subscription state changes
-                                    if let protocol::Request::SubscribeLogs { level } =
-                                        &request
-                                    {
+                                    if let protocol::Request::SubscribeLogs { level } = &request {
                                         log_subscribed = true;
                                         log_min_level = *level;
                                         info!("Log subscription: level >= {}", log_min_level);
                                     }
-                                    if matches!(
-                                        request,
-                                        protocol::Request::UnsubscribeLogs
-                                    ) {
+                                    if matches!(request, protocol::Request::UnsubscribeLogs) {
                                         log_subscribed = false;
                                         info!("Log subscription: off");
                                     }
@@ -172,12 +169,9 @@ pub async fn rpc_task(
             // ── Log events: forward if subscribed ──
             Either3::Third(log_event) => {
                 if log_subscribed && log_event.level >= log_min_level {
-                    let msg = core::str::from_utf8(
-                        &log_event.message[..log_event.len as usize],
-                    )
-                    .unwrap_or("?");
-                    if let Ok(len) =
-                        protocol::encode_event_log(&mut cbor_buf, log_event.level, msg)
+                    let msg = core::str::from_utf8(&log_event.message[..log_event.len as usize])
+                        .unwrap_or("?");
+                    if let Ok(len) = protocol::encode_event_log(&mut cbor_buf, log_event.level, msg)
                     {
                         send_event(&mut writer, &cbor_buf, &mut frame_buf, len).await;
                     }
@@ -197,8 +191,7 @@ fn encode_ble_event(
 ) -> usize {
     match event {
         BleEvent::ScanResult(data) => {
-            let name =
-                core::str::from_utf8(&data.name[..data.name_len as usize]).unwrap_or("?");
+            let name = core::str::from_utf8(&data.name[..data.name_len as usize]).unwrap_or("?");
             protocol::encode_event_scan_result(
                 cbor_buf,
                 &data.address,
@@ -248,22 +241,26 @@ async fn dispatch_request(
             // Wait for response (with timeout)
             match embassy_time::with_timeout(
                 embassy_time::Duration::from_millis(500),
-                STATUS_RESPONSE_CHANNEL.receive()
-            ).await {
-                Ok(status) => {
-                    protocol::encode_response_status(
-                        cbor_buf,
-                        last_state,
-                        status.bonded_count,
-                        status.active_profile,
-                        status.active_device_set,
-                        &status.active_device_address,
-                        status.battery_level,
-                    ).unwrap_or(0)
-                }
+                STATUS_RESPONSE_CHANNEL.receive(),
+            )
+            .await
+            {
+                Ok(status) => protocol::encode_response_status(
+                    cbor_buf,
+                    last_state,
+                    status.bonded_count,
+                    status.active_profile,
+                    status.active_device_set,
+                    &status.active_device_address,
+                    status.battery_level,
+                )
+                .unwrap_or(0),
                 Err(_) => {
                     // Timeout - use defaults
-                    protocol::encode_response_status(cbor_buf, last_state, 0, 0, false, &[0u8; 6], 0xFF).unwrap_or(0)
+                    protocol::encode_response_status(
+                        cbor_buf, last_state, 0, 0, false, &[0u8; 6], 0xFF,
+                    )
+                    .unwrap_or(0)
                 }
             }
         }
@@ -278,7 +275,11 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::Connect { address, addr_kind, ignore_bond } => {
+        protocol::Request::Connect {
+            address,
+            addr_kind,
+            ignore_bond,
+        } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
                 address: *address,
                 addr_kind: *addr_kind,
@@ -299,19 +300,20 @@ async fn dispatch_request(
             // Wait for response (with timeout)
             match embassy_time::with_timeout(
                 embassy_time::Duration::from_millis(500),
-                BONDS_RESPONSE_CHANNEL.receive()
-            ).await {
+                BONDS_RESPONSE_CHANNEL.receive(),
+            )
+            .await
+            {
                 Ok(bonds) => {
                     // Convert heapless types to slices for encoding
-                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str), 10> = heapless::Vec::new();
+                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str), 10> =
+                        heapless::Vec::new();
                     for (addr, kind, profile, name) in &bonds {
                         let _ = bond_refs.push((*addr, *kind, *profile, name.as_str()));
                     }
                     protocol::encode_response_bonds(cbor_buf, bond_refs.as_slice()).unwrap_or(0)
                 }
-                Err(_) => {
-                    protocol::encode_response_error(cbor_buf, 3, "timeout").unwrap_or(0)
-                }
+                Err(_) => protocol::encode_response_error(cbor_buf, 3, "timeout").unwrap_or(0),
             }
         }
 
@@ -325,7 +327,8 @@ async fn dispatch_request(
         }
 
         protocol::Request::GetConfig => {
-            let scroll = crate::usb_hid::MULTIPLIER_SCROLL.load(core::sync::atomic::Ordering::Relaxed);
+            let scroll =
+                crate::usb_hid::MULTIPLIER_SCROLL.load(core::sync::atomic::Ordering::Relaxed);
             let pan = crate::usb_hid::MULTIPLIER_PAN.load(core::sync::atomic::Ordering::Relaxed);
             let x = crate::usb_hid::MULTIPLIER_X.load(core::sync::atomic::Ordering::Relaxed);
             let y = crate::usb_hid::MULTIPLIER_Y.load(core::sync::atomic::Ordering::Relaxed);
@@ -336,10 +339,22 @@ async fn dispatch_request(
             use crate::usb_hid::*;
             use core::sync::atomic::Ordering::Relaxed;
             let valid = match *key {
-                CONFIG_KEY_SCROLL_MULT => { MULTIPLIER_SCROLL.store(*value, Relaxed); true }
-                CONFIG_KEY_PAN_MULT => { MULTIPLIER_PAN.store(*value, Relaxed); true }
-                CONFIG_KEY_X_MULT => { MULTIPLIER_X.store(*value, Relaxed); true }
-                CONFIG_KEY_Y_MULT => { MULTIPLIER_Y.store(*value, Relaxed); true }
+                CONFIG_KEY_SCROLL_MULT => {
+                    MULTIPLIER_SCROLL.store(*value, Relaxed);
+                    true
+                }
+                CONFIG_KEY_PAN_MULT => {
+                    MULTIPLIER_PAN.store(*value, Relaxed);
+                    true
+                }
+                CONFIG_KEY_X_MULT => {
+                    MULTIPLIER_X.store(*value, Relaxed);
+                    true
+                }
+                CONFIG_KEY_Y_MULT => {
+                    MULTIPLIER_Y.store(*value, Relaxed);
+                    true
+                }
                 _ => false,
             };
             if valid {
@@ -358,9 +373,7 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::UnsubscribeLogs => {
-            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
-        }
+        protocol::Request::UnsubscribeLogs => protocol::encode_response_ok(cbor_buf).unwrap_or(0),
 
         protocol::Request::GetVersion => {
             protocol::encode_response_version(cbor_buf, VERSION).unwrap_or(0)
@@ -379,7 +392,10 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::UpdateBondProfile { address, profile_id } => {
+        protocol::Request::UpdateBondProfile {
+            address,
+            profile_id,
+        } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::UpdateBondProfile {
                 address: *address,
                 profile_id: *profile_id,

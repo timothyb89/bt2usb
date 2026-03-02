@@ -248,10 +248,7 @@ async fn await_pairing<'a>(
     let pairing_timeout = Timer::after(Duration::from_secs(15));
 
     let pairing_result = select(
-        select(
-            wait_for_pairing_event(conn),
-            BLE_CMD_CHANNEL.receive(),
-        ),
+        select(wait_for_pairing_event(conn), BLE_CMD_CHANNEL.receive()),
         pairing_timeout,
     )
     .await;

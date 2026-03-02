@@ -22,12 +22,7 @@ pub const MAX_FRAME_SIZE: usize = cobs::max_encoding_length(MAX_PAYLOAD_SIZE) + 
 /// COBS-encoded frame with a 0x00 delimiter at the end.
 ///
 /// Returns the total frame length written to `frame_buf`.
-pub fn encode_frame(
-    msg_type: u8,
-    seq_id: u16,
-    cbor_body: &[u8],
-    frame_buf: &mut [u8],
-) -> usize {
+pub fn encode_frame(msg_type: u8, seq_id: u16, cbor_body: &[u8], frame_buf: &mut [u8]) -> usize {
     // Build the raw payload: [header | cbor_body]
     let payload_len = HEADER_SIZE + cbor_body.len();
     let mut payload = [0u8; MAX_PAYLOAD_SIZE];

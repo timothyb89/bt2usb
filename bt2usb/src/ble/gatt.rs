@@ -71,7 +71,12 @@ pub async fn run_gatt_session<'a, C: Controller>(
     let run_result = select(
         client.task(),
         run_hid_session(
-            &client, conn, flash, active_profile, loaded_bonds, active_device_pref,
+            &client,
+            conn,
+            flash,
+            active_profile,
+            loaded_bonds,
+            active_device_pref,
         ),
     )
     .await;
