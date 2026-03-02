@@ -22,7 +22,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -45,7 +45,7 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       - uses: Swatinem/rust-cache@v2
         with:
