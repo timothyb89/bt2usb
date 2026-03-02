@@ -12,6 +12,17 @@ use usbd_hid::descriptor::MouseReport;
 use crate::usb_hid::{MouseReport16, HIRES_SCROLL_ENABLED};
 
 static PREV_SCROLL_RAW: AtomicI32 = AtomicI32::new(0);
+static SCROLL_ACCUMULATOR: AtomicI32 = AtomicI32::new(0);
+
+/// Threshold in raw scroll units before emitting an event in standard mode.
+/// 120 = one standard detent in the HID Resolution Multiplier spec.
+const SCROLL_ACCUMULATOR_THRESHOLD: i32 = 120;
+
+/// Reset scroll accumulator state (call on USB reconfiguration).
+pub fn reset_scroll_accumulator() {
+    SCROLL_ACCUMULATOR.store(0, Ordering::Relaxed);
+    PREV_SCROLL_RAW.store(0, Ordering::Relaxed);
+}
 
 /// Known device profiles
 #[derive(Clone, Copy, Debug, PartialEq, defmt::Format)]
@@ -191,8 +202,26 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
         // This prevents fluctuation during coasting by giving more headroom.
         (raw / 3).clamp(-127, 127) as i8
     } else {
-        // Standard: 1 unit per detent. Divide by 360 for detent-level scrolling.
-        (raw / 360).clamp(-127, 127) as i8
+        // Standard mode with accumulator: track remainder across samples so
+        // sub-detent contributions aren't lost. This is especially important
+        // on macOS which doesn't enable hires mode and filters small values.
+        let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
+        let new_acc = prev_acc + raw as i32;
+
+        if new_acc.abs() >= SCROLL_ACCUMULATOR_THRESHOLD {
+            let detents = new_acc / SCROLL_ACCUMULATOR_THRESHOLD;
+            let remainder = new_acc % SCROLL_ACCUMULATOR_THRESHOLD;
+            SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
+            debug!(
+                "8-bit mode (standard/accum): acc={} -> emit {} detents, remainder={}",
+                new_acc, detents, remainder
+            );
+            detents.clamp(-127, 127) as i8
+        } else {
+            SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
+            debug!("8-bit mode (standard/accum): acc={}, below threshold", new_acc);
+            0i8
+        }
     };
 
     MouseReport {
@@ -278,11 +307,31 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         }
         clean_raw
     } else {
-        // Standard: 1 unit per detent. Divide by 120 to convert high-res
-        // units to detent-level scrolling.
-        let scaled = clean_raw / 120;
-        debug!("16-bit mode (standard): {} / 120 = {}", clean_raw, scaled);
-        scaled
+        // Standard mode with accumulator: sum raw values and emit the full
+        // accumulated magnitude when the threshold is reached. Each emission
+        // is >= 120 in magnitude, crossing macOS's scroll acceleration deadzone.
+        // Without this, /120 produces mostly 0 with occasional +/-1 that macOS
+        // filters out.
+        let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
+        let new_acc = prev_acc + clean_raw as i32;
+
+        if new_acc.abs() >= SCROLL_ACCUMULATOR_THRESHOLD {
+            // Emit the full accumulated value (preserves velocity info)
+            let emit = new_acc.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            SCROLL_ACCUMULATOR.store(0, Ordering::Relaxed);
+            debug!(
+                "16-bit mode (standard/accum): acc={} -> emit {}",
+                new_acc, emit
+            );
+            emit
+        } else {
+            SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
+            debug!(
+                "16-bit mode (standard/accum): acc={}, below threshold",
+                new_acc
+            );
+            0
+        }
     };
 
     MouseReport16 {

@@ -5,16 +5,34 @@
 //! - Mouse HID device with buttons, X/Y movement, and scroll wheel
 //! - Composite device support for simultaneous keyboard + mouse
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use portable_atomic::AtomicU64;
 use defmt::*;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
+use embassy_usb::types::StringIndex;
 use embassy_usb::Handler;
 use usbd_hid::descriptor::MouseReport;
 
 /// Whether the host has enabled high-resolution scroll mode via the
 /// Resolution Multiplier Feature report.
 pub static HIRES_SCROLL_ENABLED: AtomicBool = AtomicBool::new(false);
+
+// --- OS Detection ---
+// Detected via USB enumeration behavior:
+// - Windows: requests String descriptor 0xEE (MS OS String Descriptor)
+// - Linux: enables hires scroll via SET_REPORT without requesting 0xEE
+// - macOS: neither (timeout-based detection)
+pub const OS_UNKNOWN: u8 = 0;
+pub const OS_WINDOWS: u8 = 1;
+pub const OS_LINUX: u8 = 2;
+pub const OS_MACOS: u8 = 3;
+
+/// Detected host operating system.
+pub static DETECTED_OS: AtomicU8 = AtomicU8::new(OS_UNKNOWN);
+
+/// Tick count when USB was last configured (for OS detection timeout).
+pub static CONFIGURED_AT_TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Axis multipliers as percentages (100 = 1.0x, 200 = 2.0x, 50 = 0.5x).
 /// Applied after profile-specific translation, before USB serialization.
@@ -297,6 +315,11 @@ impl RequestHandler for HiresMouseRequestHandler {
                     "High-res scroll: {}",
                     if enabled { "enabled" } else { "disabled" }
                 );
+                // OS detection: hires enabled without prior Windows detection = Linux
+                if enabled && DETECTED_OS.load(Ordering::Relaxed) != OS_WINDOWS {
+                    info!("OS detected: Linux (hires enabled, no String 0xEE)");
+                    DETECTED_OS.store(OS_LINUX, Ordering::Relaxed);
+                }
             }
         }
         OutResponse::Accepted
@@ -352,7 +375,9 @@ impl Handler for UsbDeviceHandler {
         // mismatch: firmware thinks hires is on (passthrough) but the OS
         // treats units as standard (1 unit = 1 detent) → 120× too fast.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-        info!("USB bus reset, high-res scroll reset");
+        DETECTED_OS.store(OS_UNKNOWN, Ordering::Relaxed);
+        crate::device_profile::reset_scroll_accumulator();
+        info!("USB bus reset, high-res scroll and OS detection reset");
     }
 
     fn addressed(&mut self, addr: u8) {
@@ -363,10 +388,16 @@ impl Handler for UsbDeviceHandler {
         // Reset high-res scroll on any re-configuration. USB switches may
         // re-enumerate without a full bus reset, so reset() alone isn't enough.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+        DETECTED_OS.store(OS_UNKNOWN, Ordering::Relaxed);
+        CONFIGURED_AT_TICKS.store(
+            embassy_time::Instant::now().as_ticks(),
+            Ordering::Relaxed,
+        );
+        crate::device_profile::reset_scroll_accumulator();
         if configured {
-            info!("USB device configured, high-res scroll reset");
+            info!("USB device configured, high-res scroll and OS detection reset");
         } else {
-            info!("USB device unconfigured, high-res scroll reset");
+            info!("USB device unconfigured, high-res scroll and OS detection reset");
         }
     }
 
@@ -376,6 +407,16 @@ impl Handler for UsbDeviceHandler {
         } else {
             debug!("USB resumed");
         }
+    }
+
+    fn get_string(&mut self, index: StringIndex, _lang_id: u16) -> Option<&str> {
+        // Windows requests String descriptor 0xEE (MS OS String Descriptor)
+        // during enumeration. macOS and Linux never do.
+        if index == StringIndex(0xEE) {
+            info!("OS detected: Windows (String 0xEE requested)");
+            DETECTED_OS.store(OS_WINDOWS, Ordering::Relaxed);
+        }
+        None
     }
 }
 
