@@ -21,7 +21,7 @@ use embassy_time::{Ticker, Timer};
 use trouble_host::prelude::*;
 
 use crate::ble_hid::{
-    self, parse_hid_report, HID_REPORT_CHANNEL, BATTERY_LEVEL_CHAR_UUID, BATTERY_SERVICE_UUID,
+    self, parse_hid_report, BATTERY_LEVEL_CHAR_UUID, BATTERY_SERVICE_UUID, HID_REPORT_CHANNEL,
     HID_REPORT_CHAR_UUID, HID_SERVICE_UUID,
 };
 use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};

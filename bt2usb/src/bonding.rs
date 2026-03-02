@@ -300,4 +300,3 @@ pub async fn update_bond_profile(
     warn!("Bond not found for address {:?}", address);
     Err(())
 }
-
