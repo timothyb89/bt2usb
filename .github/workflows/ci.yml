@@ -15,14 +15,14 @@ jobs:
     name: Firmware Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -38,14 +38,14 @@ jobs:
     name: Firmware Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -61,7 +61,7 @@ jobs:
     name: CLI Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup show
@@ -79,7 +79,7 @@ jobs:
     name: CLI Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup show
