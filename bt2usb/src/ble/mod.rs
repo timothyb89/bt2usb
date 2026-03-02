@@ -143,15 +143,20 @@ pub async fn core0_ble_main(
     // Load axis multiplier preferences
     {
         use core::sync::atomic::Ordering::Relaxed;
-        let scroll = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_SCROLL_MULTIPLIER).await;
-        let pan = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_PAN_MULTIPLIER).await;
+        let scroll =
+            preferences::load_multiplier(&mut flash, preferences::PREF_KEY_SCROLL_MULTIPLIER).await;
+        let pan =
+            preferences::load_multiplier(&mut flash, preferences::PREF_KEY_PAN_MULTIPLIER).await;
         let x = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_X_MULTIPLIER).await;
         let y = preferences::load_multiplier(&mut flash, preferences::PREF_KEY_Y_MULTIPLIER).await;
         crate::usb_hid::MULTIPLIER_SCROLL.store(scroll, Relaxed);
         crate::usb_hid::MULTIPLIER_PAN.store(pan, Relaxed);
         crate::usb_hid::MULTIPLIER_X.store(x, Relaxed);
         crate::usb_hid::MULTIPLIER_Y.store(y, Relaxed);
-        info!("[core0] Axis multipliers: scroll={}% pan={}% x={}% y={}%", scroll, pan, x, y);
+        info!(
+            "[core0] Axis multipliers: scroll={}% pan={}% x={}% y={}%",
+            scroll, pan, x, y
+        );
     }
 
     if let Some(ref dev) = active_device_pref {

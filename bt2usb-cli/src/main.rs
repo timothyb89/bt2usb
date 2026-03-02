@@ -130,12 +130,21 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Status => cmd_status(&mut transport),
         Command::Scan { timeout } => cmd_scan(&mut transport, timeout),
-        Command::Connect { address, addr_kind, profile } => cmd_connect(&mut transport, &address, addr_kind, profile),
+        Command::Connect {
+            address,
+            addr_kind,
+            profile,
+        } => cmd_connect(&mut transport, &address, addr_kind, profile),
         Command::Disconnect => cmd_disconnect(&mut transport),
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),
-        Command::SetProfile { address, profile_id } => cmd_set_profile(&mut transport, &address, profile_id),
-        Command::SetActiveDevice { address, addr_kind } => cmd_set_active_device(&mut transport, &address, addr_kind),
+        Command::SetProfile {
+            address,
+            profile_id,
+        } => cmd_set_profile(&mut transport, &address, profile_id),
+        Command::SetActiveDevice { address, addr_kind } => {
+            cmd_set_active_device(&mut transport, &address, addr_kind)
+        }
         Command::ClearActiveDevice => cmd_clear_active_device(&mut transport),
         Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::GetConfig => cmd_get_config(&mut transport),
@@ -159,7 +168,11 @@ fn cmd_status(transport: &mut Transport) -> Result<()> {
         } => {
             println!("  State:          {}", state.label().bold());
             println!("  Bonded devices: {bonded_count}");
-            println!("  Active profile: {} ({})", active_profile, profile_name(active_profile));
+            println!(
+                "  Active profile: {} ({})",
+                active_profile,
+                profile_name(active_profile)
+            );
 
             if active_device_set {
                 println!(
@@ -168,7 +181,10 @@ fn cmd_status(transport: &mut Transport) -> Result<()> {
                     "(auto-connect enabled)".green()
                 );
             } else {
-                println!("  Active device:  {} (auto-connect disabled)", "None".dimmed());
+                println!(
+                    "  Active device:  {} (auto-connect disabled)",
+                    "None".dimmed()
+                );
             }
 
             let battery_str = if battery_level == 0xFF {
@@ -239,7 +255,12 @@ fn cmd_scan(transport: &mut Transport, timeout_secs: u64) -> Result<()> {
     Ok(())
 }
 
-fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8, profile: Option<u8>) -> Result<()> {
+fn cmd_connect(
+    transport: &mut Transport,
+    address: &str,
+    addr_kind: u8,
+    profile: Option<u8>,
+) -> Result<()> {
     let addr = parse_address(address)?;
 
     let mut cbor_buf = [0u8; 32];
@@ -269,7 +290,13 @@ fn cmd_connect(transport: &mut Transport, address: &str, addr_kind: u8, profile:
                 print_event(&evt);
                 match &evt {
                     Event::ConnectionState { state, .. } => {
-                        matches!(state, self::ConnectionState::Connecting | self::ConnectionState::Connected | self::ConnectionState::Pairing | self::ConnectionState::Scanning)
+                        matches!(
+                            state,
+                            self::ConnectionState::Connecting
+                                | self::ConnectionState::Connected
+                                | self::ConnectionState::Pairing
+                                | self::ConnectionState::Scanning
+                        )
                     }
                     Event::PairingStatus { status } => {
                         if matches!(status, PairingState::Complete) {
@@ -324,7 +351,11 @@ fn cmd_bonds(transport: &mut Transport) -> Result<()> {
                         format_address(&bond.address).bold(),
                         bond.name,
                         bond.profile_id,
-                        if bond.addr_kind == 1 { "random" } else { "public" }
+                        if bond.addr_kind == 1 {
+                            "random"
+                        } else {
+                            "public"
+                        }
                     );
                 }
             }
@@ -349,7 +380,12 @@ fn cmd_clear_bonds(transport: &mut Transport) -> Result<()> {
 fn cmd_get_config(transport: &mut Transport) -> Result<()> {
     let (resp, _) = transport.request_simple(CMD_GET_CONFIG, DEFAULT_TIMEOUT)?;
     match resp {
-        Response::Config { scroll_mult, pan_mult, x_mult, y_mult } => {
+        Response::Config {
+            scroll_mult,
+            pan_mult,
+            x_mult,
+            y_mult,
+        } => {
             println!("Configuration:");
             println!("  scroll: {}%", scroll_mult.to_string().bold());
             println!("  pan:    {}%", pan_mult.to_string().bold());
@@ -367,8 +403,9 @@ fn cmd_get_config(transport: &mut Transport) -> Result<()> {
 }
 
 fn cmd_set_config(transport: &mut Transport, key_name: &str, value: u32) -> Result<()> {
-    let key = config_key_from_name(key_name)
-        .ok_or_else(|| anyhow::anyhow!("Unknown config key: {key_name}. Valid keys: scroll, pan, x, y"))?;
+    let key = config_key_from_name(key_name).ok_or_else(|| {
+        anyhow::anyhow!("Unknown config key: {key_name}. Valid keys: scroll, pan, x, y")
+    })?;
 
     let mut cbor_buf = [0u8; 16];
     let len = encode_request_set_config(&mut cbor_buf, key, value)
@@ -453,7 +490,13 @@ fn check_ok(resp: &Response) -> Result<()> {
 /// Pretty-print an event to stdout.
 fn print_event(event: &Event) {
     match event {
-        Event::ScanResult { address, name, rssi, is_hid, .. } => {
+        Event::ScanResult {
+            address,
+            name,
+            rssi,
+            is_hid,
+            ..
+        } => {
             let hid_tag = if *is_hid {
                 "[HID]".green().to_string()
             } else {
@@ -495,7 +538,10 @@ fn print_event(event: &Event) {
             };
             println!("  {colored} {message}");
         }
-        Event::BondStored { address, profile_id } => {
+        Event::BondStored {
+            address,
+            profile_id,
+        } => {
             let profile = profile_name(*profile_id);
             println!(
                 "  {} Bond stored for {} (profile: {profile})",
@@ -574,7 +620,13 @@ fn cmd_auto_connect(transport: &mut Transport) -> Result<()> {
                 print_event(&evt);
                 match &evt {
                     Event::ConnectionState { state, .. } => {
-                        matches!(state, self::ConnectionState::Connecting | self::ConnectionState::Connected | self::ConnectionState::Pairing | self::ConnectionState::Scanning)
+                        matches!(
+                            state,
+                            self::ConnectionState::Connecting
+                                | self::ConnectionState::Connected
+                                | self::ConnectionState::Pairing
+                                | self::ConnectionState::Scanning
+                        )
                     }
                     _ => true,
                 }

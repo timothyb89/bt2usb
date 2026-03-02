@@ -163,9 +163,7 @@ impl Transport {
             buf[0] = 0x00; // report ID (none)
             buf[1..1 + chunk.len()].copy_from_slice(chunk);
             // Remaining bytes are already zero (padding)
-            self.device
-                .write(&buf)
-                .context("HID write failed")?;
+            self.device.write(&buf).context("HID write failed")?;
         }
         Ok(())
     }
@@ -296,8 +294,8 @@ pub fn parse_address(s: &str) -> Result<[u8; 6]> {
     }
     let mut addr = [0u8; 6];
     for (i, part) in parts.iter().enumerate() {
-        addr[5 - i] = u8::from_str_radix(part, 16)
-            .with_context(|| format!("Invalid hex byte: {part}"))?;
+        addr[5 - i] =
+            u8::from_str_radix(part, 16).with_context(|| format!("Invalid hex byte: {part}"))?;
     }
     Ok(addr)
 }

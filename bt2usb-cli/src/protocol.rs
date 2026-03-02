@@ -225,13 +225,22 @@ pub fn encode_request_subscribe_logs(buf: &mut [u8], level: u8) -> EncResult {
     })
 }
 
-pub fn encode_request_connect_with_profile(buf: &mut [u8], address: &[u8; 6], addr_kind: u8, profile_id: u8) -> EncResult {
+pub fn encode_request_connect_with_profile(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    addr_kind: u8,
+    profile_id: u8,
+) -> EncResult {
     // For now, use regular connect then set profile after pairing
     // This is a helper that will be used in the CLI flow
     encode_request_connect(buf, address, addr_kind)
 }
 
-pub fn encode_request_set_active_device(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) -> EncResult {
+pub fn encode_request_set_active_device(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    addr_kind: u8,
+) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(3)
             .unwrap()
@@ -244,7 +253,11 @@ pub fn encode_request_set_active_device(buf: &mut [u8], address: &[u8; 6], addr_
     })
 }
 
-pub fn encode_request_update_bond_profile(buf: &mut [u8], address: &[u8; 6], profile_id: u8) -> EncResult {
+pub fn encode_request_update_bond_profile(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    profile_id: u8,
+) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(3)
             .unwrap()
@@ -275,7 +288,10 @@ pub fn encode_request_set_config(buf: &mut [u8], key: u8, value: u32) -> EncResu
 #[derive(Debug)]
 pub enum Response {
     Ok,
-    Error { code: u8, message: String },
+    Error {
+        code: u8,
+        message: String,
+    },
     Status {
         state: ConnectionState,
         bonded_count: u8,
@@ -284,15 +300,22 @@ pub enum Response {
         active_device_address: [u8; 6],
         battery_level: u8,
     },
-    Bonds { bonds: Vec<BondEntry> },
+    Bonds {
+        bonds: Vec<BondEntry>,
+    },
     Config {
         scroll_mult: u32,
         pan_mult: u32,
         x_mult: u32,
         y_mult: u32,
     },
-    Version { version: String },
-    ActiveDevice { address: [u8; 6], addr_kind: u8 },
+    Version {
+        version: String,
+    },
+    ActiveDevice {
+        address: [u8; 6],
+        addr_kind: u8,
+    },
 }
 
 #[derive(Debug)]
@@ -357,7 +380,12 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 let addr_kind = d.u8().map_err(|e| format!("kind: {e}"))?;
                 let profile_id = d.u8().map_err(|e| format!("profile: {e}"))?;
                 let name = d.str().map_err(|e| format!("name: {e}"))?.to_string();
-                bonds.push(BondEntry { address, addr_kind, profile_id, name });
+                bonds.push(BondEntry {
+                    address,
+                    addr_kind,
+                    profile_id,
+                    name,
+                });
             }
             Ok(Response::Bonds { bonds })
         }
@@ -366,7 +394,12 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             let pan_mult = d.u32().map_err(|e| format!("pan: {e}"))?;
             let x_mult = d.u32().map_err(|e| format!("x: {e}"))?;
             let y_mult = d.u32().map_err(|e| format!("y: {e}"))?;
-            Ok(Response::Config { scroll_mult, pan_mult, x_mult, y_mult })
+            Ok(Response::Config {
+                scroll_mult,
+                pan_mult,
+                x_mult,
+                y_mult,
+            })
         }
         RESP_VERSION => {
             let version = d.str().map_err(|e| format!("version: {e}"))?.to_string();
@@ -432,7 +465,13 @@ pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
             let name = d.str().map_err(|e| format!("name: {e}"))?.to_string();
             let rssi = d.i8().map_err(|e| format!("rssi: {e}"))?;
             let is_hid = d.bool().map_err(|e| format!("is_hid: {e}"))?;
-            Ok(Event::ScanResult { address, addr_kind, name, rssi, is_hid })
+            Ok(Event::ScanResult {
+                address,
+                addr_kind,
+                name,
+                rssi,
+                is_hid,
+            })
         }
         EVT_CONNECTION_STATE => {
             let state = ConnectionState::from_u8(d.u8().map_err(|e| format!("state: {e}"))?);
@@ -459,7 +498,10 @@ pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
                 address.copy_from_slice(&addr_bytes[..6]);
             }
             let profile_id = d.u8().map_err(|e| format!("profile: {e}"))?;
-            Ok(Event::BondStored { address, profile_id })
+            Ok(Event::BondStored {
+                address,
+                profile_id,
+            })
         }
         EVT_BATTERY_LEVEL => {
             let level = d.u8().map_err(|e| format!("level: {e}"))?;

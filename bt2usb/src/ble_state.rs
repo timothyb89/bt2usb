@@ -103,7 +103,8 @@ pub struct StatusInfo {
 }
 
 /// Response channel for GetStatus (capacity 1, only one request at a time).
-pub static STATUS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, StatusInfo, 1> = Channel::new();
+pub static STATUS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, StatusInfo, 1> =
+    Channel::new();
 
 // ============ Scanner Event Handler ============
 

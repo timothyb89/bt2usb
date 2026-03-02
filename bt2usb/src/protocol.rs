@@ -62,19 +62,36 @@ pub enum Request {
     GetStatus,
     StartScan,
     StopScan,
-    Connect { address: [u8; 6], addr_kind: u8, ignore_bond: bool },
+    Connect {
+        address: [u8; 6],
+        addr_kind: u8,
+        ignore_bond: bool,
+    },
     Disconnect,
     GetBonds,
     ClearBonds,
-    SetProfile { profile_id: u8 },
+    SetProfile {
+        profile_id: u8,
+    },
     GetConfig,
-    SetConfig { key: u8, value: u32 },
-    SubscribeLogs { level: u8 },
+    SetConfig {
+        key: u8,
+        value: u32,
+    },
+    SubscribeLogs {
+        level: u8,
+    },
     UnsubscribeLogs,
     GetVersion,
-    SetActiveDevice { address: [u8; 6], addr_kind: u8 },
+    SetActiveDevice {
+        address: [u8; 6],
+        addr_kind: u8,
+    },
     ClearActiveDevice,
-    UpdateBondProfile { address: [u8; 6], profile_id: u8 },
+    UpdateBondProfile {
+        address: [u8; 6],
+        profile_id: u8,
+    },
     AutoConnect,
     Restart,
 }
@@ -150,7 +167,11 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let addr_kind = d.u8().map_err(|_| ProtocolError::MissingField)?;
             // ignore_bond field is optional for backwards compatibility
             let ignore_bond = d.bool().unwrap_or(false);
-            Ok(Request::Connect { address, addr_kind, ignore_bond })
+            Ok(Request::Connect {
+                address,
+                addr_kind,
+                ignore_bond,
+            })
         }
         CMD_DISCONNECT => Ok(Request::Disconnect),
         CMD_GET_BONDS => Ok(Request::GetBonds),
