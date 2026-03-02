@@ -14,14 +14,14 @@ jobs:
     name: Build Firmware UF2
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Install Rust toolchain
         run: rustup show
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -47,7 +47,7 @@ jobs:
       - name: Rename artifact
         run: mv bt2usb/bt2usb.uf2 bt2usb-${{ github.ref_name }}.uf2
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: firmware
           path: "*.uf2"
@@ -56,7 +56,7 @@ jobs:
     name: Build CLI (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup show
@@ -71,7 +71,7 @@ jobs:
       - name: Rename artifact
         run: cp target/release/bt2usb-cli.exe bt2usb-cli-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-windows
           path: "*.exe"
@@ -80,7 +80,7 @@ jobs:
     name: Build CLI (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup show
@@ -101,7 +101,7 @@ jobs:
       - name: Rename artifact
         run: cp target/x86_64-unknown-linux-musl/release/bt2usb-cli bt2usb-cli-${{ github.ref_name }}-x86_64-unknown-linux-musl
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-linux
           path: "bt2usb-cli-*"
