@@ -2,6 +2,8 @@ target
 bt2usb-cli/target
 bt2usb/target
 .claude
+.agent
+.mcp.json
 
 # CYW43 firmware (downloaded via justfile)
 bt2usb/cyw43-firmware/
