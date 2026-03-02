@@ -396,7 +396,12 @@ impl Handler for UsbDeviceHandler {
     }
 
     fn reset(&mut self) {
-        info!("USB bus reset");
+        // Reset high-res scroll state so the OS must re-enable it after
+        // re-enumeration. Without this, a sleep/wake or USB switch causes a
+        // mismatch: firmware thinks hires is on (passthrough) but the OS
+        // treats units as standard (1 unit = 1 detent) → 120× too fast.
+        HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+        info!("USB bus reset, high-res scroll reset");
     }
 
     fn addressed(&mut self, addr: u8) {
@@ -404,10 +409,13 @@ impl Handler for UsbDeviceHandler {
     }
 
     fn configured(&mut self, configured: bool) {
+        // Reset high-res scroll on any re-configuration. USB switches may
+        // re-enumerate without a full bus reset, so reset() alone isn't enough.
+        HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
         if configured {
-            info!("USB device configured");
+            info!("USB device configured, high-res scroll reset");
         } else {
-            info!("USB device unconfigured");
+            info!("USB device unconfigured, high-res scroll reset");
         }
     }
 
