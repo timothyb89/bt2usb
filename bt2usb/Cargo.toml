@@ -31,11 +31,7 @@ cyw43 = { version = "0.6", features = ["defmt", "bluetooth"] }
 cyw43-pio = { version = "0.9", features = ["defmt"] }
 
 # BLE host stack - from crates.io to match cyw43 0.6
-trouble-host = { path = "../trouble/host", features = [
-    "defmt",
-    "scan",
-    "security",
-] }
+trouble-host = { version = "0.5.1", features = ["defmt", "scan", "security"] }
 
 # USB HID
 usbd-hid = { version = "0.9" }
