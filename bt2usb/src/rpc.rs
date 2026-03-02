@@ -325,11 +325,33 @@ async fn dispatch_request(
         }
 
         protocol::Request::GetConfig => {
-            protocol::encode_response_error(cbor_buf, 2, "not implemented").unwrap_or(0)
+            let scroll = crate::usb_hid::MULTIPLIER_SCROLL.load(core::sync::atomic::Ordering::Relaxed);
+            let pan = crate::usb_hid::MULTIPLIER_PAN.load(core::sync::atomic::Ordering::Relaxed);
+            let x = crate::usb_hid::MULTIPLIER_X.load(core::sync::atomic::Ordering::Relaxed);
+            let y = crate::usb_hid::MULTIPLIER_Y.load(core::sync::atomic::Ordering::Relaxed);
+            protocol::encode_response_config(cbor_buf, scroll, pan, x, y).unwrap_or(0)
         }
 
-        protocol::Request::SetConfig { .. } => {
-            protocol::encode_response_error(cbor_buf, 2, "not implemented").unwrap_or(0)
+        protocol::Request::SetConfig { key, value } => {
+            use crate::usb_hid::*;
+            use core::sync::atomic::Ordering::Relaxed;
+            let valid = match *key {
+                CONFIG_KEY_SCROLL_MULT => { MULTIPLIER_SCROLL.store(*value, Relaxed); true }
+                CONFIG_KEY_PAN_MULT => { MULTIPLIER_PAN.store(*value, Relaxed); true }
+                CONFIG_KEY_X_MULT => { MULTIPLIER_X.store(*value, Relaxed); true }
+                CONFIG_KEY_Y_MULT => { MULTIPLIER_Y.store(*value, Relaxed); true }
+                _ => false,
+            };
+            if valid {
+                // Persist to flash via Core 0
+                let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetConfig {
+                    key: *key,
+                    value: *value,
+                });
+                protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+            } else {
+                protocol::encode_response_error(cbor_buf, 2, "unknown config key").unwrap_or(0)
+            }
         }
 
         protocol::Request::SubscribeLogs { .. } => {

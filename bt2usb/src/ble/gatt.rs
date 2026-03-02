@@ -511,6 +511,11 @@ async fn handle_command_during_hid_loop<'a>(
             CommandResult::Continue
         }
 
+        BleCommand::SetConfig { key, value } => {
+            commands::handle_set_config(flash, key, value).await;
+            CommandResult::Continue
+        }
+
         _ => CommandResult::Continue,
     }
 }

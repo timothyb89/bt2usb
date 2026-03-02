@@ -5,7 +5,7 @@
 //! - Mouse HID device with buttons, X/Y movement, and scroll wheel
 //! - Composite device support for simultaneous keyboard + mouse
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use defmt::*;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
@@ -15,6 +15,37 @@ use usbd_hid::descriptor::{KeyboardReport, MouseReport, SerializedDescriptor};
 /// Whether the host has enabled high-resolution scroll mode via the
 /// Resolution Multiplier Feature report.
 pub static HIRES_SCROLL_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Axis multipliers as percentages (100 = 1.0x, 200 = 2.0x, 50 = 0.5x).
+/// Applied after profile-specific translation, before USB serialization.
+pub static MULTIPLIER_SCROLL: AtomicU32 = AtomicU32::new(100);
+pub static MULTIPLIER_PAN: AtomicU32 = AtomicU32::new(100);
+pub static MULTIPLIER_X: AtomicU32 = AtomicU32::new(100);
+pub static MULTIPLIER_Y: AtomicU32 = AtomicU32::new(100);
+
+/// Config keys for axis multipliers (shared with protocol/RPC layer)
+pub const CONFIG_KEY_SCROLL_MULT: u8 = 0;
+pub const CONFIG_KEY_PAN_MULT: u8 = 1;
+pub const CONFIG_KEY_X_MULT: u8 = 2;
+pub const CONFIG_KEY_Y_MULT: u8 = 3;
+
+/// Apply a percentage multiplier to an i8 value, clamping to i8 range.
+pub fn apply_multiplier_i8(value: i8, multiplier_pct: u32) -> i8 {
+    if multiplier_pct == 100 {
+        return value;
+    }
+    let scaled = (value as i32) * (multiplier_pct as i32) / 100;
+    scaled.clamp(-127, 127) as i8
+}
+
+/// Apply a percentage multiplier to an i16 value, clamping to i16 range.
+pub fn apply_multiplier_i16(value: i16, multiplier_pct: u32) -> i16 {
+    if multiplier_pct == 100 {
+        return value;
+    }
+    let scaled = (value as i32) * (multiplier_pct as i32) / 100;
+    scaled.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+}
 
 /// Mouse report with 16-bit wheel and pan for experimental mode
 #[derive(Clone, Copy, Debug, defmt::Format)]

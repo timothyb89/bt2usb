@@ -42,6 +42,8 @@ pub enum BleCommand {
     UpdateBondProfile { address: [u8; 6], profile_id: u8 },
     /// Restart the system.
     Restart,
+    /// Set a configuration value and persist to flash.
+    SetConfig { key: u8, value: u32 },
 }
 
 // ============ Events (BLE -> RPC) ============

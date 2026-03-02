@@ -275,6 +275,25 @@
         </div>
       </div>
 
+      <!-- Settings Panel -->
+      <div class="panel">
+        <h2>Axis Multipliers</h2>
+        <div style="display:grid;grid-template-columns:60px 1fr 50px;gap:0.4rem 0.75rem;align-items:center;font-size:0.9rem;">
+          <span class="info-label">Scroll</span>
+          <input type="range" id="multScroll" min="0" max="500" step="10" value="100" oninput="previewMult(this,'multScrollVal')" onchange="setMultiplier(0,this.value)">
+          <span id="multScrollVal">100%</span>
+          <span class="info-label">Pan</span>
+          <input type="range" id="multPan" min="0" max="500" step="10" value="100" oninput="previewMult(this,'multPanVal')" onchange="setMultiplier(1,this.value)">
+          <span id="multPanVal">100%</span>
+          <span class="info-label">X</span>
+          <input type="range" id="multX" min="0" max="500" step="10" value="100" oninput="previewMult(this,'multXVal')" onchange="setMultiplier(2,this.value)">
+          <span id="multXVal">100%</span>
+          <span class="info-label">Y</span>
+          <input type="range" id="multY" min="0" max="500" step="10" value="100" oninput="previewMult(this,'multYVal')" onchange="setMultiplier(3,this.value)">
+          <span id="multYVal">100%</span>
+        </div>
+      </div>
+
       <!-- Bonded Devices Panel -->
       <div class="panel">
         <h2>Bonded Devices</h2>
@@ -359,12 +378,11 @@
           this._writeHead(parts, 2, v.length);
           parts.push([...v]);
         } else if (typeof v === 'number') {
-          if (Number.isInteger(v) && v >= 0 && v <= 255) {
+          if (Number.isInteger(v) && v >= 0) {
             this._writeHead(parts, 0, v);
-          } else if (Number.isInteger(v) && v < 0 && v >= -128) {
+          } else if (Number.isInteger(v) && v < 0) {
             this._writeHead(parts, 1, -1 - v);
           } else {
-            // float - not needed for our protocol
             throw new Error('Unsupported number: ' + v);
           }
         } else if (typeof v === 'string') {
@@ -482,7 +500,8 @@
     const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
     const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
     const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17;
-    const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
+    const CMD_GET_CONFIG = 8, CMD_SET_CONFIG = 9;
+    const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_CONFIG = 4, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
     const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4, EVT_BATTERY_LEVEL = 5;
     const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
     const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
@@ -664,9 +683,10 @@
         device.addEventListener('inputreport', handleInputReport);
         setConnected(true);
 
-        // Auto-refresh status and bonds
+        // Auto-refresh status, bonds, and config
         await refreshStatus();
         await refreshBonds();
+        await refreshConfig();
       } catch (e) {
         console.error('Connect failed:', e);
         appendLog(3, 'Connect failed: ' + e.message);
@@ -930,6 +950,42 @@
         appendLog(1, 'Auto-connecting to active device...');
       } catch (e) {
         appendLog(3, 'Auto-connect failed: ' + e.message);
+      }
+    }
+
+    // ============ Config / Multipliers ============
+    const MULT_IDS = ['multScroll', 'multPan', 'multX', 'multY'];
+    const MULT_VAL_IDS = ['multScrollVal', 'multPanVal', 'multXVal', 'multYVal'];
+
+    function previewMult(slider, valId) {
+      document.getElementById(valId).textContent = slider.value + '%';
+    }
+
+    async function setMultiplier(key, value) {
+      try {
+        const resp = await sendRequest(CBOR.encode([CMD_SET_CONFIG, key, parseInt(value)]));
+        if (resp[0] === RESP_OK) {
+          appendLog(1, `Set ${['scroll','pan','x','y'][key]} multiplier to ${value}%`);
+        } else if (resp[0] === RESP_ERROR) {
+          appendLog(3, `Set config error: ${resp[2]}`);
+        }
+      } catch (e) {
+        appendLog(3, 'Set config failed: ' + e.message);
+      }
+    }
+
+    async function refreshConfig() {
+      try {
+        const resp = await sendSimpleRequest(CMD_GET_CONFIG);
+        if (resp[0] === RESP_CONFIG) {
+          const values = [resp[1], resp[2], resp[3], resp[4]];
+          for (let i = 0; i < 4; i++) {
+            document.getElementById(MULT_IDS[i]).value = values[i];
+            document.getElementById(MULT_VAL_IDS[i]).textContent = values[i] + '%';
+          }
+        }
+      } catch (e) {
+        appendLog(3, 'Get config failed: ' + e.message);
       }
     }
 

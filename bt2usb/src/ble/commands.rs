@@ -155,6 +155,25 @@ pub async fn handle_clear_bonds(
     }
 }
 
+/// Persist a config value (axis multiplier) to flash.
+pub async fn handle_set_config(
+    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
+    key: u8,
+    value: u32,
+) {
+    let pref_key = match key {
+        crate::usb_hid::CONFIG_KEY_SCROLL_MULT => preferences::PREF_KEY_SCROLL_MULTIPLIER,
+        crate::usb_hid::CONFIG_KEY_PAN_MULT => preferences::PREF_KEY_PAN_MULTIPLIER,
+        crate::usb_hid::CONFIG_KEY_X_MULT => preferences::PREF_KEY_X_MULTIPLIER,
+        crate::usb_hid::CONFIG_KEY_Y_MULT => preferences::PREF_KEY_Y_MULTIPLIER,
+        _ => {
+            warn!("Unknown config key: {}", key);
+            return;
+        }
+    };
+    let _ = preferences::store_multiplier(flash, pref_key, value).await;
+}
+
 /// Log a restart message and trigger a system reset.
 ///
 /// This function does not return.
