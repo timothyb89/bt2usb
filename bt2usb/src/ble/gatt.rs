@@ -20,7 +20,10 @@ use embassy_rp::peripherals::FLASH;
 use embassy_time::{Ticker, Timer};
 use trouble_host::prelude::*;
 
-use crate::ble_hid::{self, parse_hid_report, HID_REPORT_CHANNEL};
+use crate::ble_hid::{
+    self, parse_hid_report, HID_REPORT_CHANNEL, BATTERY_LEVEL_CHAR_UUID, BATTERY_SERVICE_UUID,
+    HID_REPORT_CHAR_UUID, HID_SERVICE_UUID,
+};
 use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};
 use crate::bonding::{self, LoadedBond};
 use crate::device_profile::DeviceProfile;
@@ -186,10 +189,9 @@ async fn run_hid_session<'a, 'c, C: Controller>(
 async fn discover_hid_service<'a, C: Controller>(
     client: &GattClient<'a, C, DefaultPacketPool, 10>,
 ) -> Option<Characteristic<[u8; 64]>> {
-    let hid_uuid = Uuid::new_short(0x1812);
     let services = match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(10),
-        client.services_by_uuid(&hid_uuid),
+        client.services_by_uuid(&HID_SERVICE_UUID),
     )
     .await
     {
@@ -216,9 +218,8 @@ async fn discover_hid_service<'a, C: Controller>(
     rpc_log::info("HID service discovered");
 
     // Discover HID Report characteristic (UUID 0x2A4D)
-    let report_uuid = Uuid::new_short(0x2A4D);
     match client
-        .characteristic_by_uuid(hid_service, &report_uuid)
+        .characteristic_by_uuid(hid_service, &HID_REPORT_CHAR_UUID)
         .await
     {
         Ok(c) => {
@@ -247,13 +248,13 @@ async fn discover_battery_service<'a, C: Controller>(
 ) -> Option<Characteristic<u8>> {
     match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(5),
-        client.services_by_uuid(&Uuid::new_short(0x180F)),
+        client.services_by_uuid(&BATTERY_SERVICE_UUID),
     )
     .await
     {
         Ok(Ok(svcs)) if !svcs.is_empty() => {
             match client
-                .characteristic_by_uuid(&svcs[0], &Uuid::new_short(0x2A19))
+                .characteristic_by_uuid(&svcs[0], &BATTERY_LEVEL_CHAR_UUID)
                 .await
             {
                 Ok(c) => {

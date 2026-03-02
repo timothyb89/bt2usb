@@ -36,7 +36,6 @@ pub const CMD_CONNECT: u8 = 3;
 pub const CMD_DISCONNECT: u8 = 4;
 pub const CMD_GET_BONDS: u8 = 5;
 pub const CMD_CLEAR_BONDS: u8 = 6;
-pub const CMD_SET_PROFILE: u8 = 7;
 pub const CMD_GET_CONFIG: u8 = 8;
 pub const CMD_SET_CONFIG: u8 = 9;
 pub const CMD_SUBSCRIBE_LOGS: u8 = 10;
@@ -128,16 +127,6 @@ impl PairingState {
 
 // ============ Config keys ============
 
-pub fn config_key_name(key: u8) -> &'static str {
-    match key {
-        0 => "scroll",
-        1 => "pan",
-        2 => "x",
-        3 => "y",
-        _ => "unknown",
-    }
-}
-
 pub fn config_key_from_name(name: &str) -> Option<u8> {
     match name {
         "scroll" => Some(0),
@@ -199,21 +188,6 @@ pub fn encode_request_connect(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) 
     })
 }
 
-pub fn encode_request_connect_fresh(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) -> EncResult {
-    cbor_encode(buf, |e| {
-        e.array(4)
-            .unwrap()
-            .u8(CMD_CONNECT)
-            .unwrap()
-            .bytes(address)
-            .unwrap()
-            .u8(addr_kind)
-            .unwrap()
-            .bool(true) // ignore_bond = true
-            .unwrap();
-    })
-}
-
 pub fn encode_request_subscribe_logs(buf: &mut [u8], level: u8) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(2)
@@ -223,17 +197,6 @@ pub fn encode_request_subscribe_logs(buf: &mut [u8], level: u8) -> EncResult {
             .u8(level)
             .unwrap();
     })
-}
-
-pub fn encode_request_connect_with_profile(
-    buf: &mut [u8],
-    address: &[u8; 6],
-    addr_kind: u8,
-    profile_id: u8,
-) -> EncResult {
-    // For now, use regular connect then set profile after pairing
-    // This is a helper that will be used in the CLI flow
-    encode_request_connect(buf, address, addr_kind)
 }
 
 pub fn encode_request_set_active_device(

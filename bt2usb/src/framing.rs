@@ -86,8 +86,4 @@ impl FrameAccumulator {
         (data.len(), None)
     }
 
-    /// Reset the accumulator state, discarding any partial frame.
-    pub fn reset(&mut self) {
-        self.pos = 0;
-    }
 }
