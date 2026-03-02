@@ -205,8 +205,13 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
         // Standard mode with accumulator: track remainder across samples so
         // sub-detent contributions aren't lost. This is especially important
         // on macOS which doesn't enable hires mode and filters small values.
+        // Direction changes reset the accumulator for responsive reversals.
         let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
-        let new_acc = prev_acc + raw as i32;
+        let new_acc = if raw > 0 && prev_acc < 0 || raw < 0 && prev_acc > 0 {
+            raw as i32
+        } else {
+            prev_acc + raw as i32
+        };
 
         if new_acc.abs() >= SCROLL_ACCUMULATOR_THRESHOLD {
             let detents = new_acc / SCROLL_ACCUMULATOR_THRESHOLD;
@@ -219,7 +224,10 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
             detents.clamp(-127, 127) as i8
         } else {
             SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
-            debug!("8-bit mode (standard/accum): acc={}, below threshold", new_acc);
+            debug!(
+                "8-bit mode (standard/accum): acc={}, below threshold",
+                new_acc
+            );
             0i8
         }
     };
@@ -298,37 +306,54 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         // 1. Corrupting GATT discovery (wrong handle selected), or
         // 2. Corrupting notification data (if handle is still 0x0020)
         if clean_raw != raw {
-            debug!(
+            info!(
                 "16-bit mode (hires): {} passthrough (corrected to {})",
                 raw, clean_raw
             );
         } else {
-            debug!("16-bit mode (hires): {} passthrough", clean_raw);
+            info!("16-bit mode (hires): {} passthrough", clean_raw);
         }
         clean_raw
     } else {
-        // Standard mode with accumulator: sum raw values and emit the full
-        // accumulated magnitude when the threshold is reached. Each emission
-        // is >= 120 in magnitude, crossing macOS's scroll acceleration deadzone.
-        // Without this, /120 produces mostly 0 with occasional +/-1 that macOS
-        // filters out.
+        // Standard mode: accumulate raw values and emit ±1 per physical
+        // detent (120 raw units). macOS applies velocity-based acceleration
+        // using inter-event timing, so we keep the magnitude small (±1..±3)
+        // to stay in the linear region of its curve. The accumulator ensures
+        // events arrive at the correct rate (proportional to scroll speed).
+        //
+        // Direction changes reset the accumulator for responsive reversals.
+        // Detents are capped so fast scrolling doesn't produce large bursts.
+        const MAX_DETENTS_PER_EMIT: i32 = 3;
+
         let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
-        let new_acc = prev_acc + clean_raw as i32;
+
+        // Reset accumulator on direction change to avoid unwinding
+        let new_acc = if clean_raw > 0 && prev_acc < 0 || clean_raw < 0 && prev_acc > 0 {
+            clean_raw as i32
+        } else {
+            prev_acc + clean_raw as i32
+        };
 
         if new_acc.abs() >= SCROLL_ACCUMULATOR_THRESHOLD {
-            // Emit the full accumulated value (preserves velocity info)
-            let emit = new_acc.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            SCROLL_ACCUMULATOR.store(0, Ordering::Relaxed);
-            debug!(
-                "16-bit mode (standard/accum): acc={} -> emit {}",
-                new_acc, emit
+            let detents = (new_acc / SCROLL_ACCUMULATOR_THRESHOLD)
+                .clamp(-MAX_DETENTS_PER_EMIT, MAX_DETENTS_PER_EMIT);
+            let remainder = new_acc - detents * SCROLL_ACCUMULATOR_THRESHOLD;
+            SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
+            // Emit detent count (±1..±3) rather than ×120 magnitude.
+            // Small values stay in macOS's linear acceleration region.
+            let emit = detents as i16;
+            let now = embassy_time::Instant::now().as_ticks();
+            info!(
+                "16-bit mode (standard): acc={} -> emit {} ({} detents), remainder={}, t={}",
+                new_acc, emit, detents, remainder, now
             );
             emit
         } else {
             SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
-            debug!(
-                "16-bit mode (standard/accum): acc={}, below threshold",
-                new_acc
+            let now = embassy_time::Instant::now().as_ticks();
+            info!(
+                "16-bit mode (standard): acc={}, below threshold, t={}",
+                new_acc, now
             );
             0
         }
