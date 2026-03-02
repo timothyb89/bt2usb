@@ -1,0 +1,3 @@
+# Embassy tasks often require many hardware peripheral arguments (one per peripheral type).
+# The default threshold of 7 is too low for tasks that take 8 peripherals.
+too-many-arguments-threshold = 10
