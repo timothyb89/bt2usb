@@ -106,6 +106,26 @@ jobs:
           name: cli-linux
           path: "bt2usb-cli-*"
 
+  deploy-pages:
+    name: Deploy Web UI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare versioned deployment
+        run: |
+          mkdir -p /tmp/pages/${{ github.ref_name }}
+          cp web/index.html /tmp/pages/index.html
+          cp web/index.html /tmp/pages/${{ github.ref_name }}/index.html
+
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: /tmp/pages
+          keep_files: true
+
   publish:
     name: Create GitHub Release
     needs: [firmware, cli-windows, cli-linux]
