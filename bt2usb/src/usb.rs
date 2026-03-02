@@ -90,6 +90,27 @@ async fn usb_hid_handler_task(
                         }
                     }
                     HidReportType::Mouse => {
+                        // Lazy OS detection: if still unknown 2s after configuration,
+                        // assume macOS (doesn't enable hires or request String 0xEE).
+                        // Informational for now — the scroll accumulator handles macOS
+                        // correctly regardless of this detection.
+                        if crate::usb_hid::DETECTED_OS.load(Ordering::Relaxed)
+                            == crate::usb_hid::OS_UNKNOWN
+                        {
+                            let configured_at =
+                                crate::usb_hid::CONFIGURED_AT_TICKS.load(Ordering::Relaxed);
+                            if configured_at > 0 {
+                                let elapsed =
+                                    embassy_time::Instant::now().as_ticks() - configured_at;
+                                // 2 seconds (RP2040 embassy_time uses 1MHz = 1 tick/us)
+                                if elapsed > 2_000_000 {
+                                    info!("OS detected: macOS (timeout, no hires or String 0xEE)");
+                                    crate::usb_hid::DETECTED_OS
+                                        .store(crate::usb_hid::OS_MACOS, Ordering::Relaxed);
+                                }
+                            }
+                        }
+
                         if event.len >= 1 {
                             if event.profile.uses_16bit_reports() {
                                 let mut report = event
