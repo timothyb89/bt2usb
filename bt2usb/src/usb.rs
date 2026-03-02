@@ -11,14 +11,16 @@
 use core::sync::atomic::Ordering;
 use defmt::*;
 use embassy_executor::Executor;
+use embassy_futures::select::{select, Either};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
+use embassy_time;
 use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
-use crate::ble_hid::{HidReportType, HID_REPORT_CHANNEL};
+use crate::ble_hid::{HidReportType, HID_REPORT_CHANNEL, BATTERY_USB_SIGNAL};
 use crate::usb_hid::{
     serialize_keyboard_report, serialize_mouse_report, serialize_mouse_report_16bit,
     KeyboardHidReport, MOUSE_HIRES_16BIT_REPORT_DESC, VENDOR_RPC_REPORT_DESC,
@@ -35,67 +37,100 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static, USB>>
 
 /// USB HID handler task — receives HID reports from BLE (Core 0) and sends to USB.
 ///
-/// Listens on the cross-core HID_REPORT_CHANNEL for incoming BLE HID reports,
-/// translates them according to the device profile, and writes them to the
-/// appropriate USB HID endpoint (keyboard or mouse).
+/// Handles two event sources concurrently via `select`:
+/// - HID_REPORT_CHANNEL: keyboard and mouse reports from BLE
+/// - BATTERY_USB_SIGNAL: battery level updates from the BLE battery poller
+///
+/// Mouse reports use Report ID 1 (prepend 0x01). Battery updates use Report ID 2
+/// ([0x02, level]) on the same mouse interface, triggering Linux's hid-battery
+/// module to update /sys/class/power_supply/hid-*/capacity.
 #[embassy_executor::task]
 async fn usb_hid_handler_task(
     mut keyboard_writer: HidWriter<'static, Driver<'static, USB>, 8>,
-    mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 7>,
+    mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 8>,
 ) {
     info!("USB HID handler task started, waiting for BLE reports...");
 
+    // Send initial battery level if already known (e.g. reconnection scenario)
+    let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
+    if initial_level != 0xFF {
+        let _ = embassy_time::with_timeout(
+            embassy_time::Duration::from_secs(5),
+            mouse_writer.write(&[0x02, initial_level]),
+        )
+        .await;
+    }
+
     loop {
-        let event = HID_REPORT_CHANNEL.receive().await;
-
-        debug!(
-            "Received HID report: type={:?}, len={}",
-            event.report_type, event.len
-        );
-
-        match event.report_type {
-            HidReportType::Keyboard => {
-                if event.len >= 8 {
-                    let report = KeyboardHidReport {
-                        modifier: event.data[0],
-                        reserved: event.data[1],
-                        leds: 0,
-                        keycodes: [
-                            event.data[2],
-                            event.data[3],
-                            event.data[4],
-                            event.data[5],
-                            event.data[6],
-                            event.data[7],
-                        ],
-                    };
-                    let buf = serialize_keyboard_report(&report);
-                    if let Err(e) = keyboard_writer.write(&buf).await {
-                        warn!("Keyboard write error: {:?}", e);
+        match select(HID_REPORT_CHANNEL.receive(), BATTERY_USB_SIGNAL.wait()).await {
+            Either::First(event) => {
+                debug!(
+                    "Received HID report: type={:?}, len={}",
+                    event.report_type, event.len
+                );
+                match event.report_type {
+                    HidReportType::Keyboard => {
+                        if event.len >= 8 {
+                            let report = KeyboardHidReport {
+                                modifier: event.data[0],
+                                reserved: event.data[1],
+                                leds: 0,
+                                keycodes: [
+                                    event.data[2],
+                                    event.data[3],
+                                    event.data[4],
+                                    event.data[5],
+                                    event.data[6],
+                                    event.data[7],
+                                ],
+                            };
+                            let buf = serialize_keyboard_report(&report);
+                            if let Err(e) = keyboard_writer.write(&buf).await {
+                                warn!("Keyboard write error: {:?}", e);
+                            }
+                        }
+                    }
+                    HidReportType::Mouse => {
+                        if event.len >= 1 {
+                            if event.profile.uses_16bit_reports() {
+                                let report = event
+                                    .profile
+                                    .translate_mouse_report_16bit(&event.data, event.len);
+                                let data = serialize_mouse_report_16bit(&report);
+                                // Report ID 1 prefix for mouse reports
+                                let mut buf = [0u8; 8];
+                                buf[0] = 0x01;
+                                buf[1..].copy_from_slice(&data);
+                                if let Err(e) = mouse_writer.write(&buf).await {
+                                    warn!("Mouse write error (16-bit): {:?}", e);
+                                }
+                            } else {
+                                let report =
+                                    event.profile.translate_mouse_report(&event.data, event.len);
+                                let data = serialize_mouse_report(&report);
+                                // Report ID 1 prefix for mouse reports
+                                let mut buf = [0u8; 6];
+                                buf[0] = 0x01;
+                                buf[1..].copy_from_slice(&data);
+                                if let Err(e) = mouse_writer.write(&buf).await {
+                                    warn!("Mouse write error (8-bit): {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!("Unhandled HID report type");
                     }
                 }
             }
-            HidReportType::Mouse => {
-                if event.len >= 1 {
-                    if event.profile.uses_16bit_reports() {
-                        let report = event
-                            .profile
-                            .translate_mouse_report_16bit(&event.data, event.len);
-                        let buf = serialize_mouse_report_16bit(&report);
-                        if let Err(e) = mouse_writer.write(&buf).await {
-                            warn!("Mouse write error (16-bit): {:?}", e);
-                        }
-                    } else {
-                        let report = event.profile.translate_mouse_report(&event.data, event.len);
-                        let buf = serialize_mouse_report(&report);
-                        if let Err(e) = mouse_writer.write(&buf).await {
-                            warn!("Mouse write error (8-bit): {:?}", e);
-                        }
-                    }
-                }
-            }
-            _ => {
-                debug!("Unhandled HID report type");
+            Either::Second(level) => {
+                // Battery level changed: send Report ID 2 on the mouse interface.
+                // Linux's hid-battery picks this up and updates power_supply capacity.
+                let _ = embassy_time::with_timeout(
+                    embassy_time::Duration::from_secs(5),
+                    mouse_writer.write(&[0x02, level]),
+                )
+                .await;
             }
         }
     }
@@ -175,7 +210,10 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
         kb_config,
     );
 
-    let mouse_writer = HidWriter::<_, 7>::new(
+    // Mouse uses Report ID 1 for movement, Report ID 2 for battery level.
+    // Battery Level (Battery System page 0x85) embedded here so Linux's
+    // hid-battery module picks it up from the mouse input device.
+    let mouse_writer = HidWriter::<_, 8>::new(
         &mut builder,
         STATE_MOUSE.init(embassy_usb::class::hid::State::new()),
         mouse_config,

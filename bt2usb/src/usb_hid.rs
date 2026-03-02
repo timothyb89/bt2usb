@@ -196,17 +196,30 @@ pub const MOUSE_HIRES_REPORT_DESC: &[u8] = &[
     0xC0, // End Collection (Application)
 ];
 
-/// Mouse HID report descriptor with 16-bit wheel/pan (EXPERIMENTAL).
+/// Mouse HID report descriptor with 16-bit wheel/pan and embedded battery level.
 ///
-/// Input report: 7 bytes [buttons:1, x:1, y:1, wheel:2, pan:2]
-/// Feature report: 1 byte [vert_mult:2, horiz_mult:2, padding:4]
+/// Report ID 1 — Mouse:
+///   Input:   7 bytes [buttons:1, x:1, y:1, wheel:2, pan:2]
+///   Feature: 1 byte  [vert_mult:2, horiz_mult:2, padding:4]
 ///
-/// This uses 16-bit signed integers for wheel and pan, allowing full
-/// precision from BLE devices without scaling. May not work on all systems.
+/// Report ID 2 — Battery Level (Battery System page 0x85, usage 0x65 AbsoluteStateOfCharge):
+///   Input:   1 byte  [level:8]  — sent proactively when BLE battery changes;
+///                                 Linux hid-battery reads this and updates
+///                                 /sys/class/power_supply/hid-*/capacity
+///   Feature: 1 byte  [level:8]  — returned on GET_REPORT(Feature, 2);
+///                                 readable on Windows via HidD_GetFeature
+///
+/// Usage 0x65 (AbsoluteStateOfCharge) is required — kernel only calls
+/// hidinput_setup_battery() for this usage. Usage 0x44 (Charging) is also
+/// recognized but only sets EV_PWR without creating a power_supply.
+/// Embedding battery in the mouse interface is required for Linux power_supply
+/// integration: hidinput_setup_battery() is only called for input interfaces.
 pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x02, // Usage (Mouse)
     0xA1, 0x01, // Collection (Application)
+    // ---- Report ID 1: Mouse movement + Resolution Multiplier ----
+    0x85, 0x01, //   Report ID (1)
     0x09, 0x01, //   Usage (Pointer)
     0xA1, 0x00, //   Collection (Physical)
     // -- Buttons (5 bits + 3 padding = 1 byte) --
@@ -221,7 +234,7 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x75, 0x03, //     Report Size (3)
     0x95, 0x01, //     Report Count (1)
     0x81, 0x01, //     Input (Constant) - padding
-    // -- X, Y movement (2 bytes, still 8-bit) --
+    // -- X, Y movement (2 bytes, 8-bit) --
     0x05, 0x01, //     Usage Page (Generic Desktop)
     0x09, 0x30, //     Usage (X)
     0x09, 0x31, //     Usage (Y)
@@ -239,7 +252,7 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x45, 0x78, //       Physical Maximum (120)
     0x75, 0x02, //       Report Size (2)
     0x95, 0x01, //       Report Count (1)
-    0xB1, 0x02, //       Feature (Data, Variable, Absolute)
+    0xB1, 0x02, //       Feature (Data, Variable, Absolute) [ID=1]
     0x09, 0x38, //       Usage (Wheel)
     0x16, 0x00, 0x80, // Logical Minimum (-32768)
     0x26, 0xFF, 0x7F, // Logical Maximum (32767)
@@ -247,7 +260,7 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x45, 0x00, //       Physical Maximum (0) - reset
     0x75, 0x10, //       Report Size (16) ← 16-bit field
     0x95, 0x01, //       Report Count (1)
-    0x81, 0x06, //       Input (Data, Variable, Relative)
+    0x81, 0x06, //       Input (Data, Variable, Relative) [ID=1]
     0xC0, //     End Collection
     // -- Horizontal scroll/pan (16-bit) with Resolution Multiplier --
     0x05, 0x0C, //     Usage Page (Consumer)
@@ -260,7 +273,7 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x45, 0x78, //       Physical Maximum (120)
     0x75, 0x02, //       Report Size (2)
     0x95, 0x01, //       Report Count (1)
-    0xB1, 0x02, //       Feature (Data, Variable, Absolute)
+    0xB1, 0x02, //       Feature (Data, Variable, Absolute) [ID=1]
     0x05, 0x0C, //       Usage Page (Consumer)
     0x0A, 0x38, 0x02, // Usage (AC Pan)
     0x16, 0x00, 0x80, // Logical Minimum (-32768)
@@ -269,13 +282,24 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x45, 0x00, //       Physical Maximum (0)
     0x75, 0x10, //       Report Size (16) ← 16-bit field
     0x95, 0x01, //       Report Count (1)
-    0x81, 0x06, //       Input (Data, Variable, Relative)
+    0x81, 0x06, //       Input (Data, Variable, Relative) [ID=1]
     0xC0, //     End Collection
-    // -- Feature report padding (4 bits to byte-align) --
+    // -- Feature padding (4 bits to byte-align the 4-bit mult pair) [ID=1] --
     0x75, 0x04, //     Report Size (4)
     0x95, 0x01, //     Report Count (1)
     0xB1, 0x01, //     Feature (Constant)
     0xC0, //   End Collection (Physical)
+    // ---- Report ID 2: Battery Level (Battery System page) ----
+    0x85, 0x02, //   Report ID (2)
+    0x05, 0x85, //   Usage Page (Battery System)
+    0x09, 0x65, //   Usage (Absolute State of Charge) — triggers hidinput_setup_battery()
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0x64, //   Logical Maximum (100)
+    0x75, 0x08, //   Report Size (8)
+    0x95, 0x01, //   Report Count (1)
+    0x81, 0x02, //   Input (Data, Variable, Absolute) — proactive push
+    0x09, 0x65, //   Usage (Absolute State of Charge)
+    0xB1, 0x02, //   Feature (Data, Variable, Absolute) — GET_REPORT query
     0xC0, // End Collection (Application)
 ];
 
@@ -288,20 +312,32 @@ pub struct HiresMouseRequestHandler;
 
 impl RequestHandler for HiresMouseRequestHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
-        if let ReportId::Feature(_) = id {
-            if !buf.is_empty() {
+        if buf.is_empty() {
+            return None;
+        }
+        match id {
+            ReportId::Feature(1) => {
+                // Resolution Multiplier state: bits 0-1 vert, bits 2-3 horiz
                 let enabled = HIRES_SCROLL_ENABLED.load(Ordering::Relaxed);
-                // Bits 0-1: vert multiplier, bits 2-3: horiz multiplier
                 buf[0] = if enabled { 0x05 } else { 0x00 };
-                return Some(1);
+                Some(1)
+            }
+            ReportId::Feature(2) => {
+                // Battery level (0-100), or 0 if unknown
+                let level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
+                buf[0] = if level == 0xFF { 0 } else { level };
+                Some(1)
+            }
+            _ => {
+                debug!("Mouse get_report: {:?}", id);
+                None
             }
         }
-        debug!("Mouse get_report: {:?}", id);
-        None
     }
 
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-        if let ReportId::Feature(_) = id {
+        // Only Report ID 1 (scroll multiplier) accepts SET_REPORT
+        if let ReportId::Feature(1) = id {
             if !data.is_empty() {
                 let vert_mult = data[0] & 0x03;
                 let enabled = vert_mult > 0;
