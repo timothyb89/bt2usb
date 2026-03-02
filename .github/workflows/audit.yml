@@ -1,0 +1,37 @@
+name: Security Audit
+
+on:
+  schedule:
+    # Run every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo-audit
+        id: cache-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}
+
+      - name: Install cargo-audit
+        if: steps.cache-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked
+
+      - name: Run audit
+        run: cargo audit

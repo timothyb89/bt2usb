@@ -58,3 +58,10 @@ dev:
 # Full release build with UF2 generation
 release:
     just build-uf2 release
+
+# Run format check and clippy lints
+lint:
+    cargo fmt --package bt2usb --check
+    cargo fmt --package bt2usb-cli --check
+    cargo clippy --package bt2usb --release -- -D warnings
+    cargo clippy --package bt2usb-cli -- -D warnings
