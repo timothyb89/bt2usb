@@ -102,12 +102,12 @@ enum Command {
     /// Show current configuration (axis multipliers)
     GetConfig,
 
-    /// Set a configuration value (axis multiplier)
+    /// Set a configuration value
     SetConfig {
-        /// Config key: scroll, pan, x, y
+        /// Config key: scroll, pan, x, y, threshold, max_detents
         key: String,
 
-        /// Multiplier percentage (100 = 1.0x, 200 = 2.0x, 50 = 0.5x)
+        /// Value (percentage for multipliers, raw units for threshold/max_detents)
         value: u32,
     },
 
@@ -385,12 +385,16 @@ fn cmd_get_config(transport: &mut Transport) -> Result<()> {
             pan_mult,
             x_mult,
             y_mult,
+            scroll_threshold,
+            max_detents,
         } => {
             println!("Configuration:");
-            println!("  scroll: {}%", scroll_mult.to_string().bold());
-            println!("  pan:    {}%", pan_mult.to_string().bold());
-            println!("  x:      {}%", x_mult.to_string().bold());
-            println!("  y:      {}%", y_mult.to_string().bold());
+            println!("  scroll:        {}%", scroll_mult.to_string().bold());
+            println!("  pan:           {}%", pan_mult.to_string().bold());
+            println!("  x:             {}%", x_mult.to_string().bold());
+            println!("  y:             {}%", y_mult.to_string().bold());
+            println!("  threshold:     {}", scroll_threshold.to_string().bold());
+            println!("  max_detents:   {}", max_detents.to_string().bold());
         }
         Response::Error { code, message } => {
             eprintln!("{} (code {code}): {message}", "Error".red());
@@ -404,7 +408,7 @@ fn cmd_get_config(transport: &mut Transport) -> Result<()> {
 
 fn cmd_set_config(transport: &mut Transport, key_name: &str, value: u32) -> Result<()> {
     let key = config_key_from_name(key_name).ok_or_else(|| {
-        anyhow::anyhow!("Unknown config key: {key_name}. Valid keys: scroll, pan, x, y")
+        anyhow::anyhow!("Unknown config key: {key_name}. Valid keys: scroll, pan, x, y, threshold, max_detents")
     })?;
 
     let mut cbor_buf = [0u8; 16];
@@ -413,7 +417,8 @@ fn cmd_set_config(transport: &mut Transport, key_name: &str, value: u32) -> Resu
 
     let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
-    println!("{} {} = {}%", "Set".green(), key_name, value);
+    let suffix = if key >= 4 { "" } else { "%" };
+    println!("{} {} = {}{}", "Set".green(), key_name, value, suffix);
     Ok(())
 }
 

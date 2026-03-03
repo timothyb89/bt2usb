@@ -162,6 +162,8 @@ pub async fn handle_set_config(
         crate::usb_hid::CONFIG_KEY_PAN_MULT => preferences::PREF_KEY_PAN_MULTIPLIER,
         crate::usb_hid::CONFIG_KEY_X_MULT => preferences::PREF_KEY_X_MULTIPLIER,
         crate::usb_hid::CONFIG_KEY_Y_MULT => preferences::PREF_KEY_Y_MULTIPLIER,
+        crate::usb_hid::CONFIG_KEY_SCROLL_THRESHOLD => preferences::PREF_KEY_SCROLL_THRESHOLD,
+        crate::usb_hid::CONFIG_KEY_MAX_DETENTS => preferences::PREF_KEY_MAX_DETENTS,
         _ => {
             warn!("Unknown config key: {}", key);
             return;

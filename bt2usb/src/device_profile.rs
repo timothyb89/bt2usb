@@ -14,9 +14,10 @@ use crate::usb_hid::{MouseReport16, HIRES_SCROLL_ENABLED};
 static PREV_SCROLL_RAW: AtomicI32 = AtomicI32::new(0);
 static SCROLL_ACCUMULATOR: AtomicI32 = AtomicI32::new(0);
 
-/// Threshold in raw scroll units before emitting an event in standard mode.
-/// 120 = one standard detent in the HID Resolution Multiplier spec.
-const SCROLL_ACCUMULATOR_THRESHOLD: i32 = 120;
+/// Load the scroll accumulator threshold from the configurable atomic.
+fn scroll_threshold() -> i32 {
+    crate::usb_hid::SCROLL_THRESHOLD.load(Ordering::Relaxed) as i32
+}
 
 /// Reset scroll accumulator state (call on USB reconfiguration).
 pub fn reset_scroll_accumulator() {
@@ -213,9 +214,9 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
             prev_acc + raw as i32
         };
 
-        if new_acc.abs() >= SCROLL_ACCUMULATOR_THRESHOLD {
-            let detents = new_acc / SCROLL_ACCUMULATOR_THRESHOLD;
-            let remainder = new_acc % SCROLL_ACCUMULATOR_THRESHOLD;
+        if new_acc.abs() >= scroll_threshold() {
+            let detents = new_acc / scroll_threshold();
+            let remainder = new_acc % scroll_threshold();
             SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
             debug!(
                 "8-bit mode (standard/accum): acc={} -> emit {} detents, remainder={}",
@@ -323,7 +324,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         //
         // Direction changes reset the accumulator for responsive reversals.
         // Detents are capped so fast scrolling doesn't produce large bursts.
-        const MAX_DETENTS_PER_EMIT: i32 = 3;
+        let max_detents = crate::usb_hid::MAX_DETENTS_PER_EMIT.load(Ordering::Relaxed) as i32;
 
         let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
 
@@ -334,10 +335,10 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
             prev_acc + clean_raw as i32
         };
 
-        if new_acc.abs() >= SCROLL_ACCUMULATOR_THRESHOLD {
-            let detents = (new_acc / SCROLL_ACCUMULATOR_THRESHOLD)
-                .clamp(-MAX_DETENTS_PER_EMIT, MAX_DETENTS_PER_EMIT);
-            let remainder = new_acc - detents * SCROLL_ACCUMULATOR_THRESHOLD;
+        if new_acc.abs() >= scroll_threshold() {
+            let detents = (new_acc / scroll_threshold())
+                .clamp(-max_detents, max_detents);
+            let remainder = new_acc - detents * scroll_threshold();
             SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
             // Emit detent count (±1..±3) rather than ×120 magnitude.
             // Small values stay in macOS's linear acceleration region.
