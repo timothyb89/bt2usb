@@ -26,6 +26,8 @@ pub const PREF_KEY_SCROLL_MULTIPLIER: u8 = 2;
 pub const PREF_KEY_PAN_MULTIPLIER: u8 = 3;
 pub const PREF_KEY_X_MULTIPLIER: u8 = 4;
 pub const PREF_KEY_Y_MULTIPLIER: u8 = 5;
+pub const PREF_KEY_SCROLL_THRESHOLD: u8 = 6;
+pub const PREF_KEY_MAX_DETENTS: u8 = 7;
 
 /// Active device preference - which device to auto-connect to
 #[derive(Clone, Debug)]
@@ -157,6 +159,41 @@ impl<'a> Value<'a> for MultiplierValue {
         }
         let percent = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
         Ok(MultiplierValue { percent })
+    }
+}
+
+/// Load a u32 preference from flash with a custom default.
+pub async fn load_u32_preference(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    key: u8,
+    default: u32,
+) -> u32 {
+    let mut buffer = [0u8; 64];
+    match fetch_item::<u8, MultiplierValue, _>(
+        flash,
+        flash_range(),
+        &mut NoCache::new(),
+        &mut buffer,
+        &key,
+    )
+    .await
+    {
+        Ok(Some(val)) => {
+            debug!("Loaded preference key={}: {}", key, val.percent);
+            val.percent
+        }
+        Ok(None) => {
+            debug!("No preference for key={}, defaulting to {}", key, default);
+            default
+        }
+        Err(e) => {
+            warn!(
+                "Error loading preference key={}: {:?}",
+                key,
+                defmt::Debug2Format(&e)
+            );
+            default
+        }
     }
 }
 

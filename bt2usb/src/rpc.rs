@@ -327,12 +327,15 @@ async fn dispatch_request(
         }
 
         protocol::Request::GetConfig => {
-            let scroll =
-                crate::usb_hid::MULTIPLIER_SCROLL.load(core::sync::atomic::Ordering::Relaxed);
-            let pan = crate::usb_hid::MULTIPLIER_PAN.load(core::sync::atomic::Ordering::Relaxed);
-            let x = crate::usb_hid::MULTIPLIER_X.load(core::sync::atomic::Ordering::Relaxed);
-            let y = crate::usb_hid::MULTIPLIER_Y.load(core::sync::atomic::Ordering::Relaxed);
-            protocol::encode_response_config(cbor_buf, scroll, pan, x, y).unwrap_or(0)
+            use core::sync::atomic::Ordering::Relaxed;
+            let scroll = crate::usb_hid::MULTIPLIER_SCROLL.load(Relaxed);
+            let pan = crate::usb_hid::MULTIPLIER_PAN.load(Relaxed);
+            let x = crate::usb_hid::MULTIPLIER_X.load(Relaxed);
+            let y = crate::usb_hid::MULTIPLIER_Y.load(Relaxed);
+            let threshold = crate::usb_hid::SCROLL_THRESHOLD.load(Relaxed);
+            let max_detents = crate::usb_hid::MAX_DETENTS_PER_EMIT.load(Relaxed);
+            protocol::encode_response_config(cbor_buf, scroll, pan, x, y, threshold, max_detents)
+                .unwrap_or(0)
         }
 
         protocol::Request::SetConfig { key, value } => {
@@ -353,6 +356,14 @@ async fn dispatch_request(
                 }
                 CONFIG_KEY_Y_MULT => {
                     MULTIPLIER_Y.store(*value, Relaxed);
+                    true
+                }
+                CONFIG_KEY_SCROLL_THRESHOLD => {
+                    SCROLL_THRESHOLD.store(*value, Relaxed);
+                    true
+                }
+                CONFIG_KEY_MAX_DETENTS => {
+                    MAX_DETENTS_PER_EMIT.store(*value, Relaxed);
                     true
                 }
                 _ => false,

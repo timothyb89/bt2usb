@@ -41,11 +41,21 @@ pub static MULTIPLIER_PAN: AtomicU32 = AtomicU32::new(100);
 pub static MULTIPLIER_X: AtomicU32 = AtomicU32::new(100);
 pub static MULTIPLIER_Y: AtomicU32 = AtomicU32::new(100);
 
-/// Config keys for axis multipliers (shared with protocol/RPC layer)
+/// Config keys (shared with protocol/RPC layer)
 pub const CONFIG_KEY_SCROLL_MULT: u8 = 0;
 pub const CONFIG_KEY_PAN_MULT: u8 = 1;
 pub const CONFIG_KEY_X_MULT: u8 = 2;
 pub const CONFIG_KEY_Y_MULT: u8 = 3;
+pub const CONFIG_KEY_SCROLL_THRESHOLD: u8 = 4;
+pub const CONFIG_KEY_MAX_DETENTS: u8 = 5;
+
+/// Scroll accumulator threshold (raw units before emitting).
+/// Default 120 = one standard detent in HID Resolution Multiplier spec.
+pub static SCROLL_THRESHOLD: AtomicU32 = AtomicU32::new(120);
+
+/// Maximum detents emitted per scroll event in standard mode.
+/// Caps fast-scroll bursts to stay in macOS's linear acceleration region.
+pub static MAX_DETENTS_PER_EMIT: AtomicU32 = AtomicU32::new(3);
 
 /// Apply a percentage multiplier to an i8 value, clamping to i8 range.
 pub fn apply_multiplier_i8(value: i8, multiplier_pct: u32) -> i8 {

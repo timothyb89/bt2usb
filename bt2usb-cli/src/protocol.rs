@@ -133,6 +133,8 @@ pub fn config_key_from_name(name: &str) -> Option<u8> {
         "pan" => Some(1),
         "x" => Some(2),
         "y" => Some(3),
+        "threshold" => Some(4),
+        "max_detents" => Some(5),
         _ => None,
     }
 }
@@ -271,6 +273,8 @@ pub enum Response {
         pan_mult: u32,
         x_mult: u32,
         y_mult: u32,
+        scroll_threshold: u32,
+        max_detents: u32,
     },
     Version {
         version: String,
@@ -359,11 +363,16 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             let pan_mult = d.u32().map_err(|e| format!("pan: {e}"))?;
             let x_mult = d.u32().map_err(|e| format!("x: {e}"))?;
             let y_mult = d.u32().map_err(|e| format!("y: {e}"))?;
+            // New fields (backward compatible — default if missing)
+            let scroll_threshold = d.u32().unwrap_or(120);
+            let max_detents = d.u32().unwrap_or(3);
             Ok(Response::Config {
                 scroll_mult,
                 pan_mult,
                 x_mult,
                 y_mult,
+                scroll_threshold,
+                max_detents,
             })
         }
         RESP_VERSION => {

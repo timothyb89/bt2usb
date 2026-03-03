@@ -292,6 +292,15 @@
           <input type="range" id="multY" min="0" max="500" step="10" value="100" oninput="previewMult(this,'multYVal')" onchange="setMultiplier(3,this.value)">
           <span id="multYVal">100%</span>
         </div>
+        <h2 style="margin-top:1rem">Scroll Tuning</h2>
+        <div style="display:grid;grid-template-columns:90px 1fr 50px;gap:0.4rem 0.75rem;align-items:center;font-size:0.9rem;">
+          <span class="info-label">Threshold</span>
+          <input type="range" id="scrollThreshold" min="10" max="500" step="10" value="120" oninput="previewVal(this,'scrollThresholdVal')" onchange="setMultiplier(4,this.value)">
+          <span id="scrollThresholdVal">120</span>
+          <span class="info-label">Max Detents</span>
+          <input type="range" id="maxDetents" min="1" max="10" step="1" value="3" oninput="previewVal(this,'maxDetentsVal')" onchange="setMultiplier(5,this.value)">
+          <span id="maxDetentsVal">3</span>
+        </div>
       </div>
 
       <!-- Bonded Devices Panel -->
@@ -954,18 +963,24 @@
     }
 
     // ============ Config / Multipliers ============
-    const MULT_IDS = ['multScroll', 'multPan', 'multX', 'multY'];
-    const MULT_VAL_IDS = ['multScrollVal', 'multPanVal', 'multXVal', 'multYVal'];
+    const MULT_IDS = ['multScroll', 'multPan', 'multX', 'multY', 'scrollThreshold', 'maxDetents'];
+    const MULT_VAL_IDS = ['multScrollVal', 'multPanVal', 'multXVal', 'multYVal', 'scrollThresholdVal', 'maxDetentsVal'];
+    const CONFIG_NAMES = ['scroll', 'pan', 'x', 'y', 'threshold', 'max_detents'];
 
     function previewMult(slider, valId) {
       document.getElementById(valId).textContent = slider.value + '%';
+    }
+
+    function previewVal(slider, valId) {
+      document.getElementById(valId).textContent = slider.value;
     }
 
     async function setMultiplier(key, value) {
       try {
         const resp = await sendRequest(CBOR.encode([CMD_SET_CONFIG, key, parseInt(value)]));
         if (resp[0] === RESP_OK) {
-          appendLog(1, `Set ${['scroll','pan','x','y'][key]} multiplier to ${value}%`);
+          const suffix = key < 4 ? '%' : '';
+          appendLog(1, `Set ${CONFIG_NAMES[key]} to ${value}${suffix}`);
         } else if (resp[0] === RESP_ERROR) {
           appendLog(3, `Set config error: ${resp[2]}`);
         }
@@ -978,10 +993,12 @@
       try {
         const resp = await sendSimpleRequest(CMD_GET_CONFIG);
         if (resp[0] === RESP_CONFIG) {
-          const values = [resp[1], resp[2], resp[3], resp[4]];
-          for (let i = 0; i < 4; i++) {
-            document.getElementById(MULT_IDS[i]).value = values[i];
-            document.getElementById(MULT_VAL_IDS[i]).textContent = values[i] + '%';
+          for (let i = 0; i < MULT_IDS.length; i++) {
+            const val = resp[1 + i];
+            if (val !== undefined) {
+              document.getElementById(MULT_IDS[i]).value = val;
+              document.getElementById(MULT_VAL_IDS[i]).textContent = val + (i < 4 ? '%' : '');
+            }
           }
         }
       } catch (e) {

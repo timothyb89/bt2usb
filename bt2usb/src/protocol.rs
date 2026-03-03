@@ -325,17 +325,19 @@ pub fn encode_response_version(buf: &mut [u8], version: &str) -> EncResult {
     })
 }
 
-/// Encode a config response with all multiplier values.
-/// Format: [RESP_CONFIG, scroll_pct, pan_pct, x_pct, y_pct]
+/// Encode a config response with all configurable values.
+/// Format: [RESP_CONFIG, scroll_pct, pan_pct, x_pct, y_pct, scroll_threshold, max_detents]
 pub fn encode_response_config(
     buf: &mut [u8],
     scroll_mult: u32,
     pan_mult: u32,
     x_mult: u32,
     y_mult: u32,
+    scroll_threshold: u32,
+    max_detents: u32,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(5)
+        e.array(7)
             .unwrap()
             .u8(RESP_CONFIG)
             .unwrap()
@@ -346,6 +348,10 @@ pub fn encode_response_config(
             .u32(x_mult)
             .unwrap()
             .u32(y_mult)
+            .unwrap()
+            .u32(scroll_threshold)
+            .unwrap()
+            .u32(max_detents)
             .unwrap();
     })
 }
