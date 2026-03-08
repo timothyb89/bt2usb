@@ -1,0 +1,4 @@
+[alias]
+# Build the bt2usb firmware for the Raspberry Pi Pico W (RP2040)
+build-firmware = "build -p bt2usb --target thumbv6m-none-eabi"
+build-firmware-release = "build -p bt2usb --target thumbv6m-none-eabi --release"
