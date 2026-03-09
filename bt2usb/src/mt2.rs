@@ -88,9 +88,16 @@ pub const DEVICE_MGMT_REPORT_DESC: &[u8] = &[
 
 /// HID report descriptor for Interface 1 — Mouse + Digitizer TouchPad.
 ///
-/// Byte-for-byte match of the real MT2's Interface 1 descriptor (110 bytes).
-/// No Feature reports are declared — the real device relies on the Apple
-/// TopCase HID driver's hardcoded knowledge to issue GET_REPORT requests.
+/// Collection 1: Mouse (Generic Desktop) — Report ID 0x02, 7 bytes Input (bytes 1-7)
+/// Collection 2: Digitizer Touch Pad — Report ID 0x02, 22 bytes Input (bytes 8-29)
+///   with Finger transducers + Report ID 0x3F vendor data + Feature declarations
+/// Collection 3: Vendor Multitouch — Report ID 0x44 (1387 bytes)
+///
+/// The real MT2 has a 110-byte descriptor without Finger elements or Feature
+/// declarations. TopCase augments it for genuine hardware. Since we don't get
+/// augmented, we add Finger collections with full Digitizer elements (Tip Switch,
+/// Contact Identifier, X, Y) so macOS creates valid digitizer transducers, plus
+/// Feature declarations for AppleMultitouchDevice::decodeDeviceProperty.
 pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     // === Collection 1: Mouse (Generic Desktop / Mouse) ===
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -125,9 +132,96 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0xC0,             // End Collection (Application)
 
     // === Collection 2: Digitizer Touch Pad ===
+    //
+    // Report ID 0x02 bytes 8-29 (22 bytes = 176 bits additional Input data).
+    // Collection 1 declares bytes 1-7 (7 bytes). Combined total = 29 bytes = our 30-byte report.
+    //
+    // Also provides Digitizer Finger transducers so macOS creates digitizer elements
+    // (fixes "Invalid digitizer transducer" / "digitizer: 0" from the event driver).
+    //
+    // Report ID 0x3F (16 bytes) retained for backward compatibility.
+    // Feature reports declared for AppleMultitouchDevice::decodeDeviceProperty.
     0x05, 0x0D,       // Usage Page (Digitizer)
     0x09, 0x05,       // Usage (Touch Pad)
     0xA1, 0x01,       // Collection (Application)
+
+    // --- Report ID 0x02: 22 bytes of Input (bytes 8-29 of the 30-byte touch report) ---
+    0x85, 0x02,       //   Report ID (0x02)
+
+    // Header padding: 4 bytes (bytes 8-11: format marker, timestamp, constant)
+    0x75, 0x08,       //   Report Size (8)
+    0x95, 0x04,       //   Report Count (4)
+    0x81, 0x01,       //   Input (Constant)
+
+    // Finger 0: 9 bytes (bytes 12-20)
+    // Layout: Tip Switch(1) + pad(7) + Contact ID(8) + X(16) + Y(16) + pad(24) = 72 bits
+    // macOS requires X/Y elements in Finger collections to create valid digitizer transducers.
+    // The actual touch data is decoded by AppleMultitouchDevice using its proprietary
+    // wire format (same as Linux kernel's hid-magicmouse.c), not this HID layout.
+    0x05, 0x0D,       //   Usage Page (Digitizer)
+    0x09, 0x22,       //   Usage (Finger)
+    0xA1, 0x02,       //   Collection (Logical)
+    0x09, 0x42,       //     Usage (Tip Switch)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x01,       //     Logical Maximum (1)
+    0x75, 0x01,       //     Report Size (1)
+    0x95, 0x01,       //     Report Count (1)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x07,       //     Report Size (7) — padding to byte align
+    0x81, 0x01,       //     Input (Constant)
+    0x09, 0x51,       //     Usage (Contact Identifier)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x0F,       //     Logical Maximum (15)
+    0x75, 0x08,       //     Report Size (8)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x05, 0x01,       //     Usage Page (Generic Desktop)
+    0x09, 0x30,       //     Usage (X)
+    0x16, 0xA2, 0xF1, //     Logical Minimum (-3678)
+    0x26, 0x5E, 0x0F, //     Logical Maximum (3934)
+    0x75, 0x10,       //     Report Size (16)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x09, 0x31,       //     Usage (Y)
+    0x16, 0x52, 0xF6, //     Logical Minimum (-2478)
+    0x26, 0x1B, 0x0A, //     Logical Maximum (2587)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x08,       //     Report Size (8)
+    0x95, 0x03,       //     Report Count (3)
+    0x81, 0x01,       //     Input (Constant) — 3 bytes padding
+    0xC0,             //   End Collection (Logical)
+
+    // Finger 1: 9 bytes (bytes 21-29) — same structure
+    0x05, 0x0D,       //   Usage Page (Digitizer)
+    0x09, 0x22,       //   Usage (Finger)
+    0xA1, 0x02,       //   Collection (Logical)
+    0x09, 0x42,       //     Usage (Tip Switch)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x01,       //     Logical Maximum (1)
+    0x75, 0x01,       //     Report Size (1)
+    0x95, 0x01,       //     Report Count (1)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x07,       //     Report Size (7)
+    0x81, 0x01,       //     Input (Constant)
+    0x09, 0x51,       //     Usage (Contact Identifier)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x0F,       //     Logical Maximum (15)
+    0x75, 0x08,       //     Report Size (8)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x05, 0x01,       //     Usage Page (Generic Desktop)
+    0x09, 0x30,       //     Usage (X)
+    0x16, 0xA2, 0xF1, //     Logical Minimum (-3678)
+    0x26, 0x5E, 0x0F, //     Logical Maximum (3934)
+    0x75, 0x10,       //     Report Size (16)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x09, 0x31,       //     Usage (Y)
+    0x16, 0x52, 0xF6, //     Logical Minimum (-2478)
+    0x26, 0x1B, 0x0A, //     Logical Maximum (2587)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x08,       //     Report Size (8)
+    0x95, 0x03,       //     Report Count (3)
+    0x81, 0x01,       //     Input (Constant)
+    0xC0,             //   End Collection (Logical)
+
+    // --- Report ID 0x3F: 16 bytes vendor Input (backward compatibility) ---
     0x06, 0x00, 0xFF, //   Usage Page (Vendor 0xFF00)
     0x09, 0x0C,       //   Usage (Vendor 0x0C)
     0x15, 0x00,       //   Logical Minimum (0)
@@ -136,6 +230,20 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x95, 0x10,       //   Report Count (16)
     0x85, 0x3F,       //   Report ID (0x3F)
     0x81, 0x22,       //   Input (Data, Variable, Absolute, No Preferred)
+
+    // --- Vendor Feature reports (for AppleMultitouchDevice::decodeDeviceProperty) ---
+    0x09, 0x0C,       //   Usage (Vendor 0x0C)
+    0x85, 0x02,       //   Report ID (0x02) — multitouch activation
+    0x95, 0x01,       //   Report Count (1)
+    0xB1, 0x02,       //   Feature (Data, Variable, Absolute)
+    0x09, 0x0C, 0x85, 0x01, 0x95, 0x04, 0xB1, 0x02, // Feature 0x01 (4 bytes)
+    0x09, 0x0C, 0x85, 0xDB, 0x95, 0x4B, 0xB1, 0x02, // Feature 0xDB (75 bytes)
+    0x09, 0x0C, 0x85, 0xD1, 0x95, 0x01, 0xB1, 0x02, // Feature 0xD1 (1 byte)
+    0x09, 0x0C, 0x85, 0xD3, 0x95, 0x0E, 0xB1, 0x02, // Feature 0xD3 (14 bytes)
+    0x09, 0x0C, 0x85, 0xD0, 0x95, 0x0F, 0xB1, 0x02, // Feature 0xD0 (15 bytes)
+    0x09, 0x0C, 0x85, 0xA1, 0x95, 0x06, 0xB1, 0x02, // Feature 0xA1 (6 bytes)
+    0x09, 0x0C, 0x85, 0xD9, 0x95, 0x10, 0xB1, 0x02, // Feature 0xD9 (16 bytes)
+    0x09, 0x0C, 0x85, 0x7F, 0x95, 0x04, 0xB1, 0x02, // Feature 0x7F (4 bytes)
     0xC0,             // End Collection
 
     // === Collection 3: Vendor Multitouch ===
@@ -294,18 +402,30 @@ fn write_feature(buf: &mut [u8], report_id: u8, data: &[u8]) -> usize {
 /// Feature report handler for Interface 1 (Mouse/Trackpad).
 ///
 /// Serves Apple proprietary feature reports and handles multitouch activation.
-pub struct Mt2TrackpadRequestHandler;
+/// Feature 0x01 is stateful: the driver SETs a selector, then GETs the response.
+pub struct Mt2TrackpadRequestHandler {
+    /// Last data written via SET Feature(0x01). The driver uses this to select
+    /// which sub-report to read. GET Feature(0x01) echoes it back.
+    feature_01_data: [u8; 4],
+}
+
+impl Mt2TrackpadRequestHandler {
+    pub const fn new() -> Self {
+        Self {
+            // Default from real device capture
+            feature_01_data: [0x99, 0x00, 0x02, 0x00],
+        }
+    }
+}
 
 impl RequestHandler for Mt2TrackpadRequestHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         let len = match id {
             ReportId::Feature(0x00) => {
                 // Default/device info. Real device returns [0x00, 0x01].
-                // Not declared in descriptor (ID 0 is special in HID),
-                // but macOS queries it repeatedly during init.
                 write_feature(buf, 0x00, &[0x01])
             }
-            ReportId::Feature(0x01) => write_feature(buf, 0x01, FEATURE_01_IF1),
+            ReportId::Feature(0x01) => write_feature(buf, 0x01, &self.feature_01_data),
             ReportId::Feature(0x02) => {
                 // Multitouch activation state
                 let enabled = MT_ENABLED.load(Ordering::Relaxed);
@@ -330,6 +450,20 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
 
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
         match id {
+            ReportId::Feature(0x01) => {
+                // Sub-report selector: driver writes selector, then reads it back
+                let copy_len = data.len().min(self.feature_01_data.len());
+                self.feature_01_data[..copy_len].copy_from_slice(&data[..copy_len]);
+                if data.len() >= 2 {
+                    info!(
+                        "MT2 trackpad: SET Feature(0x01) -> [{:02X} {:02X}]",
+                        data[0], data[1]
+                    );
+                } else {
+                    info!("MT2 trackpad: SET Feature(0x01) ({} bytes)", data.len());
+                }
+                OutResponse::Accepted
+            }
             ReportId::Feature(0x02) => {
                 // Multitouch activation: {0x02, 0x01} enables, {0x02, 0x00} disables
                 if !data.is_empty() {
@@ -377,6 +511,7 @@ impl RequestHandler for Mt2DeviceMgmtRequestHandler {
             ]),
             ReportId::Feature(0x14) => write_feature(buf, 0x14, &[0x00]),
             ReportId::Feature(0xB8) => write_feature(buf, 0xB8, &[0x48, 0x00]),
+            ReportId::Feature(0xBC) => write_feature(buf, 0xBC, &[0x00]),
             // Battery status (Input report, queried via GET_REPORT)
             // Format: 3 flag bits (Good|Charging|Unknown) + 5 pad + charge%
             ReportId::In(0x90) => write_feature(buf, 0x90, &[0x01, 0x64]),
@@ -402,6 +537,37 @@ impl RequestHandler for Mt2DeviceMgmtRequestHandler {
         } else {
             info!("MT2 devmgmt: SET {:?} ({} bytes) -> accepted", id, data.len());
         }
+        OutResponse::Accepted
+    }
+
+    fn set_idle_ms(&mut self, _id: Option<ReportId>, _dur: u32) {}
+    fn get_idle_ms(&mut self, _id: Option<ReportId>) -> Option<u32> { None }
+}
+
+/// Feature report handler for Interface 2 (Vendor/Actuator).
+///
+/// Handles Feature 0x4A (actuator report) to avoid STALLing the
+/// AppleActuatorHIDEventDriver. Returns zeroed data.
+pub struct Mt2VendorActuatorRequestHandler;
+
+impl RequestHandler for Mt2VendorActuatorRequestHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(0x4A) => {
+                // Actuator device properties — return zeroed data to avoid STALL
+                let len = write_feature(buf, 0x4A, &[0x00; 16]);
+                info!("MT2 actuator: GET Feature(0x4A) -> {} bytes", len);
+                Some(len)
+            }
+            _ => {
+                info!("MT2 actuator: GET {:?} -> not handled", id);
+                None
+            }
+        }
+    }
+
+    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
+        info!("MT2 actuator: SET {:?} ({} bytes) -> accepted", id, data.len());
         OutResponse::Accepted
     }
 

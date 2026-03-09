@@ -16,6 +16,7 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
 use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
+use embassy_usb::control::InResponse;
 use static_cell::StaticCell;
 
 use crate::ble_hid::{HidReportType, BATTERY_USB_SIGNAL, HID_REPORT_CHANNEL};
@@ -194,6 +195,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
 
     static HANDLER_IF0: StaticCell<mt2::Mt2DeviceMgmtRequestHandler> = StaticCell::new();
     static HANDLER_IF1: StaticCell<mt2::Mt2TrackpadRequestHandler> = StaticCell::new();
+    static HANDLER_IF2: StaticCell<mt2::Mt2VendorActuatorRequestHandler> = StaticCell::new();
     static DEVICE_HANDLER: StaticCell<Mt2UsbDeviceHandler> = StaticCell::new();
 
     let config_desc_buf = CONFIG_DESC.init([0; 512]);
@@ -224,7 +226,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
 
     // Interface 1: Mouse/Trackpad — HidWriter for touch reports
     let if1_config_with_handler = embassy_usb::class::hid::Config {
-        request_handler: Some(HANDLER_IF1.init(mt2::Mt2TrackpadRequestHandler)),
+        request_handler: Some(HANDLER_IF1.init(mt2::Mt2TrackpadRequestHandler::new())),
         ..if1_config
     };
     let trackpad_writer = HidWriter::<_, 64>::new(
@@ -234,10 +236,14 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     );
 
     // Interface 2: Vendor stub (FF00/0D) — has IN + OUT in real device
+    let if2_config_with_handler = embassy_usb::class::hid::Config {
+        request_handler: Some(HANDLER_IF2.init(mt2::Mt2VendorActuatorRequestHandler)),
+        ..if2_config
+    };
     let if2_hid = HidReaderWriter::<_, 64, 64>::new(
         &mut builder,
         STATE_IF2.init(embassy_usb::class::hid::State::new()),
-        if2_config,
+        if2_config_with_handler,
     );
     let (_if2_reader, _if2_writer) = if2_hid.split();
 
@@ -318,6 +324,42 @@ impl embassy_usb::Handler for Mt2UsbDeviceHandler {
             debug!("MT2 USB suspended");
         } else {
             debug!("MT2 USB resumed");
+        }
+    }
+
+    fn control_out(
+        &mut self,
+        req: embassy_usb::control::Request,
+        data: &[u8],
+    ) -> Option<embassy_usb::control::OutResponse> {
+        // Only handle Vendor requests — Standard/Class must pass through to HID class handlers
+        match req.request_type {
+            embassy_usb::control::RequestType::Vendor => {
+                info!(
+                    "MT2 USB CTRL OUT vendor: req=0x{:02X} val=0x{:04X} idx=0x{:04X} len={}",
+                    req.request, req.value, req.index, data.len()
+                );
+                Some(embassy_usb::control::OutResponse::Accepted)
+            }
+            _ => None,
+        }
+    }
+
+    fn control_in<'a>(
+        &'a mut self,
+        req: embassy_usb::control::Request,
+        _buf: &'a mut [u8],
+    ) -> Option<InResponse<'a>> {
+        // Only handle Vendor requests — Standard/Class must pass through to HID class handlers
+        match req.request_type {
+            embassy_usb::control::RequestType::Vendor => {
+                info!(
+                    "MT2 USB CTRL IN vendor: req=0x{:02X} val=0x{:04X} idx=0x{:04X} len={}",
+                    req.request, req.value, req.index, req.length
+                );
+                Some(InResponse::Accepted(&[]))
+            }
+            _ => None,
         }
     }
 }
