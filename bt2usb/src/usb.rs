@@ -62,18 +62,23 @@ async fn usb_hid_handler_task(
                             continue;
                         }
 
-                        // Extract scroll delta from BLE mouse report.
-                        // For 16-bit profiles: bytes at offset 3-4 are wheel (little-endian i16).
-                        // For 8-bit profiles: byte at offset 3 is wheel (i8).
+                        // Extract RAW scroll delta from BLE mouse report.
+                        // In MT2 mode we need every delta immediately — the threshold
+                        // accumulator in device_profile.rs is designed for standard mouse
+                        // reports and would swallow small deltas. We bypass it entirely.
+                        //
+                        // Full Scroll Dial (16-bit): BLE report = 2-byte LE scroll delta.
+                        // Other profiles (8-bit): scroll at byte 3 (after buttons, X, Y).
                         let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
-                            let report = event
-                                .profile
-                                .translate_mouse_report_16bit(&event.data, event.len);
-                            report.wheel
+                            if event.len >= 2 {
+                                i16::from_le_bytes([event.data[0], event.data[1]])
+                            } else {
+                                0
+                            }
+                        } else if event.len >= 4 {
+                            event.data[3] as i8 as i16
                         } else {
-                            let report =
-                                event.profile.translate_mouse_report(&event.data, event.len);
-                            report.wheel as i16
+                            0
                         };
 
                         if scroll_delta != 0 {
@@ -138,6 +143,11 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     config.device_release = mt2::MT2_DEVICE_RELEASE;
     config.max_power = 500; // MT2 reports 500mA
     config.max_packet_size_0 = 64;
+    // Real MT2 has device class 0/0/0 — disable IAD mode which forces 0xEF/0x02/0x01
+    config.composite_with_iads = false;
+    config.device_class = 0;
+    config.device_sub_class = 0;
+    config.device_protocol = 0;
 
     // Interface 0: Device Management (FF00/0B) — request handler for activation
     let if0_config = embassy_usb::class::hid::Config {
@@ -186,10 +196,13 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     static HANDLER_IF1: StaticCell<mt2::Mt2TrackpadRequestHandler> = StaticCell::new();
     static DEVICE_HANDLER: StaticCell<Mt2UsbDeviceHandler> = StaticCell::new();
 
+    let config_desc_buf = CONFIG_DESC.init([0; 512]);
+    // Save raw pointer for post-build patching of IF1 subclass/protocol
+    let config_desc_ptr = config_desc_buf.as_mut_ptr();
     let mut builder = embassy_usb::Builder::new(
         driver,
         config,
-        CONFIG_DESC.init([0; 512]),
+        config_desc_buf,
         BOS_DESC.init([0; 256]),
         MS_DESC.init([0; 256]),
         CONTROL_BUF.init([0; 128]),
@@ -236,6 +249,24 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     );
 
     let usb_dev = builder.build();
+
+    // Patch IF1 subclass/protocol in the config descriptor.
+    // embassy-usb hardcodes HID subclass=0x00, protocol=0x00 for all interfaces.
+    // Real MT2 IF1 has subclass=0x01 (Boot Interface), protocol=0x02 (Mouse).
+    // The Apple TopCase HID driver likely checks these for device identity.
+    unsafe {
+        let desc = core::slice::from_raw_parts_mut(config_desc_ptr, 512);
+        for i in 0..desc.len().saturating_sub(8) {
+            // USB Interface descriptor: bLength=9, bDescriptorType=4, bInterfaceNumber=1
+            if desc[i] == 9 && desc[i + 1] == 4 && desc[i + 2] == 1 && desc[i + 3] == 0 {
+                desc[i + 6] = 0x01; // bInterfaceSubClass = Boot Interface
+                desc[i + 7] = 0x02; // bInterfaceProtocol = Mouse
+                info!("Patched IF1 subclass=0x01 protocol=0x02");
+                break;
+            }
+        }
+    }
+
     info!("[core1] MT2 USB device initialized (4 interfaces)");
 
     let executor1 = EXECUTOR1.init(Executor::new());

@@ -33,8 +33,10 @@ pub static MT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// HID report descriptor for Interface 0 — Device Management.
 ///
-/// Matches the real MT2's Interface 0 descriptor (83 bytes) plus additional
-/// feature report declarations for reports macOS queries during initialization.
+/// Byte-for-byte match of the real MT2's Interface 0 descriptor (83 bytes).
+/// No Feature reports are declared — the real device relies on the driver's
+/// hardcoded knowledge of Apple devices to issue GET_REPORT requests, and
+/// our RequestHandler serves them without descriptor declarations.
 pub const DEVICE_MGMT_REPORT_DESC: &[u8] = &[
     // === Collection 1: Vendor Device Management (FF00/0B) ===
     0x06, 0x00, 0xFF, // Usage Page (Vendor 0xFF00)
@@ -54,48 +56,12 @@ pub const DEVICE_MGMT_REPORT_DESC: &[u8] = &[
     0x96, 0x01, 0x00, //   Report Count (1)
     0x85, 0x9A,       //   Report ID (0x9A)
     0x81, 0x22,       //   Input (Data, Variable, Absolute, No Preferred)
-    // Feature: Report ID 0xC3 (1 data byte — activation control)
-    0x85, 0xC3,       //   Report ID (0xC3)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x01,       //   Report Count (1)
-    0xB1, 0x02,       //   Feature (Data, Variable, Absolute)
-    // Feature: Report ID 0xDB (3 data bytes)
-    0x85, 0xDB,       //   Report ID (0xDB)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x03,       //   Report Count (3)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xD1 (2 data bytes)
-    0x85, 0xD1,       //   Report ID (0xD1)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x02,       //   Report Count (2)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0x34 (76 data bytes — Bluetooth info)
-    0x85, 0x34,       //   Report ID (0x34)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x4C,       //   Report Count (76)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xB4 (2 data bytes — ST firmware version)
-    0x85, 0xB4,       //   Report ID (0xB4)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x02,       //   Report Count (2)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xC5 (1 data byte — wake reason)
-    0x85, 0xC5,       //   Report ID (0xC5)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x01,       //   Report Count (1)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xE0 (4 data bytes — critical error, Feature variant)
-    0x85, 0xE0,       //   Report ID (0xE0)
-    0x09, 0x0B,       //   Usage
-    0x95, 0x04,       //   Report Count (4)
-    0xB1, 0x02,       //   Feature
     0xC0,             // End Collection
 
     // === Collection 2: Power/Battery (FF00/0x14) ===
     0x06, 0x00, 0xFF, // Usage Page (Vendor 0xFF00)
     0x09, 0x14,       // Usage (Vendor 0x14)
     0xA1, 0x01,       // Collection (Application)
-    // Input: Report ID 0x90 (battery/power status)
     0x85, 0x90,       //   Report ID (0x90)
     0x05, 0x84,       //   Usage Page (Power Device)
     0x75, 0x01,       //   Report Size (1)
@@ -122,14 +88,9 @@ pub const DEVICE_MGMT_REPORT_DESC: &[u8] = &[
 
 /// HID report descriptor for Interface 1 — Mouse + Digitizer TouchPad.
 ///
-/// This is the critical interface for multitouch. It contains:
-/// - Mouse collection (Report ID 0x02): standard buttons + X/Y + padding
-/// - Digitizer Touch Pad collection (Report ID 0x3F): 16-byte vendor input
-/// - Vendor collection (Report ID 0x44): 1387-byte multitouch input
-/// - Feature report declarations for all Apple proprietary calibration reports
-///
-/// The feature report declarations are the KEY FIX from the previous attempt.
-/// Without them, macOS IOKit computes report sizes as 0 and rejects the data.
+/// Byte-for-byte match of the real MT2's Interface 1 descriptor (110 bytes).
+/// No Feature reports are declared — the real device relies on the Apple
+/// TopCase HID driver's hardcoded knowledge to issue GET_REPORT requests.
 pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     // === Collection 1: Mouse (Generic Desktop / Mouse) ===
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -137,7 +98,6 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0xA1, 0x01,       // Collection (Application)
     0x09, 0x01,       //   Usage (Pointer)
     0xA1, 0x00,       //   Collection (Physical)
-    // Buttons (3 bits + 5 padding = 1 byte)
     0x05, 0x09,       //     Usage Page (Button)
     0x19, 0x01,       //     Usage Minimum (1)
     0x29, 0x03,       //     Usage Maximum (3)
@@ -150,7 +110,6 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x95, 0x01,       //     Report Count (1)
     0x75, 0x05,       //     Report Size (5)
     0x81, 0x01,       //     Input (Constant) - padding
-    // X, Y movement (2 bytes)
     0x05, 0x01,       //     Usage Page (Generic Desktop)
     0x09, 0x30,       //     Usage (X)
     0x09, 0x31,       //     Usage (Y)
@@ -159,15 +118,13 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x75, 0x08,       //     Report Size (8)
     0x95, 0x02,       //     Report Count (2)
     0x81, 0x06,       //     Input (Data, Variable, Relative)
-    // Padding (4 bytes constant) — matches real MT2 header space
     0x95, 0x04,       //     Report Count (4)
     0x75, 0x08,       //     Report Size (8)
-    0x81, 0x01,       //     Input (Constant)
+    0x81, 0x01,       //     Input (Constant) - padding
     0xC0,             //   End Collection (Physical)
     0xC0,             // End Collection (Application)
 
     // === Collection 2: Digitizer Touch Pad ===
-    // This triggers AppleMultitouchTrackpadHIDEventDriver to load
     0x05, 0x0D,       // Usage Page (Digitizer)
     0x09, 0x05,       // Usage (Touch Pad)
     0xA1, 0x01,       // Collection (Application)
@@ -181,7 +138,7 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x81, 0x22,       //   Input (Data, Variable, Absolute, No Preferred)
     0xC0,             // End Collection
 
-    // === Collection 3: Vendor Multitouch + Feature Reports ===
+    // === Collection 3: Vendor Multitouch ===
     0x06, 0x00, 0xFF, // Usage Page (Vendor 0xFF00)
     0x09, 0x0C,       // Usage (Vendor 0x0C)
     0xA1, 0x01,       // Collection (Application)
@@ -189,64 +146,11 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x09, 0x0C,       //   Usage (Vendor 0x0C)
     0x15, 0x00,       //   Logical Minimum (0)
     0x26, 0xFF, 0x00, //   Logical Maximum (255)
-    0x75, 0x08,       //   Report Size (8)
-    // Input: Report ID 0x44 (1387 bytes — vendor multitouch data)
+    // Report ID before Report Size — matches real device byte order
     0x85, 0x44,       //   Report ID (0x44)
+    0x75, 0x08,       //   Report Size (8)
     0x96, 0x6B, 0x05, //   Report Count (1387)
     0x81, 0x00,       //   Input (Data, Array, Absolute)
-    // --- Apple Proprietary Feature Reports ---
-    // These MUST be declared so macOS IOKit can compute their sizes.
-    // Without these, GET_REPORT returns "Report length is 0" errors.
-    //
-    // Feature: Report ID 0x01 (4 data bytes — multitouch report info)
-    // CRITICAL: AppleMultitouchDevice queries this to learn the MT report format.
-    // Real device returns [0x01, 0x99, 0x00, 0x02, 0x00] — byte 3 = Report ID for MT data.
-    0x85, 0x01,       //   Report ID (0x01)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x04,       //   Report Count (4)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0x02 (1 data byte — multitouch activation)
-    // Note: shares Report ID with Mouse input, which is valid in HID
-    // (Feature and Input can share a Report ID)
-    0x85, 0x02,       //   Report ID (0x02)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x01,       //   Report Count (1)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xDB (75 data bytes — compound device properties)
-    0x85, 0xDB,       //   Report ID (0xDB)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x4B,       //   Report Count (75)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xD1 (1 data byte — device version)
-    0x85, 0xD1,       //   Report ID (0xD1)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x01,       //   Report Count (1)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xD3 (14 data bytes — surface dimensions)
-    0x85, 0xD3,       //   Report ID (0xD3)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x0E,       //   Report Count (14)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xD0 (15 data bytes — calibration)
-    0x85, 0xD0,       //   Report ID (0xD0)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x0F,       //   Report Count (15)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xA1 (6 data bytes — device state)
-    0x85, 0xA1,       //   Report ID (0xA1)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x06,       //   Report Count (6)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0xD9 (16 data bytes — calibration 2)
-    0x85, 0xD9,       //   Report ID (0xD9)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x10,       //   Report Count (16)
-    0xB1, 0x02,       //   Feature
-    // Feature: Report ID 0x7F (4 data bytes — config)
-    0x85, 0x7F,       //   Report ID (0x7F)
-    0x09, 0x0C,       //   Usage
-    0x95, 0x04,       //   Report Count (4)
-    0xB1, 0x02,       //   Feature
     0xC0,             // End Collection
 ];
 
@@ -375,6 +279,18 @@ const FEATURE_E0_IF0: &[u8] = &[0x00, 0x00, 0x00, 0x00];
 
 // ============ Request Handlers ============
 
+/// Write a Feature report response into `buf`, prepending the report ID.
+///
+/// USB HID spec requires GET_REPORT responses to include the report ID as
+/// the first byte when report IDs are in use. embassy-usb does NOT add this
+/// automatically — the handler must include it.
+fn write_feature(buf: &mut [u8], report_id: u8, data: &[u8]) -> usize {
+    buf[0] = report_id;
+    let len = data.len().min(buf.len() - 1);
+    buf[1..1 + len].copy_from_slice(&data[..len]);
+    1 + len
+}
+
 /// Feature report handler for Interface 1 (Mouse/Trackpad).
 ///
 /// Serves Apple proprietary feature reports and handles multitouch activation.
@@ -382,75 +298,34 @@ pub struct Mt2TrackpadRequestHandler;
 
 impl RequestHandler for Mt2TrackpadRequestHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
-        match id {
-            ReportId::Feature(0x01) => {
-                let data = FEATURE_01_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0x01) -> {} bytes", len);
-                Some(len)
+        let len = match id {
+            ReportId::Feature(0x00) => {
+                // Default/device info. Real device returns [0x00, 0x01].
+                // Not declared in descriptor (ID 0 is special in HID),
+                // but macOS queries it repeatedly during init.
+                write_feature(buf, 0x00, &[0x01])
             }
+            ReportId::Feature(0x01) => write_feature(buf, 0x01, FEATURE_01_IF1),
             ReportId::Feature(0x02) => {
                 // Multitouch activation state
                 let enabled = MT_ENABLED.load(Ordering::Relaxed);
-                buf[0] = if enabled { 0x01 } else { 0x00 };
-                info!("MT2 trackpad: GET Feature(0x02) -> {}", buf[0]);
-                Some(1)
+                let val = if enabled { 0x01 } else { 0x00 };
+                write_feature(buf, 0x02, &[val])
             }
-            ReportId::Feature(0xDB) => {
-                let data = FEATURE_DB_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0xDB) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xD1) => {
-                let data = FEATURE_D1_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0xD1) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xD3) => {
-                let data = FEATURE_D3_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0xD3) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xD0) => {
-                let data = FEATURE_D0_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0xD0) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xA1) => {
-                let data = FEATURE_A1_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0xA1) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xD9) => {
-                let data = FEATURE_D9_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0xD9) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0x7F) => {
-                let data = FEATURE_7F_IF1;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 trackpad: GET Feature(0x7F) -> {} bytes", len);
-                Some(len)
-            }
+            ReportId::Feature(0xDB) => write_feature(buf, 0xDB, FEATURE_DB_IF1),
+            ReportId::Feature(0xD1) => write_feature(buf, 0xD1, FEATURE_D1_IF1),
+            ReportId::Feature(0xD3) => write_feature(buf, 0xD3, FEATURE_D3_IF1),
+            ReportId::Feature(0xD0) => write_feature(buf, 0xD0, FEATURE_D0_IF1),
+            ReportId::Feature(0xA1) => write_feature(buf, 0xA1, FEATURE_A1_IF1),
+            ReportId::Feature(0xD9) => write_feature(buf, 0xD9, FEATURE_D9_IF1),
+            ReportId::Feature(0x7F) => write_feature(buf, 0x7F, FEATURE_7F_IF1),
             _ => {
                 info!("MT2 trackpad: GET {:?} -> not handled", id);
-                None
+                return None;
             }
-        }
+        };
+        info!("MT2 trackpad: GET Feature(0x{:02X}) -> {} bytes", buf[0], len);
+        Some(len)
     }
 
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
@@ -483,60 +358,35 @@ pub struct Mt2DeviceMgmtRequestHandler;
 
 impl RequestHandler for Mt2DeviceMgmtRequestHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
-        match id {
+        let len = match id {
             ReportId::Feature(0xC3) => {
                 let enabled = MT_ENABLED.load(Ordering::Relaxed);
-                buf[0] = if enabled { 0x01 } else { 0x00 };
-                info!("MT2 devmgmt: GET Feature(0xC3) -> {}", buf[0]);
-                Some(1)
+                let val = if enabled { 0x01 } else { 0x00 };
+                write_feature(buf, 0xC3, &[val])
             }
-            ReportId::Feature(0xDB) => {
-                let data = FEATURE_DB_IF0;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 devmgmt: GET Feature(0xDB) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xD1) => {
-                let data = FEATURE_D1_IF0;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 devmgmt: GET Feature(0xD1) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0x34) => {
-                let data = FEATURE_34_IF0;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 devmgmt: GET Feature(0x34) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xB4) => {
-                let data = FEATURE_B4_IF0;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 devmgmt: GET Feature(0xB4) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xC5) => {
-                let data = FEATURE_C5_IF0;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 devmgmt: GET Feature(0xC5) -> {} bytes", len);
-                Some(len)
-            }
-            ReportId::Feature(0xE0) => {
-                let data = FEATURE_E0_IF0;
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                info!("MT2 devmgmt: GET Feature(0xE0) -> {} bytes", len);
-                Some(len)
-            }
+            ReportId::Feature(0xDB) => write_feature(buf, 0xDB, FEATURE_DB_IF0),
+            ReportId::Feature(0xD1) => write_feature(buf, 0xD1, FEATURE_D1_IF0),
+            ReportId::Feature(0x34) => write_feature(buf, 0x34, FEATURE_34_IF0),
+            ReportId::Feature(0xB4) => write_feature(buf, 0xB4, FEATURE_B4_IF0),
+            ReportId::Feature(0xC5) => write_feature(buf, 0xC5, FEATURE_C5_IF0),
+            ReportId::Feature(0xE0) => write_feature(buf, 0xE0, FEATURE_E0_IF0),
+            // Reports queried by macOS during init — real device data from capture.
+            ReportId::Feature(0xBB) => write_feature(buf, 0xBB, &[
+                0x01, 0x00, 0x71, 0x08, 0x20, 0x00,
+                0x15, 0x05, 0x30, 0x00, 0x18, 0x03,
+            ]),
+            ReportId::Feature(0x14) => write_feature(buf, 0x14, &[0x00]),
+            ReportId::Feature(0xB8) => write_feature(buf, 0xB8, &[0x48, 0x00]),
+            // Battery status (Input report, queried via GET_REPORT)
+            // Format: 3 flag bits (Good|Charging|Unknown) + 5 pad + charge%
+            ReportId::In(0x90) => write_feature(buf, 0x90, &[0x01, 0x64]),
             _ => {
                 info!("MT2 devmgmt: GET {:?} -> not handled", id);
-                None
+                return None;
             }
-        }
+        };
+        info!("MT2 devmgmt: GET 0x{:02X} -> {} bytes", buf[0], len);
+        Some(len)
     }
 
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
@@ -595,6 +445,9 @@ pub struct TouchSynthesizer {
     fingers_down: bool,
     /// Tick count of the last scroll event (for idle detection).
     last_event_ticks: u64,
+    /// Internal 8kHz-equivalent timestamp for report headers.
+    /// Real MT2 increments by ~88 per report (~11ms * 8kHz).
+    timestamp: u16,
 }
 
 impl TouchSynthesizer {
@@ -603,6 +456,7 @@ impl TouchSynthesizer {
             finger_y: [0, 0],
             fingers_down: false,
             last_event_ticks: 0,
+            timestamp: 0,
         }
     }
 
@@ -662,11 +516,28 @@ impl TouchSynthesizer {
     ///
     /// Format: Report ID 0x02 (overloaded for multitouch after activation).
     /// [0x02, clicks, 10 header bytes, touch0[9], touch1[9]] = 30 bytes.
-    fn build_report(&self, state: u8) -> [u8; 30] {
+    ///
+    /// Header format (from real MT2 USB captures):
+    ///   Byte 1: clicks (0 for scroll)
+    ///   Bytes 2-6: counters/state (zeroed is fine)
+    ///   Byte 7: 0x01 if fingers down, 0x00 if up
+    ///   Byte 8: 0x31 (format marker, always present)
+    ///   Bytes 9-10: 16-bit LE timestamp (8kHz clock)
+    ///   Byte 11: 0x88 (constant marker)
+    fn build_report(&mut self, state: u8) -> [u8; 30] {
         let mut report = [0u8; 30];
         report[0] = 0x02; // Report ID
         report[1] = 0x00; // clicks = 0 (no button press for scroll)
-        // Bytes 2-11: timestamp/metadata — zeroed
+        // Bytes 2-6: zero (real device has minor counters here, not required)
+        report[7] = if state == TOUCH_STATE_DOWN { 0x01 } else { 0x00 };
+        report[8] = 0x31; // Format marker (constant in all real MT2 reports)
+        // Timestamp: 16-bit LE, increments by ~88 per report (~8kHz)
+        report[9] = (self.timestamp & 0xFF) as u8;
+        report[10] = (self.timestamp >> 8) as u8;
+        report[11] = 0x88; // Constant marker
+
+        // Advance timestamp (~88 ticks per report at 8kHz)
+        self.timestamp = self.timestamp.wrapping_add(88);
 
         // Touch point 0 (bytes 12-20)
         let t0 = encode_touch_point(0, FINGER0_X, self.finger_y[0], state);
