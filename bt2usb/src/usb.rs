@@ -17,6 +17,7 @@ use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
 use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
 use embassy_usb::control::InResponse;
+use embassy_usb::types::StringIndex;
 use static_cell::StaticCell;
 
 use crate::ble_hid::{HidReportType, BATTERY_USB_SIGNAL, HID_REPORT_CHANNEL};
@@ -144,6 +145,12 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     config.device_release = mt2::MT2_DEVICE_RELEASE;
     config.max_power = 500; // MT2 reports 500mA
     config.max_packet_size_0 = 64;
+    // Real MT2 is USB 2.0 (bcdUSB=0x0200). embassy-usb defaults to USB 2.1 (0x0210),
+    // which triggers BOS descriptor requests that a real MT2 wouldn't support.
+    // TopCase may use bcdUSB for device identification.
+    config.bcd_usb = embassy_usb::UsbVersion::Two;
+    // Real MT2 has bmAttributes=0xA0 (Bus Powered + Remote Wakeup)
+    config.supports_remote_wakeup = true;
     // Real MT2 has device class 0/0/0 — disable IAD mode which forces 0xEF/0x02/0x01
     config.composite_with_iads = false;
     config.device_class = 0;
@@ -151,22 +158,26 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     config.device_protocol = 0;
 
     // Interface 0: Device Management (FF00/0B) — request handler for activation
+    // Real: EP IN wMaxPacketSize=16, bInterval=8
     let if0_config = embassy_usb::class::hid::Config {
         report_descriptor: mt2::DEVICE_MGMT_REPORT_DESC,
         request_handler: None, // set below via StaticCell
         poll_ms: 8,
-        max_packet_size: 64,
+        max_packet_size: 16,
     };
 
     // Interface 1: Mouse/Trackpad (01/02) — main touch data interface
+    // Real: EP IN wMaxPacketSize=64, bInterval=1
     let if1_config = embassy_usb::class::hid::Config {
         report_descriptor: mt2::TRACKPAD_REPORT_DESC,
         request_handler: None, // set below via StaticCell
-        poll_ms: 2,
+        poll_ms: 1,
         max_packet_size: 64,
     };
 
-    // Interface 2: Vendor (FF00/0D) — stub
+    // Interface 2: Vendor (FF00/0D) — has IN + OUT in real device
+    // Real: EP IN wMaxPacketSize=16 bInterval=8, EP OUT wMaxPacketSize=64 bInterval=2
+    // embassy-usb uses one max_packet_size for both; we set 64 (for OUT) and patch IN below
     let if2_config = embassy_usb::class::hid::Config {
         report_descriptor: mt2::VENDOR2_REPORT_DESC,
         request_handler: None,
@@ -175,10 +186,11 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     };
 
     // Interface 3: Vendor (FF00/03) — stub
+    // Real: EP IN wMaxPacketSize=64, bInterval=2
     let if3_config = embassy_usb::class::hid::Config {
         report_descriptor: mt2::VENDOR3_REPORT_DESC,
         request_handler: None,
-        poll_ms: 8,
+        poll_ms: 2,
         max_packet_size: 64,
     };
 
@@ -256,21 +268,74 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
 
     let usb_dev = builder.build();
 
-    // Patch IF1 subclass/protocol in the config descriptor.
-    // embassy-usb hardcodes HID subclass=0x00, protocol=0x00 for all interfaces.
-    // Real MT2 IF1 has subclass=0x01 (Boot Interface), protocol=0x02 (Mouse).
-    // The Apple TopCase HID driver likely checks these for device identity.
+    // Patch config descriptor to match real MT2.
+    // embassy-usb HID class hardcodes subclass=0, protocol=0, iInterface=0 for all interfaces.
+    // Also patches endpoint wMaxPacketSize/bInterval where embassy-usb can't set per-endpoint values.
+    // Real MT2 has:
+    //   IF0: iInterface="Device Management"
+    //   IF1: subclass=0x01 (Boot), protocol=0x02 (Mouse), iInterface="Trackpad / Boot"
+    //   IF2: iInterface="Actuator", EP IN wMaxPacketSize=16, EP OUT bInterval=2
+    //   IF3: iInterface="Accelerometer"
+    // String indices 4-7 are served by Mt2UsbDeviceHandler::get_string().
     unsafe {
         let desc = core::slice::from_raw_parts_mut(config_desc_ptr, 512);
-        for i in 0..desc.len().saturating_sub(8) {
-            // USB Interface descriptor: bLength=9, bDescriptorType=4, bInterfaceNumber=1
-            if desc[i] == 9 && desc[i + 1] == 4 && desc[i + 2] == 1 && desc[i + 3] == 0 {
-                desc[i + 6] = 0x01; // bInterfaceSubClass = Boot Interface
-                desc[i + 7] = 0x02; // bInterfaceProtocol = Mouse
-                info!("Patched IF1 subclass=0x01 protocol=0x02");
+
+        // Patch iConfiguration in config descriptor header (byte 6).
+        // Real MT2 has iConfiguration=4 with string "Trackpad".
+        if desc[0] == 9 && desc[1] == 2 {
+            desc[6] = MT2_CONFIG_STRING_IDX;
+        }
+
+        let mut current_iface: u8 = 0xFF;
+        let mut i = 0;
+        while i < desc.len().saturating_sub(7) {
+            let b_length = desc[i] as usize;
+            let b_desc_type = desc[i + 1];
+            if b_length < 2 || i + b_length > desc.len() {
                 break;
             }
+
+            // Interface descriptor: bLength=9, bDescriptorType=4
+            if b_desc_type == 4 && b_length >= 9 {
+                current_iface = desc[i + 2];
+                let alt_setting = desc[i + 3];
+                if alt_setting == 0 {
+                    match current_iface {
+                        0 => {
+                            desc[i + 8] = MT2_IFACE_STRING_BASE; // iInterface
+                        }
+                        1 => {
+                            desc[i + 6] = 0x01; // bInterfaceSubClass = Boot Interface
+                            desc[i + 7] = 0x02; // bInterfaceProtocol = Mouse
+                            desc[i + 8] = MT2_IFACE_STRING_BASE + 1; // iInterface
+                        }
+                        2 => {
+                            desc[i + 8] = MT2_IFACE_STRING_BASE + 2; // iInterface
+                        }
+                        3 => {
+                            desc[i + 8] = MT2_IFACE_STRING_BASE + 3; // iInterface
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Endpoint descriptor: bLength=7, bDescriptorType=5
+            if b_desc_type == 5 && b_length >= 7 && current_iface == 2 {
+                let ep_addr = desc[i + 2];
+                if ep_addr & 0x80 != 0 {
+                    // IF2 IN endpoint: wMaxPacketSize 64→16 (real device)
+                    desc[i + 4] = 16; // wMaxPacketSize low byte
+                    desc[i + 5] = 0;  // wMaxPacketSize high byte
+                } else {
+                    // IF2 OUT endpoint: bInterval 8→2 (real device)
+                    desc[i + 6] = 2; // bInterval
+                }
+            }
+
+            i += b_length;
         }
+        info!("Patched config descriptor: iInterface strings, IF1 boot, IF2 endpoints");
     }
 
     info!("[core1] MT2 USB device initialized (4 interfaces)");
@@ -289,7 +354,22 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
 
 // ============ USB Device Handler ============
 
-/// MT2 USB device handler — logs state changes and resets activation on bus reset.
+/// String index for iConfiguration (matches real MT2 index 4).
+const MT2_CONFIG_STRING_IDX: u8 = 4;
+
+/// Base string index for interface strings (matches real MT2 indices 5-8).
+/// IF0=5 "Device Management", IF1=6 "Trackpad / Boot", IF2=7 "Actuator", IF3=8 "Accelerometer".
+const MT2_IFACE_STRING_BASE: u8 = 5;
+
+/// Interface string names matching the real MT2 (from ioreg kUSBString).
+const MT2_IFACE_STRINGS: [&str; 4] = [
+    "Device Management",
+    "Trackpad / Boot",
+    "Actuator",
+    "Accelerometer",
+];
+
+/// MT2 USB device handler — logs state changes, serves interface strings, resets activation on bus reset.
 struct Mt2UsbDeviceHandler;
 
 impl embassy_usb::Handler for Mt2UsbDeviceHandler {
@@ -327,6 +407,17 @@ impl embassy_usb::Handler for Mt2UsbDeviceHandler {
         }
     }
 
+    fn get_string(&mut self, index: StringIndex, _lang_id: u16) -> Option<&str> {
+        let idx: u8 = index.into();
+        if idx == MT2_CONFIG_STRING_IDX {
+            Some("Trackpad")
+        } else if idx >= MT2_IFACE_STRING_BASE && idx < MT2_IFACE_STRING_BASE + 4 {
+            Some(MT2_IFACE_STRINGS[(idx - MT2_IFACE_STRING_BASE) as usize])
+        } else {
+            None
+        }
+    }
+
     fn control_out(
         &mut self,
         req: embassy_usb::control::Request,
@@ -350,7 +441,6 @@ impl embassy_usb::Handler for Mt2UsbDeviceHandler {
         req: embassy_usb::control::Request,
         _buf: &'a mut [u8],
     ) -> Option<InResponse<'a>> {
-        // Only handle Vendor requests — Standard/Class must pass through to HID class handlers
         match req.request_type {
             embassy_usb::control::RequestType::Vendor => {
                 info!(
@@ -358,6 +448,20 @@ impl embassy_usb::Handler for Mt2UsbDeviceHandler {
                     req.request, req.value, req.index, req.length
                 );
                 Some(InResponse::Accepted(&[]))
+            }
+            embassy_usb::control::RequestType::Class => {
+                // Log Class IN requests (GET_REPORT etc.) for diagnosis — don't handle them,
+                // let embassy-usb's HID class handler process them.
+                // GET_REPORT: bRequest=0x01, wValue = (ReportType<<8 | ReportID)
+                if req.request == 0x01 {
+                    let report_type = (req.value >> 8) as u8;
+                    let report_id = (req.value & 0xFF) as u8;
+                    debug!(
+                        "MT2 USB GET_REPORT: type={} id=0x{:02X} iface={} wLength={}",
+                        report_type, report_id, req.index, req.length
+                    );
+                }
+                None // pass through to HID class handler
             }
             _ => None,
         }
