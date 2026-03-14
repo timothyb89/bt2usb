@@ -227,7 +227,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     // We use HidReaderWriter in case macOS needs the output endpoint, but primarily
     // use the request handler for feature reports.
     let if0_config_with_handler = embassy_usb::class::hid::Config {
-        request_handler: Some(HANDLER_IF0.init(mt2::Mt2DeviceMgmtRequestHandler)),
+        request_handler: Some(HANDLER_IF0.init(mt2::Mt2DeviceMgmtRequestHandler::new())),
         ..if0_config
     };
     let _if0_hid = HidWriter::<_, 8>::new(

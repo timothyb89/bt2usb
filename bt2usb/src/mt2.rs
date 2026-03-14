@@ -86,22 +86,19 @@ pub const DEVICE_MGMT_REPORT_DESC: &[u8] = &[
 
 // ============ Interface 1: Mouse + Trackpad (01/02) ============
 
-/// HID report descriptor for Interface 1 — Mouse + Trackpad.
+/// HID report descriptor for Interface 1 — Mouse + Digitizer TouchPad.
 ///
-/// This is the EXACT raw descriptor from the real Magic Trackpad 2 (110 bytes).
-/// It has NO Finger collections, NO Feature declarations, and NO Contact Count.
+/// Collection 1: Mouse (Generic Desktop) — Report ID 0x02, 7 bytes Input (bytes 1-7)
+/// Collection 2: Digitizer Touch Pad — Report ID 0x02, 22 bytes Input (bytes 8-29)
+///   with Finger transducers + Report ID 0x3F vendor data + Feature declarations
+/// Collection 3: Vendor Multitouch — Report ID 0x44 (1387 bytes)
 ///
-/// TopCase (AppleUSBTopCaseHIDDriver) is supposed to internally augment this
-/// descriptor and populate its report length tables. With the real device this
-/// works, enabling correct wLength for GET_REPORT on proprietary feature reports.
-/// With our emulated device, TopCase's augmentation doesn't activate — the root
-/// cause is under investigation (USB config descriptor differences suspected).
-///
-/// Report IDs:
-///   0x02: Mouse (8 bytes: 3 buttons + 5-bit pad + X/Y relative + 4-byte pad)
-///         Overloaded for 30-byte multitouch after SET_REPORT activation
-///   0x3F: Vendor digitizer input (16 bytes)
-///   0x44: Vendor multitouch input (1387 bytes)
+/// The real MT2 has a 110-byte descriptor without Finger elements or Feature
+/// declarations. TopCase augments it for genuine hardware. Since our emulated
+/// device doesn't get augmented, we add Finger collections with full Digitizer
+/// elements (Tip Switch, Contact Identifier, X, Y) so macOS creates valid
+/// digitizer transducers (`digitizer: 2`), plus Feature declarations so IOKit
+/// has report lengths for AppleMultitouchDevice::decodeDeviceProperty.
 pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     // === Collection 1: Mouse (Generic Desktop / Mouse) ===
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -135,10 +132,93 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0xC0,             //   End Collection (Physical)
     0xC0,             // End Collection (Application)
 
-    // === Collection 2: Digitizer Touch Pad (vendor data only) ===
+    // === Collection 2: Digitizer Touch Pad ===
+    //
+    // Report ID 0x02 bytes 8-29 (22 bytes = 176 bits additional Input data).
+    // Collection 1 declares bytes 1-7 (7 bytes). Combined total = 29 bytes = our 30-byte report.
+    //
+    // Also provides Digitizer Finger transducers so macOS creates digitizer elements
+    // (fixes "Invalid digitizer transducer" / "digitizer: 0" from the event driver).
+    //
+    // Report ID 0x3F (16 bytes) retained for backward compatibility.
+    // Feature reports declared for AppleMultitouchDevice::decodeDeviceProperty.
     0x05, 0x0D,       // Usage Page (Digitizer)
     0x09, 0x05,       // Usage (Touch Pad)
     0xA1, 0x01,       // Collection (Application)
+
+    // --- Report ID 0x02: 22 bytes of Input (bytes 8-29 of the 30-byte touch report) ---
+    0x85, 0x02,       //   Report ID (0x02)
+
+    // Header padding: 4 bytes (bytes 8-11: format marker, timestamp, constant)
+    0x75, 0x08,       //   Report Size (8)
+    0x95, 0x04,       //   Report Count (4)
+    0x81, 0x01,       //   Input (Constant)
+
+    // Finger 0: 9 bytes (bytes 12-20)
+    0x05, 0x0D,       //   Usage Page (Digitizer)
+    0x09, 0x22,       //   Usage (Finger)
+    0xA1, 0x02,       //   Collection (Logical)
+    0x09, 0x42,       //     Usage (Tip Switch)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x01,       //     Logical Maximum (1)
+    0x75, 0x01,       //     Report Size (1)
+    0x95, 0x01,       //     Report Count (1)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x07,       //     Report Size (7) — padding to byte align
+    0x81, 0x01,       //     Input (Constant)
+    0x09, 0x51,       //     Usage (Contact Identifier)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x0F,       //     Logical Maximum (15)
+    0x75, 0x08,       //     Report Size (8)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x05, 0x01,       //     Usage Page (Generic Desktop)
+    0x09, 0x30,       //     Usage (X)
+    0x16, 0xA2, 0xF1, //     Logical Minimum (-3678)
+    0x26, 0x5E, 0x0F, //     Logical Maximum (3934)
+    0x75, 0x10,       //     Report Size (16)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x09, 0x31,       //     Usage (Y)
+    0x16, 0x52, 0xF6, //     Logical Minimum (-2478)
+    0x26, 0x1B, 0x0A, //     Logical Maximum (2587)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x08,       //     Report Size (8)
+    0x95, 0x03,       //     Report Count (3)
+    0x81, 0x01,       //     Input (Constant) — 3 bytes padding
+    0xC0,             //   End Collection (Logical)
+
+    // Finger 1: 9 bytes (bytes 21-29) — same structure
+    0x05, 0x0D,       //   Usage Page (Digitizer)
+    0x09, 0x22,       //   Usage (Finger)
+    0xA1, 0x02,       //   Collection (Logical)
+    0x09, 0x42,       //     Usage (Tip Switch)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x01,       //     Logical Maximum (1)
+    0x75, 0x01,       //     Report Size (1)
+    0x95, 0x01,       //     Report Count (1)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x07,       //     Report Size (7)
+    0x81, 0x01,       //     Input (Constant)
+    0x09, 0x51,       //     Usage (Contact Identifier)
+    0x15, 0x00,       //     Logical Minimum (0)
+    0x25, 0x0F,       //     Logical Maximum (15)
+    0x75, 0x08,       //     Report Size (8)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x05, 0x01,       //     Usage Page (Generic Desktop)
+    0x09, 0x30,       //     Usage (X)
+    0x16, 0xA2, 0xF1, //     Logical Minimum (-3678)
+    0x26, 0x5E, 0x0F, //     Logical Maximum (3934)
+    0x75, 0x10,       //     Report Size (16)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x09, 0x31,       //     Usage (Y)
+    0x16, 0x52, 0xF6, //     Logical Minimum (-2478)
+    0x26, 0x1B, 0x0A, //     Logical Maximum (2587)
+    0x81, 0x02,       //     Input (Data, Variable, Absolute)
+    0x75, 0x08,       //     Report Size (8)
+    0x95, 0x03,       //     Report Count (3)
+    0x81, 0x01,       //     Input (Constant)
+    0xC0,             //   End Collection (Logical)
+
+    // --- Report ID 0x3F: 16 bytes vendor Input (backward compatibility) ---
     0x06, 0x00, 0xFF, //   Usage Page (Vendor 0xFF00)
     0x09, 0x0C,       //   Usage (Vendor 0x0C)
     0x15, 0x00,       //   Logical Minimum (0)
@@ -147,6 +227,20 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x95, 0x10,       //   Report Count (16)
     0x85, 0x3F,       //   Report ID (0x3F)
     0x81, 0x22,       //   Input (Data, Variable, Absolute, No Preferred)
+
+    // --- Vendor Feature reports (for AppleMultitouchDevice::decodeDeviceProperty) ---
+    0x09, 0x0C,       //   Usage (Vendor 0x0C)
+    0x85, 0x02,       //   Report ID (0x02) — multitouch activation
+    0x95, 0x01,       //   Report Count (1)
+    0xB1, 0x02,       //   Feature (Data, Variable, Absolute)
+    0x09, 0x0C, 0x85, 0x01, 0x95, 0x04, 0xB1, 0x02, // Feature 0x01 (4 bytes)
+    0x09, 0x0C, 0x85, 0xDB, 0x95, 0x4B, 0xB1, 0x02, // Feature 0xDB (75 bytes)
+    0x09, 0x0C, 0x85, 0xD1, 0x95, 0x01, 0xB1, 0x02, // Feature 0xD1 (1 byte)
+    0x09, 0x0C, 0x85, 0xD3, 0x95, 0x0E, 0xB1, 0x02, // Feature 0xD3 (14 bytes)
+    0x09, 0x0C, 0x85, 0xD0, 0x95, 0x0F, 0xB1, 0x02, // Feature 0xD0 (15 bytes)
+    0x09, 0x0C, 0x85, 0xA1, 0x95, 0x06, 0xB1, 0x02, // Feature 0xA1 (6 bytes)
+    0x09, 0x0C, 0x85, 0xD9, 0x95, 0x10, 0xB1, 0x02, // Feature 0xD9 (16 bytes)
+    0x09, 0x0C, 0x85, 0x7F, 0x95, 0x04, 0xB1, 0x02, // Feature 0x7F (4 bytes)
     0xC0,             // End Collection
 
     // === Collection 3: Vendor Multitouch ===
@@ -414,7 +508,24 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
 }
 
 /// Feature report handler for Interface 0 (Device Management).
-pub struct Mt2DeviceMgmtRequestHandler;
+///
+/// Stores data for echo-back reports (e.g. Feature 0x35) that macOS SETs
+/// and then immediately GETs back during initialization.
+pub struct Mt2DeviceMgmtRequestHandler {
+    /// Buffer for Feature 0x35 echo-back. macOS SETs this during init and
+    /// expects to GET it back. STALLing the GET causes "pipe stalled" errors.
+    feature_35_data: [u8; 25],
+    feature_35_len: usize,
+}
+
+impl Mt2DeviceMgmtRequestHandler {
+    pub const fn new() -> Self {
+        Self {
+            feature_35_data: [0u8; 25],
+            feature_35_len: 0,
+        }
+    }
+}
 
 impl RequestHandler for Mt2DeviceMgmtRequestHandler {
     fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
@@ -423,6 +534,9 @@ impl RequestHandler for Mt2DeviceMgmtRequestHandler {
                 let enabled = MT_ENABLED.load(Ordering::Relaxed);
                 let val = if enabled { 0x01 } else { 0x00 };
                 write_feature(buf, 0xC3, &[val])
+            }
+            ReportId::Feature(0x35) => {
+                write_feature(buf, 0x35, &self.feature_35_data[..self.feature_35_len])
             }
             ReportId::Feature(0xDB) => write_feature(buf, 0xDB, FEATURE_DB_IF0),
             ReportId::Feature(0xD1) => write_feature(buf, 0xD1, FEATURE_D1_IF0),
@@ -451,17 +565,26 @@ impl RequestHandler for Mt2DeviceMgmtRequestHandler {
     }
 
     fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
-        if let ReportId::Feature(0xC3) = id {
-            if !data.is_empty() {
-                let enabled = data[0] != 0;
-                MT_ENABLED.store(enabled, Ordering::Relaxed);
-                info!(
-                    "MT2 devmgmt: SET Feature(0xC3) -> multitouch {}",
-                    if enabled { "ENABLED" } else { "disabled" }
-                );
+        match id {
+            ReportId::Feature(0xC3) => {
+                if !data.is_empty() {
+                    let enabled = data[0] != 0;
+                    MT_ENABLED.store(enabled, Ordering::Relaxed);
+                    info!(
+                        "MT2 devmgmt: SET Feature(0xC3) -> multitouch {}",
+                        if enabled { "ENABLED" } else { "disabled" }
+                    );
+                }
             }
-        } else {
-            info!("MT2 devmgmt: SET {:?} ({} bytes) -> accepted", id, data.len());
+            ReportId::Feature(0x35) => {
+                let copy_len = data.len().min(self.feature_35_data.len());
+                self.feature_35_data[..copy_len].copy_from_slice(&data[..copy_len]);
+                self.feature_35_len = copy_len;
+                info!("MT2 devmgmt: SET Feature(0x35) ({} bytes) -> stored", copy_len);
+            }
+            _ => {
+                info!("MT2 devmgmt: SET {:?} ({} bytes) -> accepted", id, data.len());
+            }
         }
         OutResponse::Accepted
     }
