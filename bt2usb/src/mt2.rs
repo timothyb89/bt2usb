@@ -408,7 +408,9 @@ pub struct Mt2TrackpadRequestHandler {
 impl Mt2TrackpadRequestHandler {
     pub const fn new() -> Self {
         Self {
-            // Default from real device capture
+            // Default from real device capture: [sub_id, 0x00, len_lo, len_hi]
+            // Real device returns [0x01, 0x99, 0x00, 0x02, 0x00] for GET Feature(0x01)
+            // where 0x99 = report count(?), 0x00 = padding, 0x02 = MT report ID, 0x00 = high
             feature_01_data: [0x99, 0x00, 0x02, 0x00],
         }
     }
@@ -449,33 +451,34 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
             ReportId::Feature(0x01) => {
                 // Sub-report selector protocol used by decodeDeviceProperty:
                 //   1. Host SETs Feature(0x01, [selector=0x01, sub_report_id])
-                //   2. Host GETs Feature(0x01) → [selector, sub_id, len_lo, len_hi]
-                //   3. Host GETs Feature(sub_id) with wLength derived from len
+                //   2. Host GETs Feature(0x01) → [selector, sub_id, 0x00, len_lo, len_hi]
+                //   3. Host GETs Feature(sub_id) with wLength = len + 1
                 //
-                // The device must fill bytes 2-3 with the TOTAL report length
-                // (including report ID byte) as LE uint16. If this is wrong,
-                // decodeDeviceProperty sends wLength=1 and gets no data.
+                // From USB capture of real MT2: GET Feature(0x01) returns
+                // [0x01, sub_id, 0x00, data_len_lo, data_len_hi] where data_len
+                // is the sub-report DATA size (excluding report ID byte).
+                // TopCase reads bytes 3-4 as LE uint16 and adds 1 for wLength.
                 if data.len() >= 2 && data[0] == 0x01 {
                     let sub_id = data[1];
-                    let total_len: u16 = match sub_id {
-                        0xDB => 1 + FEATURE_DB_IF1.len() as u16,
-                        0xD1 => 1 + FEATURE_D1_IF1.len() as u16,
-                        0xD3 => 1 + FEATURE_D3_IF1.len() as u16,
-                        0xD0 => 1 + FEATURE_D0_IF1.len() as u16,
-                        0xA1 => 1 + FEATURE_A1_IF1.len() as u16,
-                        0xD9 => 1 + FEATURE_D9_IF1.len() as u16,
-                        0x7F => 1 + FEATURE_7F_IF1.len() as u16,
-                        _ => 1, // unknown sub-report → just report ID
+                    let data_len: u16 = match sub_id {
+                        0xDB => FEATURE_DB_IF1.len() as u16,
+                        0xD1 => FEATURE_D1_IF1.len() as u16,
+                        0xD3 => FEATURE_D3_IF1.len() as u16,
+                        0xD0 => FEATURE_D0_IF1.len() as u16,
+                        0xA1 => FEATURE_A1_IF1.len() as u16,
+                        0xD9 => FEATURE_D9_IF1.len() as u16,
+                        0x7F => FEATURE_7F_IF1.len() as u16,
+                        _ => 0,
                     };
                     self.feature_01_data = [
-                        data[0],
-                        data[1],
-                        (total_len & 0xFF) as u8,
-                        ((total_len >> 8) & 0xFF) as u8,
+                        sub_id,
+                        0x00, // padding byte (confirmed from real MT2 USB capture)
+                        (data_len & 0xFF) as u8,
+                        ((data_len >> 8) & 0xFF) as u8,
                     ];
                     info!(
-                        "MT2 trackpad: SET Feature(0x01) -> [{:02X} {:02X}] len={}",
-                        data[0], data[1], total_len
+                        "MT2 trackpad: SET Feature(0x01) -> sub=0x{:02X} data_len={}",
+                        sub_id, data_len
                     );
                 } else {
                     let copy_len = data.len().min(self.feature_01_data.len());
@@ -551,7 +554,7 @@ impl RequestHandler for Mt2DeviceMgmtRequestHandler {
             ]),
             ReportId::Feature(0x14) => write_feature(buf, 0x14, &[0x00]),
             ReportId::Feature(0xB8) => write_feature(buf, 0xB8, &[0x48, 0x00]),
-            ReportId::Feature(0xBC) => write_feature(buf, 0xBC, &[0x00]),
+            ReportId::Feature(0xBC) => write_feature(buf, 0xBC, &[0x00, 0x00]),
             // Battery status (Input report, queried via GET_REPORT)
             // Format: 3 flag bits (Good|Charging|Unknown) + 5 pad + charge%
             ReportId::In(0x90) => write_feature(buf, 0x90, &[0x01, 0x64]),
@@ -738,18 +741,20 @@ impl TouchSynthesizer {
     ///   Byte 7: 0x01 if fingers down, 0x00 if up
     ///   Byte 8: 0x31 (format marker, always present)
     ///   Bytes 9-10: 16-bit LE timestamp (8kHz clock)
-    ///   Byte 11: 0x88 (constant marker)
+    ///   Byte 11: 0xe6 (constant, confirmed from real MT2 USB capture)
     fn build_report(&mut self, state: u8) -> [u8; 30] {
         let mut report = [0u8; 30];
         report[0] = 0x02; // Report ID
         report[1] = 0x00; // clicks = 0 (no button press for scroll)
-        // Bytes 2-6: zero (real device has minor counters here, not required)
-        report[7] = if state == TOUCH_STATE_DOWN { 0x01 } else { 0x00 };
+        // Bytes 2-6: zero (real device has mouse X/Y deltas here, not needed)
+        // Byte 7: active contact bitmask. Real MT2 uses 0x03 = both fingers,
+        // 0x02 = finger 1 only, 0x00 = none. Confirmed from USB capture.
+        report[7] = if state == TOUCH_STATE_DOWN { 0x03 } else { 0x00 };
         report[8] = 0x31; // Format marker (constant in all real MT2 reports)
         // Timestamp: 16-bit LE, increments by ~88 per report (~8kHz)
         report[9] = (self.timestamp & 0xFF) as u8;
         report[10] = (self.timestamp >> 8) as u8;
-        report[11] = 0x88; // Constant marker
+        report[11] = 0xe6; // Constant (confirmed from real MT2 USB capture)
 
         // Advance timestamp (~88 ticks per report at 8kHz)
         self.timestamp = self.timestamp.wrapping_add(88);
@@ -768,60 +773,45 @@ impl TouchSynthesizer {
 
 /// Encode a single MT2 touch point into 9 bytes.
 ///
-/// This is the inverse of the Linux kernel's decode in `magicmouse_emit_touch()`:
+/// Uses the Apple proprietary packed format expected by parser-type 1000
+/// (AppleMultitouchDevice). This is the same format decoded by the Linux
+/// kernel's `magicmouse_emit_touch()` in hid-magicmouse.c:
+///
 ///   id = tdata[8] & 0x0F
 ///   x = (tdata[1] << 27 | tdata[0] << 19) >> 19   // 13-bit signed
-///   y = -((tdata[3] << 30 | tdata[2] << 22 | tdata[1] << 14) >> 19)  // 13-bit signed, negated
+///   y = -((tdata[3] << 30 | tdata[2] << 22 | tdata[1] << 14) >> 19)  // negated
 ///   state = tdata[3] & 0xC0
-///   touch_major = tdata[4]
-///   touch_minor = tdata[5]
-///   size = tdata[6]
-///   pressure = tdata[7]
+///   touch_major = tdata[4], touch_minor = tdata[5]
+///   size = tdata[6], pressure = tdata[7]
 ///   orientation = (tdata[8] >> 5) - 4
+///
+/// Note: This does NOT match our HID descriptor's Finger collection layout
+/// (which declares 16-bit X/Y). The HID event driver layer logs cosmetic
+/// "not present in digitizer collection" errors, but the actual touch
+/// processing happens in AppleMultitouchDevice which uses this packed format.
 fn encode_touch_point(id: u8, x: i16, y: i16, state: u8) -> [u8; 9] {
-    // X is 13-bit signed, stored in bits [0:12] across bytes 0-1
-    // The kernel decodes: x = (tdata[1] << 27 | tdata[0] << 19) >> 19
-    // This is equivalent to: x = ((tdata[1] & 0x1F) << 8 | tdata[0]) sign-extended from 13 bits
-    //
-    // Encoding: x_raw = x & 0x1FFF (13-bit two's complement)
-    //   byte0 = x_raw & 0xFF         (low 8 bits)
-    //   byte1 bits[0:4] = (x_raw >> 8) & 0x1F  (high 5 bits)
-    let x_raw = (x as u16) & 0x1FFF; // 13-bit two's complement
+    // X: 13-bit signed, packed into bytes 0-1
+    let x_raw = (x as u16) & 0x1FFF;
     let x_lo = (x_raw & 0xFF) as u8;
     let x_hi = ((x_raw >> 8) & 0x1F) as u8;
 
-    // Y is 13-bit signed, NEGATED, stored across bytes 1-3
-    // The kernel decodes: neg_y = (tdata[3] << 30 | tdata[2] << 22 | tdata[1] << 14) >> 19
-    // then y = -neg_y
-    //
-    // So we encode: neg_y = -y, as 13-bit two's complement
-    //   neg_y_raw = (-y) & 0x1FFF
-    //   byte1 bits[5:7] = neg_y_raw & 0x07  (low 3 bits of neg_y in high 3 bits of byte1)
-    //   byte2 = (neg_y_raw >> 3) & 0xFF     (middle 8 bits)
-    //   byte3 bits[0:1] = (neg_y_raw >> 11) & 0x03  (high 2 bits)
-    let neg_y_raw = ((-y) as u16) & 0x1FFF; // 13-bit two's complement of -y
-    let y_b1 = ((neg_y_raw & 0x07) << 5) as u8; // 3 low bits into byte1 bits 5-7
-    let y_b2 = ((neg_y_raw >> 3) & 0xFF) as u8; // middle 8 bits
-    let y_b3 = ((neg_y_raw >> 11) & 0x03) as u8; // high 2 bits
+    // Y: 13-bit signed, NEGATED, packed into bytes 1-3
+    let neg_y_raw = ((-y) as u16) & 0x1FFF;
+    let y_b1 = ((neg_y_raw & 0x07) << 5) as u8;
+    let y_b2 = ((neg_y_raw >> 3) & 0xFF) as u8;
+    let y_b3 = ((neg_y_raw >> 11) & 0x03) as u8;
 
-    // Combine byte1: x high bits (0-4) | y low bits (5-7)
     let byte1 = x_hi | y_b1;
-
-    // byte3: y high bits (0-1) | state (6-7)
     let byte3 = y_b3 | (state & 0xC0);
 
-    // Touch attributes — values based on real MT2 capture data:
-    // Real device during scroll: major=80-130, minor=110-150, size=20-28, pressure=5-18
+    // Touch attributes from real MT2 capture data
     let touch_major: u8 = if state == TOUCH_STATE_DOWN { 100 } else { 0 };
     let touch_minor: u8 = if state == TOUCH_STATE_DOWN { 130 } else { 0 };
     let size: u8 = if state == TOUCH_STATE_DOWN { 24 } else { 0 };
     let pressure: u8 = if state == TOUCH_STATE_DOWN { 12 } else { 0 };
 
-    // Orientation (0 = neutral) and tracking ID
-    // orientation = (tdata[8] >> 5) - 4, so for orient=0: (tdata[8] >> 5) = 4
-    // byte8 = (id & 0x0F) | ((orient + 4) << 5)
-    let orient_enc = 4u8; // orientation=0 -> encoded as 4
-    let byte8 = (id & 0x0F) | (orient_enc << 5);
+    // orientation=0 → encoded as 4, combined with tracking ID
+    let byte8 = (id & 0x0F) | (4u8 << 5);
 
     [x_lo, byte1, y_b2, byte3, touch_major, touch_minor, size, pressure, byte8]
 }
@@ -830,7 +820,7 @@ fn encode_touch_point(id: u8, x: i16, y: i16, state: u8) -> [u8; 9] {
 mod tests {
     use super::*;
 
-    /// Verify encode/decode roundtrip matches the Linux kernel's decode logic.
+    /// Decode using the Linux kernel's magicmouse_emit_touch() logic.
     fn decode_touch(tdata: &[u8; 9]) -> (u8, i16, i16, u8) {
         let id = tdata[8] & 0x0F;
         let x = (((tdata[1] as i32) << 27 | (tdata[0] as i32) << 19) >> 19) as i16;
@@ -885,7 +875,6 @@ mod tests {
 
     #[test]
     fn test_encode_decode_extremes() {
-        // Test near MT2 coordinate boundaries
         let encoded = encode_touch_point(0, -3678, -2478, TOUCH_STATE_DOWN);
         let (id, x, y, state) = decode_touch(&encoded);
         assert_eq!(id, 0);
