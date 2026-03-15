@@ -566,30 +566,67 @@ const TRACKPAD2_MAX_Y: i16 = 2587;
 /// Idle timeout in ticks before lifting fingers (150ms at 1MHz tick rate).
 const IDLE_TIMEOUT_TICKS: u64 = 150_000;
 
-/// Maximum Y displacement before resetting finger positions.
-const Y_BOUNDARY: i16 = 2000;
+/// Y range for finger travel before resetting. The real MT2 surface spans
+/// roughly -2478 to +2587 (~5000 units). We use a comfortable subset to
+/// leave room for the lift-and-replace cycle.
+const Y_RESET_THRESHOLD: i16 = 1500;
+
+/// Number of reports for the lift-and-replace sequence.
+/// RELEASE(2) + NONE(1) + APPROACH(1) = 4 reports at ~11ms = ~44ms.
+const REPLANT_REPORTS: u8 = 4;
 
 // Template touch reports captured from a real MT2 scroll gesture.
-// Index 0 = initial NONE state, 1 = APPROACHING, 2+ = TOUCHING.
-// We use these as byte-exact templates and only modify the Y coordinates.
+// Used as byte-exact templates — only Y coordinates and timestamps are patched.
 const TEMPLATE_NONE: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x5c, 0x29, 0xe6, 0x9b, 0x5b, 0xb6, 0x23, 0x53, 0x7e, 0x18, 0x0d, 0x25, 0xbe, 0xff, 0xc7, 0x23, 0x6c, 0x87, 0x12, 0x0d, 0x28];
 const TEMPLATE_APPROACH: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0xb4, 0x29, 0xe6, 0xa5, 0x5b, 0xbb, 0x6b, 0x5a, 0x83, 0x1a, 0x10, 0x85, 0xc2, 0x3f, 0xcf, 0x6f, 0x6e, 0x87, 0x15, 0x0e, 0x88];
 const TEMPLATE_TOUCH: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x0c, 0x2a, 0xe6, 0xaf, 0xdb, 0xc0, 0x8b, 0x62, 0x89, 0x1b, 0x15, 0x85, 0xda, 0xff, 0xd6, 0x8f, 0x75, 0x80, 0x16, 0x12, 0x08];
-// Release/lift template (from end of real capture)
-const TEMPLATE_RELEASE: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x31, 0xec, 0x47, 0xe6, 0x18, 0x7d, 0xbe, 0x03, 0x00, 0x00, 0x00, 0x00, 0x85, 0xc2, 0x00, 0xdd, 0xef, 0x00, 0x00, 0x00, 0x00, 0x28];
+// Release template: both fingers in RELEASE state (0xC0) with fading attributes,
+// then byte7=0x03 (both still present). Uses same X positions as TEMPLATE_TOUCH
+// to avoid position jumps. Touch attributes are small (fading contact).
+const TEMPLATE_RELEASE: [u8; 30] = [
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,  // header: byte7=0x03 (both fingers)
+    0x31, 0x00, 0x00, 0xe6,                            // marker, timestamp (patched), constant
+    // Finger 0: same X as TEMPLATE_TOUCH, Y=0, state=0xC0 (releasing), small attrs
+    0xaf, 0xdb, 0x00, 0xc0, 0x40, 0x50, 0x10, 0x03, 0x85,
+    // Finger 1: same X as TEMPLATE_TOUCH, Y=0, state=0xC0 (releasing), small attrs
+    0xda, 0xff, 0x00, 0xc0, 0x40, 0x50, 0x10, 0x03, 0x08,
+];
+// Final "gone" template: both fingers NONE state, zero attributes.
+const TEMPLATE_GONE: [u8; 30] = [
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // header: byte7=0x00 (no fingers)
+    0x31, 0x00, 0x00, 0xe6,
+    // Finger 0: state=0x00, zero attrs
+    0xaf, 0xdb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x85,
+    // Finger 1: state=0x00, zero attrs
+    0xda, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
+];
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    /// No fingers on surface.
+    Idle,
+    /// Fingers actively scrolling (TOUCH state).
+    Scrolling,
+    /// Briefly lifting fingers to reset Y position (replanting).
+    Replanting(u8),
+    /// Ending gesture: clean release sequence to avoid tap detection.
+    Ending(u8),
+}
 
 /// Synthesizes 2-finger scroll gestures from scroll deltas.
 ///
 /// Uses real MT2 captured reports as byte-exact templates, modifying only
-/// the Y coordinates via the packed 13-bit encoding. This guarantees the
-/// touch attributes, state bytes, and header format match the real device.
+/// the Y coordinates. When fingers reach the edge of the virtual surface,
+/// performs a quick lift-and-replace cycle (like a real user would) to
+/// reset the Y position and continue scrolling.
 pub struct TouchSynthesizer {
-    /// Accumulated Y offset from center for both fingers.
-    y_offset: i16,
-    /// Whether fingers are currently active.
-    active: bool,
-    /// Reports sent since gesture start (for lifecycle phases).
-    report_count: u16,
+    /// Current Y position of both fingers on the virtual surface.
+    y_pos: i16,
+    /// Current gesture phase.
+    phase: Phase,
+    /// Scroll direction during replant (to resume correctly).
+    /// Positive = scrolling down (fingers moving negative Y).
+    pending_delta: i16,
     /// Tick count of the last scroll event (for idle detection).
     last_event_ticks: u64,
     /// Internal timestamp for report headers.
@@ -599,59 +636,112 @@ pub struct TouchSynthesizer {
 impl TouchSynthesizer {
     pub const fn new() -> Self {
         Self {
-            y_offset: 0,
-            active: false,
-            report_count: 0,
+            y_pos: 0,
+            phase: Phase::Idle,
+            pending_delta: 0,
             last_event_ticks: 0,
-            timestamp: 10000, // Start at non-zero like real device
+            timestamp: 10000,
         }
     }
 
-    /// Process a scroll delta. Returns 1-3 reports to send (gesture start
-    /// includes NONE + APPROACH before the TOUCH report).
+    /// Process a scroll delta. Returns 1-3 reports to send.
     pub fn process_scroll(&mut self, delta: i16) -> heapless::Vec<[u8; 30], 3> {
         let now = embassy_time::Instant::now().as_ticks();
         self.last_event_ticks = now;
         let mut out = heapless::Vec::new();
 
-        if !self.active {
-            // Start new gesture: send NONE then APPROACH then first TOUCH
-            self.y_offset = 0;
-            self.active = true;
-            self.report_count = 0;
-            debug!("MT2 touch: gesture START");
+        // Invert delta: positive dial rotation = scroll down = fingers move
+        // in negative Y direction on the trackpad surface.
+        // Cap magnitude to avoid overshooting the replant threshold in one step.
+        // macOS momentum scrolling handles high velocities — we don't need to
+        // represent extreme speed as huge Y jumps.
+        let delta = (-delta).clamp(-500, 500);
 
-            let _ = out.push(self.make_report(&TEMPLATE_NONE));
-            let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
+        match self.phase {
+            Phase::Idle | Phase::Ending(_) => {
+                // Start new gesture
+                self.y_pos = 0;
+                debug!("MT2 touch: gesture START");
+                let _ = out.push(self.make_report(&TEMPLATE_NONE));
+                let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
+                self.phase = Phase::Scrolling;
+            }
+            Phase::Replanting(_) => {
+                // Accumulate delta while replanting — will apply after replant
+                self.pending_delta += delta;
+                return out; // tick() handles the replant sequence
+            }
+            Phase::Scrolling => {}
         }
 
-        // Apply delta
-        self.y_offset = (self.y_offset as i32 + delta as i32)
+        // Apply delta to Y position
+        self.y_pos = (self.y_pos as i32 + delta as i32)
             .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32) as i16;
 
-        if self.y_offset.abs() > Y_BOUNDARY {
-            debug!("MT2 touch: Y boundary hit ({})", self.y_offset);
+        // Check if we need to replant (lift and re-place fingers)
+        if self.y_pos.abs() > Y_RESET_THRESHOLD {
+            debug!("MT2 touch: replanting (Y={})", self.y_pos);
+            // Reset Y immediately so NONE/APPROACH reports use the new
+            // position — avoids a visible Y jump when resuming TOUCH.
+            let _ = out.push(self.make_report(&TEMPLATE_RELEASE));
+            self.y_pos = 0;
+            self.pending_delta = 0;
+            self.phase = Phase::Replanting(REPLANT_REPORTS);
+        } else {
+            let _ = out.push(self.make_report(&TEMPLATE_TOUCH));
         }
 
-        let _ = out.push(self.make_report(&TEMPLATE_TOUCH));
-        self.report_count = self.report_count.saturating_add(1);
         out
     }
 
     /// Called on every timer tick (~11ms).
     pub fn tick(&mut self) -> Option<[u8; 30]> {
-        if !self.active {
-            return None;
-        }
-
-        let now = embassy_time::Instant::now().as_ticks();
-        if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS {
-            self.active = false;
-            debug!("MT2 touch: gesture END");
-            Some(self.make_report(&TEMPLATE_RELEASE))
-        } else {
-            // Send continuous TOUCH report at current position
-            Some(self.make_report(&TEMPLATE_TOUCH))
+        match self.phase {
+            Phase::Idle => None,
+            Phase::Replanting(remaining) => {
+                if remaining == 0 {
+                    // Replant complete: resume scrolling
+                    self.phase = Phase::Scrolling;
+                    debug!("MT2 touch: replant done, resuming");
+                    // Apply accumulated delta, capped to avoid immediately
+                    // exceeding the threshold again
+                    if self.pending_delta != 0 {
+                        let capped = self.pending_delta.clamp(-500, 500);
+                        self.y_pos = (self.y_pos as i32 + capped as i32)
+                            .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32) as i16;
+                        self.pending_delta = 0;
+                    }
+                    Some(self.make_report(&TEMPLATE_TOUCH))
+                } else {
+                    self.phase = Phase::Replanting(remaining - 1);
+                    // Sequence: RELEASE, RELEASE, NONE, APPROACH
+                    match remaining {
+                        4 | 3 => Some(self.make_report(&TEMPLATE_RELEASE)),
+                        2 => Some(self.make_report(&TEMPLATE_NONE)),
+                        1 => Some(self.make_report(&TEMPLATE_APPROACH)),
+                        _ => Some(self.make_report(&TEMPLATE_RELEASE)),
+                    }
+                }
+            }
+            Phase::Ending(remaining) => {
+                if remaining == 0 {
+                    self.phase = Phase::Idle;
+                    Some(self.make_report(&TEMPLATE_GONE))
+                } else {
+                    self.phase = Phase::Ending(remaining - 1);
+                    Some(self.make_report(&TEMPLATE_RELEASE))
+                }
+            }
+            Phase::Scrolling => {
+                let now = embassy_time::Instant::now().as_ticks();
+                if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS {
+                    self.phase = Phase::Ending(1); // 1 more RELEASE, then GONE
+                    debug!("MT2 touch: gesture END");
+                    Some(self.make_report(&TEMPLATE_RELEASE))
+                } else {
+                    Some(self.make_report(&TEMPLATE_TOUCH))
+                }
+            }
         }
     }
 
@@ -664,25 +754,19 @@ impl TouchSynthesizer {
         report[10] = (self.timestamp >> 8) as u8;
         self.timestamp = self.timestamp.wrapping_add(88);
 
-        // Patch Y in both touch points using the packed encoding.
-        // We keep the template's X coordinates and attributes intact,
-        // and only modify the Y bits (spread across bytes 1-3 of each touch).
-        self.patch_y(&mut report, 12, self.y_offset); // finger 0
-        self.patch_y(&mut report, 21, self.y_offset); // finger 1
+        // Patch Y in both touch points
+        self.patch_y(&mut report, 12, self.y_pos);
+        self.patch_y(&mut report, 21, self.y_pos);
 
         report
     }
 
-    /// Patch the Y coordinate in a 9-byte packed touch point at the given offset.
-    /// Y is encoded as negated 13-bit value across touch bytes 1-3.
+    /// Patch the Y coordinate in a packed touch point at the given offset.
     fn patch_y(&self, report: &mut [u8; 30], off: usize, y: i16) {
         let neg_y_raw = ((-y) as u16) & 0x1FFF;
         let t = &mut report[off..off + 9];
-        // Byte 1 bits [5:7] = neg_y[2:0]
         t[1] = (t[1] & 0x1F) | (((neg_y_raw & 0x07) << 5) as u8);
-        // Byte 2 = neg_y[10:3]
         t[2] = ((neg_y_raw >> 3) & 0xFF) as u8;
-        // Byte 3 bits [0:1] = neg_y[12:11], keep state bits [6:7]
         t[3] = (t[3] & 0xFC) | (((neg_y_raw >> 11) & 0x03) as u8);
     }
 
