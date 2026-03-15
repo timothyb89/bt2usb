@@ -17,6 +17,31 @@ use defmt::*;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 
+// Real MT2 touch reports captured from USB (2-finger scroll gesture).
+// Used for replay testing to verify the USB data path works.
+pub const REAL_MT2_REPORTS: &[[u8; 30]] = &[
+    [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x5c, 0x29, 0xe6, 0x9b, 0x5b, 0xb6, 0x23, 0x53, 0x7e, 0x18, 0x0d, 0x25, 0xbe, 0xff, 0xc7, 0x23, 0x6c, 0x87, 0x12, 0x0d, 0x28],
+    [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0xb4, 0x29, 0xe6, 0xa5, 0x5b, 0xbb, 0x6b, 0x5a, 0x83, 0x1a, 0x10, 0x85, 0xc2, 0x3f, 0xcf, 0x6f, 0x6e, 0x87, 0x15, 0x0e, 0x88],
+    [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x0c, 0x2a, 0xe6, 0xaf, 0xdb, 0xc0, 0x8b, 0x62, 0x89, 0x1b, 0x15, 0x85, 0xda, 0xff, 0xd6, 0x8f, 0x75, 0x80, 0x16, 0x12, 0x08],
+    [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x64, 0x2a, 0xe6, 0xb8, 0x9b, 0xc4, 0x8b, 0x62, 0x87, 0x1b, 0x15, 0x85, 0xe4, 0xff, 0xda, 0x8f, 0x7f, 0x7a, 0x17, 0x13, 0x08],
+    [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0xc4, 0x2a, 0xe6, 0xc2, 0xdb, 0xc7, 0x8b, 0x68, 0x8a, 0x1c, 0x16, 0x85, 0xf1, 0x5f, 0xdf, 0x8f, 0x82, 0x76, 0x18, 0x14, 0x08],
+    [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x1c, 0x2b, 0xe6, 0xd3, 0x3b, 0xcb, 0x8b, 0x76, 0x88, 0x1d, 0x16, 0x85, 0x04, 0x80, 0xe3, 0x8f, 0x77, 0x7f, 0x18, 0x14, 0x88],
+    [0x02, 0x00, 0x00, 0xfd, 0x00, 0x00, 0x00, 0x03, 0x31, 0x74, 0x2b, 0xe6, 0xe3, 0x9b, 0xce, 0x8b, 0x81, 0x84, 0x1d, 0x16, 0x05, 0x16, 0x80, 0xe7, 0x8f, 0x6c, 0x7e, 0x18, 0x14, 0x88],
+    [0x02, 0x00, 0x00, 0xfd, 0x00, 0x00, 0x00, 0x03, 0x31, 0xcc, 0x2b, 0xe6, 0xf2, 0x1b, 0xd2, 0x8b, 0x82, 0x83, 0x1d, 0x16, 0x85, 0x26, 0xa0, 0xeb, 0x8f, 0x68, 0x7f, 0x18, 0x14, 0x88],
+    [0x02, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x03, 0x31, 0x2c, 0x2c, 0xe6, 0x01, 0x9c, 0xd5, 0x8b, 0x83, 0x85, 0x1d, 0x15, 0x85, 0x35, 0xc0, 0xef, 0x8f, 0x67, 0x7d, 0x19, 0x14, 0x88],
+    [0x02, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x03, 0x31, 0x84, 0x2c, 0xe6, 0x0f, 0x5c, 0xd9, 0x8b, 0x7f, 0x86, 0x1d, 0x14, 0x85, 0x43, 0x20, 0xf4, 0x8f, 0x67, 0x7f, 0x19, 0x13, 0x88],
+    [0x02, 0x00, 0x00, 0xfb, 0x00, 0x00, 0x00, 0x03, 0x31, 0xdc, 0x2c, 0xe6, 0x1d, 0x3c, 0xdd, 0x8b, 0x7d, 0x86, 0x1d, 0x14, 0x85, 0x51, 0xc0, 0xf8, 0x8f, 0x69, 0x80, 0x19, 0x13, 0x88],
+    [0x02, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x03, 0x31, 0x34, 0x2d, 0xe6, 0x34, 0xfc, 0xe2, 0x8b, 0x77, 0x85, 0x1d, 0x13, 0x85, 0x66, 0xc0, 0xff, 0x8f, 0x6d, 0x83, 0x1a, 0x13, 0x88],
+    [0x02, 0x00, 0x01, 0xf5, 0x00, 0x00, 0x00, 0x03, 0x31, 0x94, 0x2d, 0xe6, 0x49, 0xfc, 0xe8, 0x8b, 0x76, 0x85, 0x1e, 0x13, 0x85, 0x7a, 0xc0, 0x06, 0x8c, 0x72, 0x82, 0x1a, 0x13, 0x88],
+    [0x02, 0x00, 0x02, 0xf3, 0x00, 0x00, 0x00, 0x03, 0x31, 0xec, 0x2d, 0xe6, 0x5e, 0xfc, 0xee, 0x8b, 0x71, 0x86, 0x1e, 0x13, 0x85, 0x8e, 0xe0, 0x0d, 0x8c, 0x76, 0x82, 0x1b, 0x13, 0x88],
+    [0x02, 0x00, 0x03, 0xf4, 0x00, 0x00, 0x00, 0x03, 0x31, 0x44, 0x2e, 0xe6, 0x6b, 0xfc, 0xf2, 0x8b, 0x6f, 0x89, 0x1e, 0x13, 0x85, 0xa1, 0xe0, 0x14, 0x8c, 0x7a, 0x86, 0x1b, 0x13, 0x88],
+    [0x02, 0x00, 0x01, 0xf6, 0x00, 0x00, 0x00, 0x03, 0x31, 0x9c, 0x2e, 0xe6, 0x7e, 0x9c, 0xf8, 0x8b, 0x6f, 0x8b, 0x1e, 0x14, 0x85, 0xad, 0x40, 0x19, 0x8c, 0x7c, 0x89, 0x1c, 0x14, 0x88],
+    [0x02, 0x00, 0x01, 0xf7, 0x00, 0x00, 0x00, 0x03, 0x31, 0xfc, 0x2e, 0xe6, 0x8f, 0xdc, 0xfd, 0x8b, 0x6f, 0x8d, 0x1f, 0x15, 0x85, 0xbe, 0x40, 0x1f, 0x8c, 0x7f, 0x87, 0x1c, 0x15, 0x88],
+    [0x02, 0x00, 0x02, 0xf5, 0x00, 0x00, 0x00, 0x03, 0x31, 0x54, 0x2f, 0xe6, 0x98, 0x7c, 0x00, 0x88, 0x6d, 0x88, 0x1e, 0x15, 0x85, 0xc8, 0x40, 0x22, 0x8c, 0x7f, 0x85, 0x1c, 0x15, 0x88],
+    [0x02, 0x00, 0x00, 0xfb, 0x00, 0x00, 0x00, 0x03, 0x31, 0xac, 0x2f, 0xe6, 0xa5, 0x3c, 0x04, 0x88, 0x6d, 0x87, 0x1e, 0x14, 0x85, 0xd6, 0xc0, 0x26, 0x8c, 0x80, 0x83, 0x1c, 0x14, 0x88],
+    [0x02, 0x00, 0x02, 0xf9, 0x00, 0x00, 0x00, 0x03, 0x31, 0x04, 0x30, 0xe6, 0xaf, 0x3c, 0x07, 0x88, 0x6e, 0x86, 0x1e, 0x12, 0x85, 0xe3, 0x20, 0x2a, 0x8c, 0x80, 0x82, 0x1b, 0x12, 0x88],
+];
+
 // ============ USB Device Identity ============
 
 pub const APPLE_VID: u16 = 0x05AC;
@@ -86,19 +111,17 @@ pub const DEVICE_MGMT_REPORT_DESC: &[u8] = &[
 
 // ============ Interface 1: Mouse + Trackpad (01/02) ============
 
-/// HID report descriptor for Interface 1 — Mouse + Digitizer TouchPad.
+/// HID report descriptor for Interface 1 — byte-for-byte match of the real MT2.
 ///
-/// Collection 1: Mouse (Generic Desktop) — Report ID 0x02, 7 bytes Input (bytes 1-7)
-/// Collection 2: Digitizer Touch Pad — Report ID 0x02, 22 bytes Input (bytes 8-29)
-///   with Finger transducers + Report ID 0x3F vendor data + Feature declarations
-/// Collection 3: Vendor Multitouch — Report ID 0x44 (1387 bytes)
+/// 110 bytes, identical to the real Magic Trackpad 2. Contains:
+///   Collection 1: Mouse (Generic Desktop) — Report ID 0x02, 7 bytes
+///   Collection 2: Digitizer Touch Pad — Report ID 0x3F, 16 bytes vendor
+///   Collection 3: Vendor Multitouch — Report ID 0x44, 1387 bytes
 ///
-/// The real MT2 has a 110-byte descriptor without Finger elements or Feature
-/// declarations. TopCase augments it for genuine hardware. Since our emulated
-/// device doesn't get augmented, we add Finger collections with full Digitizer
-/// elements (Tip Switch, Contact Identifier, X, Y) so macOS creates valid
-/// digitizer transducers (`digitizer: 2`), plus Feature declarations so IOKit
-/// has report lengths for AppleMultitouchDevice::decodeDeviceProperty.
+/// No Finger collections or Feature declarations — the real MT2 doesn't
+/// have them either. macOS reports `digitizer: 0` and "Invalid digitizer
+/// transducer" for both the real MT2 and our device — this is normal and
+/// does not prevent scrolling (confirmed by testing the real MT2 on the VM).
 pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     // === Collection 1: Mouse (Generic Desktop / Mouse) ===
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -132,93 +155,10 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0xC0,             //   End Collection (Physical)
     0xC0,             // End Collection (Application)
 
-    // === Collection 2: Digitizer Touch Pad ===
-    //
-    // Report ID 0x02 bytes 8-29 (22 bytes = 176 bits additional Input data).
-    // Collection 1 declares bytes 1-7 (7 bytes). Combined total = 29 bytes = our 30-byte report.
-    //
-    // Also provides Digitizer Finger transducers so macOS creates digitizer elements
-    // (fixes "Invalid digitizer transducer" / "digitizer: 0" from the event driver).
-    //
-    // Report ID 0x3F (16 bytes) retained for backward compatibility.
-    // Feature reports declared for AppleMultitouchDevice::decodeDeviceProperty.
+    // === Collection 2: Digitizer Touch Pad (vendor data only) ===
     0x05, 0x0D,       // Usage Page (Digitizer)
     0x09, 0x05,       // Usage (Touch Pad)
     0xA1, 0x01,       // Collection (Application)
-
-    // --- Report ID 0x02: 22 bytes of Input (bytes 8-29 of the 30-byte touch report) ---
-    0x85, 0x02,       //   Report ID (0x02)
-
-    // Header padding: 4 bytes (bytes 8-11: format marker, timestamp, constant)
-    0x75, 0x08,       //   Report Size (8)
-    0x95, 0x04,       //   Report Count (4)
-    0x81, 0x01,       //   Input (Constant)
-
-    // Finger 0: 9 bytes (bytes 12-20)
-    0x05, 0x0D,       //   Usage Page (Digitizer)
-    0x09, 0x22,       //   Usage (Finger)
-    0xA1, 0x02,       //   Collection (Logical)
-    0x09, 0x42,       //     Usage (Tip Switch)
-    0x15, 0x00,       //     Logical Minimum (0)
-    0x25, 0x01,       //     Logical Maximum (1)
-    0x75, 0x01,       //     Report Size (1)
-    0x95, 0x01,       //     Report Count (1)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x75, 0x07,       //     Report Size (7) — padding to byte align
-    0x81, 0x01,       //     Input (Constant)
-    0x09, 0x51,       //     Usage (Contact Identifier)
-    0x15, 0x00,       //     Logical Minimum (0)
-    0x25, 0x0F,       //     Logical Maximum (15)
-    0x75, 0x08,       //     Report Size (8)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x05, 0x01,       //     Usage Page (Generic Desktop)
-    0x09, 0x30,       //     Usage (X)
-    0x16, 0xA2, 0xF1, //     Logical Minimum (-3678)
-    0x26, 0x5E, 0x0F, //     Logical Maximum (3934)
-    0x75, 0x10,       //     Report Size (16)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x09, 0x31,       //     Usage (Y)
-    0x16, 0x52, 0xF6, //     Logical Minimum (-2478)
-    0x26, 0x1B, 0x0A, //     Logical Maximum (2587)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x75, 0x08,       //     Report Size (8)
-    0x95, 0x03,       //     Report Count (3)
-    0x81, 0x01,       //     Input (Constant) — 3 bytes padding
-    0xC0,             //   End Collection (Logical)
-
-    // Finger 1: 9 bytes (bytes 21-29) — same structure
-    0x05, 0x0D,       //   Usage Page (Digitizer)
-    0x09, 0x22,       //   Usage (Finger)
-    0xA1, 0x02,       //   Collection (Logical)
-    0x09, 0x42,       //     Usage (Tip Switch)
-    0x15, 0x00,       //     Logical Minimum (0)
-    0x25, 0x01,       //     Logical Maximum (1)
-    0x75, 0x01,       //     Report Size (1)
-    0x95, 0x01,       //     Report Count (1)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x75, 0x07,       //     Report Size (7)
-    0x81, 0x01,       //     Input (Constant)
-    0x09, 0x51,       //     Usage (Contact Identifier)
-    0x15, 0x00,       //     Logical Minimum (0)
-    0x25, 0x0F,       //     Logical Maximum (15)
-    0x75, 0x08,       //     Report Size (8)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x05, 0x01,       //     Usage Page (Generic Desktop)
-    0x09, 0x30,       //     Usage (X)
-    0x16, 0xA2, 0xF1, //     Logical Minimum (-3678)
-    0x26, 0x5E, 0x0F, //     Logical Maximum (3934)
-    0x75, 0x10,       //     Report Size (16)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x09, 0x31,       //     Usage (Y)
-    0x16, 0x52, 0xF6, //     Logical Minimum (-2478)
-    0x26, 0x1B, 0x0A, //     Logical Maximum (2587)
-    0x81, 0x02,       //     Input (Data, Variable, Absolute)
-    0x75, 0x08,       //     Report Size (8)
-    0x95, 0x03,       //     Report Count (3)
-    0x81, 0x01,       //     Input (Constant)
-    0xC0,             //   End Collection (Logical)
-
-    // --- Report ID 0x3F: 16 bytes vendor Input (backward compatibility) ---
     0x06, 0x00, 0xFF, //   Usage Page (Vendor 0xFF00)
     0x09, 0x0C,       //   Usage (Vendor 0x0C)
     0x15, 0x00,       //   Logical Minimum (0)
@@ -227,20 +167,6 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
     0x95, 0x10,       //   Report Count (16)
     0x85, 0x3F,       //   Report ID (0x3F)
     0x81, 0x22,       //   Input (Data, Variable, Absolute, No Preferred)
-
-    // --- Vendor Feature reports (for AppleMultitouchDevice::decodeDeviceProperty) ---
-    0x09, 0x0C,       //   Usage (Vendor 0x0C)
-    0x85, 0x02,       //   Report ID (0x02) — multitouch activation
-    0x95, 0x01,       //   Report Count (1)
-    0xB1, 0x02,       //   Feature (Data, Variable, Absolute)
-    0x09, 0x0C, 0x85, 0x01, 0x95, 0x04, 0xB1, 0x02, // Feature 0x01 (4 bytes)
-    0x09, 0x0C, 0x85, 0xDB, 0x95, 0x4B, 0xB1, 0x02, // Feature 0xDB (75 bytes)
-    0x09, 0x0C, 0x85, 0xD1, 0x95, 0x01, 0xB1, 0x02, // Feature 0xD1 (1 byte)
-    0x09, 0x0C, 0x85, 0xD3, 0x95, 0x0E, 0xB1, 0x02, // Feature 0xD3 (14 bytes)
-    0x09, 0x0C, 0x85, 0xD0, 0x95, 0x0F, 0xB1, 0x02, // Feature 0xD0 (15 bytes)
-    0x09, 0x0C, 0x85, 0xA1, 0x95, 0x06, 0xB1, 0x02, // Feature 0xA1 (6 bytes)
-    0x09, 0x0C, 0x85, 0xD9, 0x95, 0x10, 0xB1, 0x02, // Feature 0xD9 (16 bytes)
-    0x09, 0x0C, 0x85, 0x7F, 0x95, 0x04, 0xB1, 0x02, // Feature 0x7F (4 bytes)
     0xC0,             // End Collection
 
     // === Collection 3: Vendor Multitouch ===
@@ -637,165 +563,140 @@ const TRACKPAD2_MAX_X: i16 = 3934;
 const TRACKPAD2_MIN_Y: i16 = -2478;
 const TRACKPAD2_MAX_Y: i16 = 2587;
 
-/// Fixed X positions for the two synthetic fingers (left and right of center).
-const FINGER0_X: i16 = -500;
-const FINGER1_X: i16 = 500;
-
 /// Idle timeout in ticks before lifting fingers (150ms at 1MHz tick rate).
 const IDLE_TIMEOUT_TICKS: u64 = 150_000;
 
 /// Maximum Y displacement before resetting finger positions.
 const Y_BOUNDARY: i16 = 2000;
 
-/// Touch state values (from kernel driver).
-const TOUCH_STATE_DOWN: u8 = 0x80;
-const TOUCH_STATE_UP: u8 = 0x00;
+// Template touch reports captured from a real MT2 scroll gesture.
+// Index 0 = initial NONE state, 1 = APPROACHING, 2+ = TOUCHING.
+// We use these as byte-exact templates and only modify the Y coordinates.
+const TEMPLATE_NONE: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x5c, 0x29, 0xe6, 0x9b, 0x5b, 0xb6, 0x23, 0x53, 0x7e, 0x18, 0x0d, 0x25, 0xbe, 0xff, 0xc7, 0x23, 0x6c, 0x87, 0x12, 0x0d, 0x28];
+const TEMPLATE_APPROACH: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0xb4, 0x29, 0xe6, 0xa5, 0x5b, 0xbb, 0x6b, 0x5a, 0x83, 0x1a, 0x10, 0x85, 0xc2, 0x3f, 0xcf, 0x6f, 0x6e, 0x87, 0x15, 0x0e, 0x88];
+const TEMPLATE_TOUCH: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x0c, 0x2a, 0xe6, 0xaf, 0xdb, 0xc0, 0x8b, 0x62, 0x89, 0x1b, 0x15, 0x85, 0xda, 0xff, 0xd6, 0x8f, 0x75, 0x80, 0x16, 0x12, 0x08];
+// Release/lift template (from end of real capture)
+const TEMPLATE_RELEASE: [u8; 30] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x31, 0xec, 0x47, 0xe6, 0x18, 0x7d, 0xbe, 0x03, 0x00, 0x00, 0x00, 0x00, 0x85, 0xc2, 0x00, 0xdd, 0xef, 0x00, 0x00, 0x00, 0x00, 0x28];
 
 /// Synthesizes 2-finger scroll gestures from scroll deltas.
 ///
-/// Converts incoming scroll delta values (from the Full Scroll Dial) into
-/// MT2-format touch reports with two fingers moving in parallel, which
-/// macOS interprets as a scroll gesture.
+/// Uses real MT2 captured reports as byte-exact templates, modifying only
+/// the Y coordinates via the packed 13-bit encoding. This guarantees the
+/// touch attributes, state bytes, and header format match the real device.
 pub struct TouchSynthesizer {
-    /// Current Y positions of the two fingers.
-    finger_y: [i16; 2],
-    /// Whether fingers are currently "touching" the trackpad.
-    fingers_down: bool,
+    /// Accumulated Y offset from center for both fingers.
+    y_offset: i16,
+    /// Whether fingers are currently active.
+    active: bool,
+    /// Reports sent since gesture start (for lifecycle phases).
+    report_count: u16,
     /// Tick count of the last scroll event (for idle detection).
     last_event_ticks: u64,
-    /// Internal 8kHz-equivalent timestamp for report headers.
-    /// Real MT2 increments by ~88 per report (~11ms * 8kHz).
+    /// Internal timestamp for report headers.
     timestamp: u16,
 }
 
 impl TouchSynthesizer {
     pub const fn new() -> Self {
         Self {
-            finger_y: [0, 0],
-            fingers_down: false,
+            y_offset: 0,
+            active: false,
+            report_count: 0,
             last_event_ticks: 0,
-            timestamp: 0,
+            timestamp: 10000, // Start at non-zero like real device
         }
     }
 
-    /// Process a scroll delta and return a touch report to send.
-    ///
-    /// Returns a 30-byte report: [Report ID 0x02, 11-byte header, 2x 9-byte touches].
-    pub fn process_scroll(&mut self, delta: i16) -> [u8; 30] {
+    /// Process a scroll delta. Returns 1-3 reports to send (gesture start
+    /// includes NONE + APPROACH before the TOUCH report).
+    pub fn process_scroll(&mut self, delta: i16) -> heapless::Vec<[u8; 30], 3> {
         let now = embassy_time::Instant::now().as_ticks();
         self.last_event_ticks = now;
+        let mut out = heapless::Vec::new();
 
-        if !self.fingers_down {
-            // Start new gesture: place fingers at center
-            self.finger_y = [0, 0];
-            self.fingers_down = true;
-            debug!("MT2 touch: gesture START at Y=0");
+        if !self.active {
+            // Start new gesture: send NONE then APPROACH then first TOUCH
+            self.y_offset = 0;
+            self.active = true;
+            self.report_count = 0;
+            debug!("MT2 touch: gesture START");
+
+            let _ = out.push(self.make_report(&TEMPLATE_NONE));
+            let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
         }
 
-        // Move both fingers by the scroll delta
-        // Positive delta = scroll down = fingers move down (negative Y)
-        // The sign convention matches trackpad natural scrolling
-        self.finger_y[0] = (self.finger_y[0] as i32 + delta as i32)
-            .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32) as i16;
-        self.finger_y[1] = (self.finger_y[1] as i32 + delta as i32)
+        // Apply delta
+        self.y_offset = (self.y_offset as i32 + delta as i32)
             .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32) as i16;
 
-        // Check if we've hit the boundary and need to reset
-        if self.finger_y[0].abs() > Y_BOUNDARY || self.finger_y[1].abs() > Y_BOUNDARY {
-            debug!("MT2 touch: Y boundary hit ({}), will reset on next idle", self.finger_y[0]);
+        if self.y_offset.abs() > Y_BOUNDARY {
+            debug!("MT2 touch: Y boundary hit ({})", self.y_offset);
         }
 
-        debug!(
-            "MT2 touch: delta={} -> Y=[{}, {}]",
-            delta, self.finger_y[0], self.finger_y[1]
-        );
-
-        self.build_report(TOUCH_STATE_DOWN)
+        let _ = out.push(self.make_report(&TEMPLATE_TOUCH));
+        self.report_count = self.report_count.saturating_add(1);
+        out
     }
 
-    /// Check if fingers should be lifted due to idle timeout.
-    /// Returns Some(report) if a lift report should be sent.
-    pub fn check_idle(&mut self) -> Option<[u8; 30]> {
-        if !self.fingers_down {
+    /// Called on every timer tick (~11ms).
+    pub fn tick(&mut self) -> Option<[u8; 30]> {
+        if !self.active {
             return None;
         }
 
         let now = embassy_time::Instant::now().as_ticks();
         if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS {
-            self.fingers_down = false;
-            debug!("MT2 touch: gesture END (idle timeout)");
-            Some(self.build_report(TOUCH_STATE_UP))
+            self.active = false;
+            debug!("MT2 touch: gesture END");
+            Some(self.make_report(&TEMPLATE_RELEASE))
         } else {
-            None
+            // Send continuous TOUCH report at current position
+            Some(self.make_report(&TEMPLATE_TOUCH))
         }
     }
 
-    /// Build a 30-byte MT2 USB touch report.
-    ///
-    /// Format: Report ID 0x02 (overloaded for multitouch after activation).
-    /// [0x02, clicks, 10 header bytes, touch0[9], touch1[9]] = 30 bytes.
-    ///
-    /// Header format (from real MT2 USB captures):
-    ///   Byte 1: clicks (0 for scroll)
-    ///   Bytes 2-6: counters/state (zeroed is fine)
-    ///   Byte 7: 0x01 if fingers down, 0x00 if up
-    ///   Byte 8: 0x31 (format marker, always present)
-    ///   Bytes 9-10: 16-bit LE timestamp (8kHz clock)
-    ///   Byte 11: 0xe6 (constant, confirmed from real MT2 USB capture)
-    fn build_report(&mut self, state: u8) -> [u8; 30] {
-        let mut report = [0u8; 30];
-        report[0] = 0x02; // Report ID
-        report[1] = 0x00; // clicks = 0 (no button press for scroll)
-        // Bytes 2-6: zero (real device has mouse X/Y deltas here, not needed)
-        // Byte 7: active contact bitmask. Real MT2 uses 0x03 = both fingers,
-        // 0x02 = finger 1 only, 0x00 = none. Confirmed from USB capture.
-        report[7] = if state == TOUCH_STATE_DOWN { 0x03 } else { 0x00 };
-        report[8] = 0x31; // Format marker (constant in all real MT2 reports)
-        // Timestamp: 16-bit LE, increments by ~88 per report (~8kHz)
+    /// Create a report from a template, patching the timestamp and Y coordinates.
+    fn make_report(&mut self, template: &[u8; 30]) -> [u8; 30] {
+        let mut report = *template;
+
+        // Patch timestamp (bytes 9-10)
         report[9] = (self.timestamp & 0xFF) as u8;
         report[10] = (self.timestamp >> 8) as u8;
-        report[11] = 0xe6; // Constant (confirmed from real MT2 USB capture)
-
-        // Advance timestamp (~88 ticks per report at 8kHz)
         self.timestamp = self.timestamp.wrapping_add(88);
 
-        // Touch point 0 (bytes 12-20)
-        let t0 = encode_touch_point(0, FINGER0_X, self.finger_y[0], state);
-        report[12..21].copy_from_slice(&t0);
-
-        // Touch point 1 (bytes 21-29)
-        let t1 = encode_touch_point(1, FINGER1_X, self.finger_y[1], state);
-        report[21..30].copy_from_slice(&t1);
+        // Patch Y in both touch points using the packed encoding.
+        // We keep the template's X coordinates and attributes intact,
+        // and only modify the Y bits (spread across bytes 1-3 of each touch).
+        self.patch_y(&mut report, 12, self.y_offset); // finger 0
+        self.patch_y(&mut report, 21, self.y_offset); // finger 1
 
         report
     }
+
+    /// Patch the Y coordinate in a 9-byte packed touch point at the given offset.
+    /// Y is encoded as negated 13-bit value across touch bytes 1-3.
+    fn patch_y(&self, report: &mut [u8; 30], off: usize, y: i16) {
+        let neg_y_raw = ((-y) as u16) & 0x1FFF;
+        let t = &mut report[off..off + 9];
+        // Byte 1 bits [5:7] = neg_y[2:0]
+        t[1] = (t[1] & 0x1F) | (((neg_y_raw & 0x07) << 5) as u8);
+        // Byte 2 = neg_y[10:3]
+        t[2] = ((neg_y_raw >> 3) & 0xFF) as u8;
+        // Byte 3 bits [0:1] = neg_y[12:11], keep state bits [6:7]
+        t[3] = (t[3] & 0xFC) | (((neg_y_raw >> 11) & 0x03) as u8);
+    }
+
 }
 
-/// Encode a single MT2 touch point into 9 bytes.
+/// Encode a single MT2 touch point into 9 bytes (Apple packed format).
 ///
-/// Uses the Apple proprietary packed format expected by parser-type 1000
-/// (AppleMultitouchDevice). This is the same format decoded by the Linux
-/// kernel's `magicmouse_emit_touch()` in hid-magicmouse.c:
-///
-///   id = tdata[8] & 0x0F
-///   x = (tdata[1] << 27 | tdata[0] << 19) >> 19   // 13-bit signed
-///   y = -((tdata[3] << 30 | tdata[2] << 22 | tdata[1] << 14) >> 19)  // negated
-///   state = tdata[3] & 0xC0
-///   touch_major = tdata[4], touch_minor = tdata[5]
-///   size = tdata[6], pressure = tdata[7]
-///   orientation = (tdata[8] >> 5) - 4
-///
-/// Note: This does NOT match our HID descriptor's Finger collection layout
-/// (which declares 16-bit X/Y). The HID event driver layer logs cosmetic
-/// "not present in digitizer collection" errors, but the actual touch
-/// processing happens in AppleMultitouchDevice which uses this packed format.
+/// Same format as the real MT2 sends over USB and as decoded by
+/// Linux kernel `magicmouse_emit_touch()` in hid-magicmouse.c.
 fn encode_touch_point(id: u8, x: i16, y: i16, state: u8) -> [u8; 9] {
-    // X: 13-bit signed, packed into bytes 0-1
     let x_raw = (x as u16) & 0x1FFF;
     let x_lo = (x_raw & 0xFF) as u8;
     let x_hi = ((x_raw >> 8) & 0x1F) as u8;
 
-    // Y: 13-bit signed, NEGATED, packed into bytes 1-3
     let neg_y_raw = ((-y) as u16) & 0x1FFF;
     let y_b1 = ((neg_y_raw & 0x07) << 5) as u8;
     let y_b2 = ((neg_y_raw >> 3) & 0xFF) as u8;
@@ -804,13 +705,17 @@ fn encode_touch_point(id: u8, x: i16, y: i16, state: u8) -> [u8; 9] {
     let byte1 = x_hi | y_b1;
     let byte3 = y_b3 | (state & 0xC0);
 
-    // Touch attributes from real MT2 capture data
-    let touch_major: u8 = if state == TOUCH_STATE_DOWN { 100 } else { 0 };
-    let touch_minor: u8 = if state == TOUCH_STATE_DOWN { 130 } else { 0 };
-    let size: u8 = if state == TOUCH_STATE_DOWN { 24 } else { 0 };
-    let pressure: u8 = if state == TOUCH_STATE_DOWN { 12 } else { 0 };
-
-    // orientation=0 → encoded as 4, combined with tracking ID
+    // Touch attributes vary by state (values from real MT2 captures):
+    //   approaching: smaller contact, light pressure
+    //   touching: full contact, moderate pressure
+    //   releasing: shrinking contact, fading pressure
+    //   none: all zeros
+    let (touch_major, touch_minor, size, pressure) = match state & 0xC0 {
+        0x40 => (85, 130, 22, 10),   // approaching
+        0x80 => (100, 135, 26, 15),  // touching
+        0xC0 => (70, 120, 18, 5),    // releasing
+        _ => (0, 0, 0, 0),           // none
+    };
     let byte8 = (id & 0x0F) | (4u8 << 5);
 
     [x_lo, byte1, y_b2, byte3, touch_major, touch_minor, size, pressure, byte8]
@@ -820,7 +725,6 @@ fn encode_touch_point(id: u8, x: i16, y: i16, state: u8) -> [u8; 9] {
 mod tests {
     use super::*;
 
-    /// Decode using the Linux kernel's magicmouse_emit_touch() logic.
     fn decode_touch(tdata: &[u8; 9]) -> (u8, i16, i16, u8) {
         let id = tdata[8] & 0x0F;
         let x = (((tdata[1] as i32) << 27 | (tdata[0] as i32) << 19) >> 19) as i16;
@@ -837,56 +741,38 @@ mod tests {
     fn test_encode_decode_origin() {
         let encoded = encode_touch_point(0, 0, 0, TOUCH_STATE_DOWN);
         let (id, x, y, state) = decode_touch(&encoded);
-        assert_eq!(id, 0);
-        assert_eq!(x, 0);
-        assert_eq!(y, 0);
-        assert_eq!(state, TOUCH_STATE_DOWN);
+        assert_eq!((id, x, y, state), (0, 0, 0, TOUCH_STATE_DOWN));
     }
 
     #[test]
     fn test_encode_decode_positive() {
         let encoded = encode_touch_point(1, 500, 1000, TOUCH_STATE_DOWN);
         let (id, x, y, state) = decode_touch(&encoded);
-        assert_eq!(id, 1);
-        assert_eq!(x, 500);
-        assert_eq!(y, 1000);
-        assert_eq!(state, TOUCH_STATE_DOWN);
+        assert_eq!((id, x, y, state), (1, 500, 1000, TOUCH_STATE_DOWN));
     }
 
     #[test]
     fn test_encode_decode_negative() {
         let encoded = encode_touch_point(2, -500, -1000, TOUCH_STATE_DOWN);
         let (id, x, y, state) = decode_touch(&encoded);
-        assert_eq!(id, 2);
-        assert_eq!(x, -500);
-        assert_eq!(y, -1000);
-        assert_eq!(state, TOUCH_STATE_DOWN);
+        assert_eq!((id, x, y, state), (2, -500, -1000, TOUCH_STATE_DOWN));
     }
 
     #[test]
     fn test_encode_decode_up() {
         let encoded = encode_touch_point(0, 100, -200, TOUCH_STATE_UP);
         let (id, x, y, state) = decode_touch(&encoded);
-        assert_eq!(id, 0);
-        assert_eq!(x, 100);
-        assert_eq!(y, -200);
-        assert_eq!(state, TOUCH_STATE_UP);
+        assert_eq!((id, x, y, state), (0, 100, -200, TOUCH_STATE_UP));
     }
 
     #[test]
     fn test_encode_decode_extremes() {
         let encoded = encode_touch_point(0, -3678, -2478, TOUCH_STATE_DOWN);
         let (id, x, y, state) = decode_touch(&encoded);
-        assert_eq!(id, 0);
-        assert_eq!(x, -3678);
-        assert_eq!(y, -2478);
-        assert_eq!(state, TOUCH_STATE_DOWN);
+        assert_eq!((id, x, y, state), (0, -3678, -2478, TOUCH_STATE_DOWN));
 
         let encoded = encode_touch_point(1, 3934, 2587, TOUCH_STATE_DOWN);
         let (id, x, y, state) = decode_touch(&encoded);
-        assert_eq!(id, 1);
-        assert_eq!(x, 3934);
-        assert_eq!(y, 2587);
-        assert_eq!(state, TOUCH_STATE_DOWN);
+        assert_eq!((id, x, y, state), (1, 3934, 2587, TOUCH_STATE_DOWN));
     }
 }

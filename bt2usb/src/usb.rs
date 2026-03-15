@@ -51,7 +51,7 @@ async fn usb_hid_handler_task(
         match select3(
             HID_REPORT_CHANNEL.receive(),
             BATTERY_USB_SIGNAL.wait(),
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(50)),
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(11)),
         )
         .await
         {
@@ -59,18 +59,11 @@ async fn usb_hid_handler_task(
                 match event.report_type {
                     HidReportType::Mouse => {
                         if !mt2::MT_ENABLED.load(Ordering::Relaxed) {
-                            // Multitouch not yet activated by host — skip
                             debug!("MT2: scroll event received but MT not yet enabled");
                             continue;
                         }
 
                         // Extract RAW scroll delta from BLE mouse report.
-                        // In MT2 mode we need every delta immediately — the threshold
-                        // accumulator in device_profile.rs is designed for standard mouse
-                        // reports and would swallow small deltas. We bypass it entirely.
-                        //
-                        // Full Scroll Dial (16-bit): BLE report = 2-byte LE scroll delta.
-                        // Other profiles (8-bit): scroll at byte 3 (after buttons, X, Y).
                         let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
                             if event.len >= 2 {
                                 i16::from_le_bytes([event.data[0], event.data[1]])
@@ -84,14 +77,15 @@ async fn usb_hid_handler_task(
                         };
 
                         if scroll_delta != 0 {
-                            // Apply scroll multiplier
                             let scroll_m =
                                 crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
                             let scaled = crate::usb_hid::apply_multiplier_i16(scroll_delta, scroll_m);
 
-                            let report = touch_synth.process_scroll(scaled);
-                            if let Err(e) = trackpad_writer.write(&report).await {
-                                warn!("MT2 trackpad write error: {:?}", e);
+                            let reports = touch_synth.process_scroll(scaled);
+                            for report in reports {
+                                if let Err(e) = trackpad_writer.write(&report).await {
+                                    warn!("MT2 trackpad write error: {:?}", e);
+                                }
                             }
                         }
                     }
@@ -106,10 +100,12 @@ async fn usb_hid_handler_task(
                 debug!("MT2: battery update received (not forwarded yet)");
             }
             Either3::Third(_) => {
-                // Idle timer fired — check if we need to lift fingers
-                if let Some(lift_report) = touch_synth.check_idle() {
-                    if let Err(e) = trackpad_writer.write(&lift_report).await {
-                        warn!("MT2 trackpad lift write error: {:?}", e);
+                // Timer fired — send continuous reports while fingers are down
+                // (real MT2 sends at ~91 Hz even when position unchanged),
+                // or send lift report on idle timeout.
+                if let Some(report) = touch_synth.tick() {
+                    if let Err(e) = trackpad_writer.write(&report).await {
+                        warn!("MT2 trackpad tick write error: {:?}", e);
                     }
                 }
             }
@@ -141,7 +137,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     let mut config = embassy_usb::Config::new(mt2::APPLE_VID, mt2::MT2_PID);
     config.manufacturer = Some(mt2::MT2_MANUFACTURER);
     config.product = Some(mt2::MT2_PRODUCT);
-    config.serial_number = Some("12345678");
+    config.serial_number = Some("CC2012200CFJ2XQAT");
     config.device_release = mt2::MT2_DEVICE_RELEASE;
     config.max_power = 500; // MT2 reports 500mA
     config.max_packet_size_0 = 64;
