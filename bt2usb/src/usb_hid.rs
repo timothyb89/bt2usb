@@ -6,12 +6,12 @@
 //! - Composite device support for simultaneous keyboard + mouse
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use portable_atomic::AtomicU64;
 use defmt::*;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::types::StringIndex;
 use embassy_usb::Handler;
+use portable_atomic::AtomicU64;
 use usbd_hid::descriptor::MouseReport;
 
 /// Whether the host has enabled high-resolution scroll mode via the
@@ -386,8 +386,9 @@ impl Handler for UsbDeviceHandler {
         // treats units as standard (1 unit = 1 detent) → 120× too fast.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
         DETECTED_OS.store(OS_UNKNOWN, Ordering::Relaxed);
+        crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
         crate::device_profile::reset_scroll_accumulator();
-        info!("USB bus reset, high-res scroll and OS detection reset");
+        info!("USB bus reset, high-res scroll/MT2/OS detection reset");
     }
 
     fn addressed(&mut self, addr: u8) {
@@ -395,19 +396,17 @@ impl Handler for UsbDeviceHandler {
     }
 
     fn configured(&mut self, configured: bool) {
-        // Reset high-res scroll on any re-configuration. USB switches may
+        // Reset high-res scroll and MT2 on any re-configuration. USB switches may
         // re-enumerate without a full bus reset, so reset() alone isn't enough.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
         DETECTED_OS.store(OS_UNKNOWN, Ordering::Relaxed);
-        CONFIGURED_AT_TICKS.store(
-            embassy_time::Instant::now().as_ticks(),
-            Ordering::Relaxed,
-        );
+        crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
+        CONFIGURED_AT_TICKS.store(embassy_time::Instant::now().as_ticks(), Ordering::Relaxed);
         crate::device_profile::reset_scroll_accumulator();
         if configured {
-            info!("USB device configured, high-res scroll and OS detection reset");
+            info!("USB device configured, scroll/MT2/OS detection reset");
         } else {
-            info!("USB device unconfigured, high-res scroll and OS detection reset");
+            info!("USB device unconfigured, scroll/MT2/OS detection reset");
         }
     }
 

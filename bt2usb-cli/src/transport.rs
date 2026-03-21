@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::{self, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 
-/// USB VID:PID for bt2usb device
-const USB_VID: u16 = 0x1209;
-const USB_PID: u16 = 0x0001;
+/// USB VID:PID for bt2usb device (Apple Magic Trackpad 2 identity for macOS compatibility)
+const USB_VID: u16 = 0x05AC;
+const USB_PID: u16 = 0x0265;
 
 /// Vendor HID usage page for the RPC interface
 const VENDOR_USAGE_PAGE: u16 = 0xFF00;

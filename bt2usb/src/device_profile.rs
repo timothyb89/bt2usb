@@ -336,8 +336,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         };
 
         if new_acc.abs() >= scroll_threshold() {
-            let detents = (new_acc / scroll_threshold())
-                .clamp(-max_detents, max_detents);
+            let detents = (new_acc / scroll_threshold()).clamp(-max_detents, max_detents);
             let remainder = new_acc - detents * scroll_threshold();
             SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
             // Emit detent count (±1..±3) rather than ×120 magnitude.

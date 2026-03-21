@@ -39,6 +39,7 @@ mod ble_state;
 mod bonding;
 mod device_profile;
 mod framing;
+mod mt2;
 mod preferences;
 mod protocol;
 mod rpc;

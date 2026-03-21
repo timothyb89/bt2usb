@@ -3,3 +3,7 @@ runner = "probe-rs run --chip RP2040"
 
 [build]
 target = "thumbv6m-none-eabi"
+
+[env]
+# embassy-usb needs enough handler slots for HID interfaces + device handler + BLE
+EMBASSY_USB_MAX_HANDLER_COUNT = "8"
