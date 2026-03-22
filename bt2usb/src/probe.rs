@@ -144,6 +144,20 @@ async fn probe_usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static,
     usb.run().await
 }
 
+/// Commit probe result and reset with an RTT flush delay.
+///
+/// defmt-rtt writes to a shared-memory ring buffer that probe-rs reads
+/// asynchronously. A watchdog reset zeroes RAM, destroying any unread
+/// data. This delay gives probe-rs time to drain the buffer so the
+/// detection result is visible in the log before the connection drops.
+async fn commit_and_reset(os: DetectedOs) -> ! {
+    use embassy_time::{Duration, Timer};
+    scratch::write_probe_result(os);
+    info!("[probe] Committing {} -> resetting to Phase 1", os);
+    Timer::after(Duration::from_millis(100)).await;
+    crate::system_reset();
+}
+
 /// Fingerprint evaluation task.
 ///
 /// Waits for USB configuration, collects signals, evaluates the OS,
@@ -173,8 +187,7 @@ async fn probe_eval_task(_writer: HidWriter<'static, Driver<'static, USB>, 8>) {
 
     if !configured {
         warn!("[probe] USB not configured within 2s, committing Unknown");
-        scratch::write_probe_result(DetectedOs::Unknown);
-        crate::system_reset();
+        commit_and_reset(DetectedOs::Unknown).await;
     }
 
     // Check for definite signals every 50ms for 500ms
@@ -185,8 +198,7 @@ async fn probe_eval_task(_writer: HidWriter<'static, Driver<'static, USB>, 8>) {
         if PROBE_STRING_0X_EE.load(Ordering::Relaxed) {
             let os = evaluate_os();
             info!("[probe] Definite signal -> {}", os);
-            scratch::write_probe_result(os);
-            crate::system_reset();
+            commit_and_reset(os).await;
         }
     }
 
@@ -194,16 +206,14 @@ async fn probe_eval_task(_writer: HidWriter<'static, Driver<'static, USB>, 8>) {
     let os = evaluate_os();
     if os != DetectedOs::Unknown {
         info!("[probe] Heuristic at 500ms -> {}", os);
-        scratch::write_probe_result(os);
-        crate::system_reset();
+        commit_and_reset(os).await;
     }
 
     // Wait until T+1000ms hard timeout
     Timer::after(Duration::from_millis(500)).await;
     let os = evaluate_os();
     info!("[probe] Timeout at 1000ms -> {}", os);
-    scratch::write_probe_result(os);
-    crate::system_reset();
+    commit_and_reset(os).await;
 }
 
 // ============ Phase 0 Entry Point ============

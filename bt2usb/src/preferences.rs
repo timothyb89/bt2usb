@@ -28,6 +28,8 @@ pub const PREF_KEY_X_MULTIPLIER: u8 = 4;
 pub const PREF_KEY_Y_MULTIPLIER: u8 = 5;
 pub const PREF_KEY_SCROLL_THRESHOLD: u8 = 6;
 pub const PREF_KEY_MAX_DETENTS: u8 = 7;
+/// Forced OS override (0=Auto/probe, 1=Windows, 2=Linux, 3=macOS).
+pub const PREF_KEY_FORCED_OS: u8 = 8;
 
 /// Active device preference - which device to auto-connect to
 #[derive(Clone, Debug)]

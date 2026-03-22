@@ -434,6 +434,13 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
+        protocol::Request::SetForcedOs { os } => {
+            // Write to flash (via Core 0) and update the scratch cache immediately
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetForcedOs { os: *os });
+            crate::scratch::write_forced_os(*os as u32);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
         protocol::Request::ForceReprobe => {
             info!("Force reprobe requested via RPC");
             // Send OK response first, then reset

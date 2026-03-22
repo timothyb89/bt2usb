@@ -523,6 +523,11 @@ async fn handle_command_during_hid_loop<'a>(
             CommandResult::Continue
         }
 
+        BleCommand::SetForcedOs { os } => {
+            commands::handle_set_forced_os(flash, os).await;
+            CommandResult::Continue
+        }
+
         _ => CommandResult::Continue,
     }
 }

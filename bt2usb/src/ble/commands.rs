@@ -172,6 +172,15 @@ pub async fn handle_set_config(
     let _ = preferences::store_multiplier(flash, pref_key, value).await;
 }
 
+/// Persist a forced OS override preference to flash.
+///
+/// 0 = Auto (probe normally), 1 = Windows, 2 = Linux, 3 = macOS.
+/// The scratch register cache is updated by the RPC handler on Core 1.
+pub async fn handle_set_forced_os(flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>, os: u8) {
+    let _ = preferences::store_multiplier(flash, preferences::PREF_KEY_FORCED_OS, os as u32).await;
+    info!("Forced OS preference stored: {}", os);
+}
+
 /// Log a restart message and trigger a system reset.
 ///
 /// This function does not return.

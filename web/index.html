@@ -274,6 +274,12 @@
           <button class="btn" onclick="refreshStatus()" id="btnRefresh">Refresh</button>
           <button class="btn btn-danger" onclick="restartDevice()" id="btnRestart">Restart Device</button>
           <button class="btn" onclick="reprobeDevice()" id="btnReprobe">Re-probe OS</button>
+          <select id="forcedOsSelect" onchange="setForcedOs(this.value)" style="padding:0.3rem;border-radius:4px;border:1px solid #555;background:#2a2a2a;color:#ccc;">
+            <option value="0">OS: Auto</option>
+            <option value="1">OS: Windows</option>
+            <option value="2">OS: Linux</option>
+            <option value="3">OS: macOS</option>
+          </select>
         </div>
       </div>
 
@@ -510,7 +516,7 @@
     const CMD_DISCONNECT = 4, CMD_GET_BONDS = 5, CMD_CLEAR_BONDS = 6;
     const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
     const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
-    const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17, CMD_FORCE_REPROBE = 18;
+    const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17, CMD_FORCE_REPROBE = 18, CMD_SET_FORCED_OS = 19;
     const CMD_GET_CONFIG = 8, CMD_SET_CONFIG = 9;
     const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_CONFIG = 4, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
     const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4, EVT_BATTERY_LEVEL = 5;
@@ -930,6 +936,18 @@
         setTimeout(() => refreshStatus(), 3000);
       } catch (e) {
         appendLog(3, 'Reprobe failed: ' + e.message);
+      }
+    }
+
+    async function setForcedOs(val) {
+      const osVal = parseInt(val);
+      const osNames = { 0: 'Auto', 1: 'Windows', 2: 'Linux', 3: 'macOS' };
+      try {
+        const cbor = encodeCbor([CMD_SET_FORCED_OS, osVal]);
+        await sendRequest(cbor);
+        appendLog(1, `Forced OS set to: ${osNames[osVal] || 'Unknown'}`);
+      } catch (e) {
+        appendLog(3, 'Set forced OS failed: ' + e.message);
       }
     }
 
