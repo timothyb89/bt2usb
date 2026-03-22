@@ -23,9 +23,13 @@ pub static HIRES_SCROLL_ENABLED: AtomicBool = AtomicBool::new(false);
 // - Windows: requests String descriptor 0xEE (MS OS String Descriptor)
 // - Linux: enables hires scroll via SET_REPORT without requesting 0xEE
 // - macOS: neither (timeout-based detection)
+#[allow(dead_code)]
 pub const OS_UNKNOWN: u8 = 0;
+#[allow(dead_code)]
 pub const OS_WINDOWS: u8 = 1;
+#[allow(dead_code)]
 pub const OS_LINUX: u8 = 2;
+#[allow(dead_code)]
 pub const OS_MACOS: u8 = 3;
 
 /// Detected host operating system.
@@ -33,6 +37,14 @@ pub static DETECTED_OS: AtomicU8 = AtomicU8::new(OS_UNKNOWN);
 
 /// Tick count when USB was last configured (for OS detection timeout).
 pub static CONFIGURED_AT_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Set true when a USB bus reset occurs >2s after Phase 1 configuration.
+/// Checked by the HID handler task to trigger a reprobe (watchdog reset → Phase 0).
+pub static REPROBE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Minimum uptime (ticks) before a bus reset triggers reprobe.
+/// 2 seconds at 1MHz tick rate.
+const REPROBE_THRESHOLD_TICKS: u64 = 2_000_000;
 
 /// Axis multipliers as percentages (100 = 1.0x, 200 = 2.0x, 50 = 0.5x).
 /// Applied after profile-specific translation, before USB serialization.
@@ -385,10 +397,22 @@ impl Handler for UsbDeviceHandler {
         // mismatch: firmware thinks hires is on (passthrough) but the OS
         // treats units as standard (1 unit = 1 detent) → 120× too fast.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-        DETECTED_OS.store(OS_UNKNOWN, Ordering::Relaxed);
         crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
         crate::device_profile::reset_scroll_accumulator();
-        info!("USB bus reset, high-res scroll/MT2/OS detection reset");
+
+        // Switch detection: if the device has been configured for >2s,
+        // this bus reset is likely from a USB switch changeover or physical
+        // reconnection to a different host. Request reprobe to re-fingerprint.
+        let configured_at = CONFIGURED_AT_TICKS.load(Ordering::Relaxed);
+        if configured_at > 0 {
+            let elapsed = embassy_time::Instant::now().as_ticks() - configured_at;
+            if elapsed > REPROBE_THRESHOLD_TICKS {
+                info!("USB bus reset >2s after config -> reprobe requested");
+                REPROBE_REQUESTED.store(true, Ordering::Relaxed);
+            }
+        }
+
+        info!("USB bus reset, high-res scroll/MT2 reset");
     }
 
     fn addressed(&mut self, addr: u8) {
@@ -399,14 +423,13 @@ impl Handler for UsbDeviceHandler {
         // Reset high-res scroll and MT2 on any re-configuration. USB switches may
         // re-enumerate without a full bus reset, so reset() alone isn't enough.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-        DETECTED_OS.store(OS_UNKNOWN, Ordering::Relaxed);
         crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
         CONFIGURED_AT_TICKS.store(embassy_time::Instant::now().as_ticks(), Ordering::Relaxed);
         crate::device_profile::reset_scroll_accumulator();
         if configured {
-            info!("USB device configured, scroll/MT2/OS detection reset");
+            info!("USB device configured, scroll/MT2 reset");
         } else {
-            info!("USB device unconfigured, scroll/MT2/OS detection reset");
+            info!("USB device unconfigured, scroll/MT2 reset");
         }
     }
 

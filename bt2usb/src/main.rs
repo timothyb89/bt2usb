@@ -41,9 +41,11 @@ mod device_profile;
 mod framing;
 mod mt2;
 mod preferences;
+mod probe;
 mod protocol;
 mod rpc;
 mod rpc_log;
+pub mod scratch;
 mod usb;
 mod usb_hid;
 
@@ -73,7 +75,8 @@ pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
 /// Trigger a full system reset via the RP2040 watchdog.
 ///
-/// Called from Core 0 (BLE task) to ensure proper reset of both cores.
+/// Safe to call from either core — the watchdog reset is chip-wide and
+/// resets both cores, all peripherals, and all RAM (except scratch registers).
 /// This function does not return.
 pub fn system_reset() -> ! {
     unsafe {
@@ -116,42 +119,89 @@ static CORE1_EXECUTOR_READY: AtomicBool = AtomicBool::new(false);
 
 /// Main entry point — runs on Core 0.
 ///
-/// Spawns USB on Core 1, then runs CYW43 + BLE + Flash on Core 0.
+/// Two-phase boot:
+/// - Phase 0 (Probe): Spawn minimal USB device on Core 1 to fingerprint host OS.
+///   Core 0 idles. Probe writes result to scratch registers and resets.
+/// - Phase 1 (Configured): Spawn OS-appropriate USB on Core 1, then run BLE on Core 0.
 #[cortex_m_rt::entry]
 fn main() -> ! {
     info!("bt2usb starting (dual-core mode)...");
 
     let p = embassy_rp::init(Default::default());
 
-    // Flash storage (used on Core 0 for bond and preference storage)
-    let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1);
-
-    // Spawn Core 1 (USB)
-    let usb = p.USB;
-
-    spawn_core1(
-        p.CORE1,
-        unsafe { &mut *addr_of_mut!(CORE1_STACK) },
-        move || {
-            usb::start_core1_usb(usb);
-        },
+    // Read boot state from watchdog scratch registers.
+    // Cold boot (power-on) zeroes scratch → magic invalid → Phase 0.
+    // Watchdog reset from Phase 0 preserves scratch → Phase 1.
+    let boot_state = scratch::read_boot_state();
+    info!(
+        "Boot state: phase={}, os={}, attempts={}",
+        boot_state.phase, boot_state.detected_os, boot_state.attempt_count
     );
-    info!("[core0] Core 1 spawned, waiting for executor ready...");
 
-    // Wait for Core 1's executor to be fully set up before starting Core 0's.
-    // Without this, both executors starting simultaneously causes a stall.
-    while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
-        cortex_m::asm::wfe();
+    match boot_state.phase {
+        scratch::BootPhase::Probe => {
+            // Phase 0: fingerprint the host OS via a minimal probe USB device.
+            let attempts = scratch::increment_attempts();
+            if scratch::max_attempts_exceeded(attempts) {
+                info!("Max probe attempts exceeded, skipping probe -> safe default");
+                scratch::write_probe_result(scratch::DetectedOs::Unknown);
+                system_reset();
+            }
+
+            info!("[core0] Phase 0: USB probe for OS fingerprinting");
+            let usb = p.USB;
+            spawn_core1(
+                p.CORE1,
+                unsafe { &mut *addr_of_mut!(CORE1_STACK) },
+                move || {
+                    probe::start_core1_usb_probe(usb, attempts);
+                },
+            );
+
+            // Wait for Core 1 executor to start, then idle.
+            // The probe task will write scratch and trigger watchdog reset.
+            while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
+                cortex_m::asm::wfe();
+            }
+            info!("[core0] Phase 0: Core 1 probe running, waiting for reset...");
+            loop {
+                cortex_m::asm::wfe();
+            }
+        }
+        scratch::BootPhase::Configured => {
+            // Phase 1: present the OS-appropriate USB configuration and run BLE.
+            let detected_os = boot_state.detected_os;
+            info!("[core0] Phase 1: configured mode, OS={}", detected_os);
+
+            // Flash storage (used on Core 0 for bond and preference storage)
+            let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1);
+
+            let usb = p.USB;
+            spawn_core1(
+                p.CORE1,
+                unsafe { &mut *addr_of_mut!(CORE1_STACK) },
+                move || {
+                    usb::start_core1_usb(usb, detected_os);
+                },
+            );
+            info!("[core0] Core 1 spawned, waiting for executor ready...");
+
+            // Wait for Core 1's executor to be fully set up before starting Core 0's.
+            // Without this, both executors starting simultaneously causes a stall.
+            while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
+                cortex_m::asm::wfe();
+            }
+            info!("[core0] Core 1 executor ready");
+
+            // Start Core 0 executor (CYW43 + BLE + Flash)
+            let executor0 = EXECUTOR0.init(Executor::new());
+            executor0.run(|spawner| {
+                spawner
+                    .spawn(ble::core0_ble_main(
+                        spawner, p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, flash,
+                    ))
+                    .unwrap();
+            });
+        }
     }
-    info!("[core0] Core 1 executor ready");
-
-    // Start Core 0 executor (CYW43 + BLE + Flash)
-    let executor0 = EXECUTOR0.init(Executor::new());
-    executor0.run(|spawner| {
-        spawner
-            .spawn(ble::core0_ble_main(
-                spawner, p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, flash,
-            ))
-            .unwrap();
-    });
 }

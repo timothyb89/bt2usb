@@ -56,6 +56,7 @@ pub const CMD_CLEAR_ACTIVE_DEVICE: u8 = 14;
 pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
 pub const CMD_AUTO_CONNECT: u8 = 16;
 pub const CMD_RESTART: u8 = 17;
+pub const CMD_FORCE_REPROBE: u8 = 18;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -94,6 +95,7 @@ pub enum Request {
     },
     AutoConnect,
     Restart,
+    ForceReprobe,
 }
 
 // ============ Response (device -> host) ============
@@ -222,6 +224,7 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         }
         CMD_AUTO_CONNECT => Ok(Request::AutoConnect),
         CMD_RESTART => Ok(Request::Restart),
+        CMD_FORCE_REPROBE => Ok(Request::ForceReprobe),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }
@@ -271,9 +274,10 @@ pub fn encode_response_status(
     active_device_set: bool,
     active_device_address: &[u8; 6],
     battery_level: u8,
+    detected_os: u8,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(7)
+        e.array(8)
             .unwrap()
             .u8(RESP_STATUS)
             .unwrap()
@@ -288,6 +292,8 @@ pub fn encode_response_status(
             .bytes(active_device_address)
             .unwrap()
             .u8(battery_level)
+            .unwrap()
+            .u8(detected_os)
             .unwrap();
     })
 }

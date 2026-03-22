@@ -116,6 +116,9 @@ enum Command {
 
     /// Restart the device
     Restart,
+
+    /// Force re-probe the host OS (resets device into probe mode)
+    Reprobe,
 }
 
 fn main() -> Result<()> {
@@ -152,6 +155,7 @@ fn main() -> Result<()> {
         Command::Logs { level, timeout } => cmd_logs(&mut transport, level, timeout),
         Command::Version => cmd_version(&mut transport),
         Command::Restart => cmd_restart(&mut transport),
+        Command::Reprobe => cmd_reprobe(&mut transport),
     }
 }
 
@@ -165,8 +169,13 @@ fn cmd_status(transport: &mut Transport) -> Result<()> {
             active_device_set,
             active_device_address,
             battery_level,
+            detected_os,
         } => {
             println!("  State:          {}", state.label().bold());
+            println!(
+                "  Host OS:        {}",
+                protocol::detected_os_name(detected_os).bold()
+            );
             println!("  Bonded devices: {bonded_count}");
             println!(
                 "  Active profile: {} ({})",
@@ -408,7 +417,9 @@ fn cmd_get_config(transport: &mut Transport) -> Result<()> {
 
 fn cmd_set_config(transport: &mut Transport, key_name: &str, value: u32) -> Result<()> {
     let key = config_key_from_name(key_name).ok_or_else(|| {
-        anyhow::anyhow!("Unknown config key: {key_name}. Valid keys: scroll, pan, x, y, threshold, max_detents")
+        anyhow::anyhow!(
+            "Unknown config key: {key_name}. Valid keys: scroll, pan, x, y, threshold, max_detents"
+        )
     })?;
 
     let mut cbor_buf = [0u8; 16];
@@ -476,6 +487,21 @@ fn cmd_restart(transport: &mut Transport) -> Result<()> {
     let (resp, _) = transport.request_simple(CMD_RESTART, DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
     println!("{}", "Device restart initiated.".green());
+    Ok(())
+}
+
+fn cmd_reprobe(transport: &mut Transport) -> Result<()> {
+    println!(
+        "{}",
+        "Force re-probing host OS (device will reset)...".cyan()
+    );
+    let (resp, _) = transport.request_simple(CMD_FORCE_REPROBE, DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!(
+        "{}",
+        "Reprobe initiated. Device will re-detect host OS and present appropriate USB identity."
+            .green()
+    );
     Ok(())
 }
 
