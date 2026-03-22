@@ -261,8 +261,8 @@ const IDLE_TIMEOUT_TICKS: u64 = 150_000;
 /// high velocity rather than causing rapid replant loops.
 const MAX_DELTA_PER_EVENT: i16 = 500;
 
-/// Timestamp increment per report (~8kHz / ~91Hz ≈ 88 ticks).
-const TIMESTAMP_INCREMENT: u16 = 88;
+/// Timestamp increment per report (~8kHz / ~250Hz ≈ 32 ticks).
+const TIMESTAMP_INCREMENT: u16 = 32;
 
 /// Byte offset of finger 0 touch data within the 30-byte report.
 const FINGER0_OFFSET: usize = 12;

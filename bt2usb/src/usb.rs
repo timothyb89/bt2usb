@@ -186,8 +186,10 @@ async fn usb_hid_handler_task_standard(
 
 // ============ MT2 HID Handler Task (macOS) ============
 
-/// Tick interval for MT2 continuous touch report streaming (~91 Hz).
-const MT2_TICK_MS: u64 = 11;
+/// Tick interval for MT2 continuous touch report streaming (~250 Hz).
+/// The real MT2 uses ~91 Hz (11ms) over USB, but we can go faster to
+/// improve smoothness when the input source (BLE) has lower/variable rate.
+const MT2_TICK_MS: u64 = 4;
 
 /// USB HID handler task for macOS mode (with MT2 trackpad).
 ///
@@ -196,18 +198,11 @@ const MT2_TICK_MS: u64 = 11;
 #[embassy_executor::task]
 async fn usb_hid_handler_task_mt2(
     mut keyboard_writer: HidWriter<'static, Driver<'static, USB>, 8>,
-    mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 8>,
     mut mt2_writer: HidWriter<'static, Driver<'static, USB>, 64>,
 ) {
     info!("USB HID handler task started (macOS/MT2 mode), waiting for BLE reports...");
 
     let mut touch_synth = crate::mt2::TouchSynthesizer::new();
-
-    // Send initial battery level if already known
-    let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
-    if initial_level != 0xFF {
-        send_battery_level(&mut mouse_writer, initial_level).await;
-    }
 
     loop {
         check_reprobe();
@@ -220,49 +215,40 @@ async fn usb_hid_handler_task_mt2(
         .await
         {
             Either3::First(event) => {
-                debug!(
-                    "Received HID report: type={:?}, len={}",
-                    event.report_type, event.len
-                );
                 match event.report_type {
                     HidReportType::Keyboard => {
                         handle_keyboard_report(&mut keyboard_writer, &event).await;
                     }
                     HidReportType::Mouse => {
-                        if event.len >= 1 {
-                            // MT2 scroll routing: if macOS activated multitouch,
-                            // route scroll deltas to the trackpad synthesizer.
-                            let use_mt2 = crate::mt2::MT_ENABLED.load(Ordering::Relaxed);
+                        if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
+                            debug!("MT2: scroll event received but MT not yet enabled");
+                            continue;
+                        }
 
-                            if use_mt2 {
-                                let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
-                                    if event.len >= 2 {
-                                        i16::from_le_bytes([event.data[0], event.data[1]])
-                                    } else {
-                                        0
-                                    }
-                                } else if event.len >= 4 {
-                                    event.data[3] as i8 as i16
-                                } else {
-                                    0
-                                };
-
-                                if scroll_delta != 0 {
-                                    let scroll_m =
-                                        crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-                                    let scaled = crate::usb_hid::apply_multiplier_i16(
-                                        scroll_delta,
-                                        scroll_m,
-                                    );
-                                    let reports = touch_synth.process_scroll(scaled);
-                                    for report in reports {
-                                        if let Err(e) = mt2_writer.write(&report).await {
-                                            warn!("MT2 trackpad write error: {:?}", e);
-                                        }
-                                    }
-                                }
+                        let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
+                            if event.len >= 2 {
+                                i16::from_le_bytes([event.data[0], event.data[1]])
                             } else {
-                                handle_mouse_report_standard(&mut mouse_writer, &event).await;
+                                0
+                            }
+                        } else if event.len >= 4 {
+                            event.data[3] as i8 as i16
+                        } else {
+                            0
+                        };
+
+                        if scroll_delta != 0 {
+                            let scroll_m =
+                                crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+                            let scaled = crate::usb_hid::apply_multiplier_i16(
+                                scroll_delta,
+                                scroll_m,
+                            );
+                            let reports = touch_synth.process_scroll(scaled);
+                            for report in reports {
+                                if let Err(e) = mt2_writer.write(&report).await {
+                                    warn!("MT2 trackpad write error: {:?}", e);
+                                }
                             }
                         }
                     }
@@ -271,8 +257,8 @@ async fn usb_hid_handler_task_mt2(
                     }
                 }
             }
-            Either3::Second(level) => {
-                send_battery_level(&mut mouse_writer, level).await;
+            Either3::Second(_level) => {
+                debug!("MT2: battery update received (not forwarded)");
             }
             Either3::Third(_) => {
                 // MT2 tick: send continuous touch reports while gesture is active
@@ -361,15 +347,6 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         max_packet_size: 64,
     };
 
-    // Mouse (always use 16-bit descriptor for maximum capability)
-    static MOUSE_HANDLER: StaticCell<crate::usb_hid::HiresMouseRequestHandler> = StaticCell::new();
-    let mouse_config = embassy_usb::class::hid::Config {
-        report_descriptor: MOUSE_HIRES_16BIT_REPORT_DESC,
-        request_handler: Some(MOUSE_HANDLER.init(crate::usb_hid::HiresMouseRequestHandler)),
-        poll_ms: 1,
-        max_packet_size: 64,
-    };
-
     // State buffers — 512 for config desc to fit up to 4 interfaces, 128 for control
     // to accommodate Feature 0xDB (76 bytes)
     static CONFIG_DESC: StaticCell<[u8; 512]> = StaticCell::new();
@@ -399,12 +376,24 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         kb_config,
     );
 
-    // Mouse uses Report ID 1 for movement, Report ID 2 for battery level.
-    let mouse_writer = HidWriter::<_, 8>::new(
-        &mut builder,
-        STATE_MOUSE.init(embassy_usb::class::hid::State::new()),
-        mouse_config,
-    );
+    // Mouse interface — only for non-macOS (macOS uses MT2 trackpad for scroll)
+    let mouse_writer = if !is_macos {
+        static MOUSE_HANDLER: StaticCell<crate::usb_hid::HiresMouseRequestHandler> =
+            StaticCell::new();
+        let mouse_config = embassy_usb::class::hid::Config {
+            report_descriptor: MOUSE_HIRES_16BIT_REPORT_DESC,
+            request_handler: Some(MOUSE_HANDLER.init(crate::usb_hid::HiresMouseRequestHandler)),
+            poll_ms: 1,
+            max_packet_size: 64,
+        };
+        Some(HidWriter::<_, 8>::new(
+            &mut builder,
+            STATE_MOUSE.init(embassy_usb::class::hid::State::new()),
+            mouse_config,
+        ))
+    } else {
+        None
+    };
 
     // MT2 Trackpad — only for macOS (minimizes interface count for hub compatibility)
     static STATE_MT2: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
@@ -450,14 +439,22 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         spawner.spawn(usb_task(usb_dev)).unwrap();
 
         // Spawn the appropriate HID handler task based on OS
-        if let Some(mt2_w) = mt2_writer {
-            spawner
-                .spawn(usb_hid_handler_task_mt2(kb_writer, mouse_writer, mt2_w))
-                .unwrap();
-        } else {
-            spawner
-                .spawn(usb_hid_handler_task_standard(kb_writer, mouse_writer))
-                .unwrap();
+        match (mt2_writer, mouse_writer) {
+            (Some(mt2_w), _) => {
+                // macOS: MT2 trackpad for scroll, no mouse interface
+                spawner
+                    .spawn(usb_hid_handler_task_mt2(kb_writer, mt2_w))
+                    .unwrap();
+            }
+            (None, Some(mouse_w)) => {
+                // Windows/Linux: standard mouse interface
+                spawner
+                    .spawn(usb_hid_handler_task_standard(kb_writer, mouse_w))
+                    .unwrap();
+            }
+            (None, None) => {
+                core::unreachable!("must have either MT2 or mouse interface");
+            }
         }
 
         spawner
