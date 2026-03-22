@@ -58,6 +58,8 @@ pub const CMD_AUTO_CONNECT: u8 = 16;
 pub const CMD_RESTART: u8 = 17;
 pub const CMD_FORCE_REPROBE: u8 = 18;
 pub const CMD_SET_FORCED_OS: u8 = 19;
+pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
+pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -101,6 +103,8 @@ pub enum Request {
     SetForcedOs {
         os: u8,
     },
+    SubscribeDefmt,
+    UnsubscribeDefmt,
 }
 
 // ============ Response (device -> host) ============
@@ -130,6 +134,7 @@ pub const EVT_PAIRING_STATUS: u8 = 2;
 pub const EVT_LOG: u8 = 3;
 pub const EVT_BOND_STORED: u8 = 4;
 pub const EVT_BATTERY_LEVEL: u8 = 5;
+pub const EVT_DEFMT: u8 = 6;
 
 #[derive(Clone, Copy, Debug, defmt::Format)]
 pub enum PairingState {
@@ -234,6 +239,8 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let os = d.u8().map_err(|_| ProtocolError::InvalidCbor)?;
             Ok(Request::SetForcedOs { os })
         }
+        CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
+        CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }
@@ -466,6 +473,18 @@ pub fn encode_event_bond_stored(buf: &mut [u8], address: &[u8; 6], profile_id: u
             .bytes(address)
             .unwrap()
             .u8(profile_id)
+            .unwrap();
+    })
+}
+
+/// Encode a raw defmt frame event.
+pub fn encode_event_defmt(buf: &mut [u8], frame_data: &[u8]) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(2)
+            .unwrap()
+            .u8(EVT_DEFMT)
+            .unwrap()
+            .bytes(frame_data)
             .unwrap();
     })
 }

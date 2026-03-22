@@ -42,7 +42,6 @@ cortex-m-rt = { version = "0.7" }
 critical-section = "1.1"
 panic-probe = { version = "1", features = ["print-defmt"] }
 defmt = "1"
-defmt-rtt = "1"
 
 # Utilities
 heapless = "0.9"

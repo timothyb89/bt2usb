@@ -214,49 +214,43 @@ async fn usb_hid_handler_task_mt2(
         )
         .await
         {
-            Either3::First(event) => {
-                match event.report_type {
-                    HidReportType::Keyboard => {
-                        handle_keyboard_report(&mut keyboard_writer, &event).await;
+            Either3::First(event) => match event.report_type {
+                HidReportType::Keyboard => {
+                    handle_keyboard_report(&mut keyboard_writer, &event).await;
+                }
+                HidReportType::Mouse => {
+                    if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
+                        debug!("MT2: scroll event received but MT not yet enabled");
+                        continue;
                     }
-                    HidReportType::Mouse => {
-                        if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
-                            debug!("MT2: scroll event received but MT not yet enabled");
-                            continue;
-                        }
 
-                        let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
-                            if event.len >= 2 {
-                                i16::from_le_bytes([event.data[0], event.data[1]])
-                            } else {
-                                0
-                            }
-                        } else if event.len >= 4 {
-                            event.data[3] as i8 as i16
+                    let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
+                        if event.len >= 2 {
+                            i16::from_le_bytes([event.data[0], event.data[1]])
                         } else {
                             0
-                        };
+                        }
+                    } else if event.len >= 4 {
+                        event.data[3] as i8 as i16
+                    } else {
+                        0
+                    };
 
-                        if scroll_delta != 0 {
-                            let scroll_m =
-                                crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-                            let scaled = crate::usb_hid::apply_multiplier_i16(
-                                scroll_delta,
-                                scroll_m,
-                            );
-                            let reports = touch_synth.process_scroll(scaled);
-                            for report in reports {
-                                if let Err(e) = mt2_writer.write(&report).await {
-                                    warn!("MT2 trackpad write error: {:?}", e);
-                                }
+                    if scroll_delta != 0 {
+                        let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+                        let scaled = crate::usb_hid::apply_multiplier_i16(scroll_delta, scroll_m);
+                        let reports = touch_synth.process_scroll(scaled);
+                        for report in reports {
+                            if let Err(e) = mt2_writer.write(&report).await {
+                                warn!("MT2 trackpad write error: {:?}", e);
                             }
                         }
                     }
-                    _ => {
-                        debug!("Unhandled HID report type");
-                    }
                 }
-            }
+                _ => {
+                    debug!("Unhandled HID report type");
+                }
+            },
             Either3::Second(_level) => {
                 debug!("MT2: battery update received (not forwarded)");
             }
