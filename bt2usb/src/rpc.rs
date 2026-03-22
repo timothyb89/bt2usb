@@ -5,7 +5,7 @@
 //! Also forwards log events when a client subscribes.
 
 use defmt::*;
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{select4, Either4};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_usb::class::hid::{HidReader, HidWriter};
@@ -14,6 +14,7 @@ use crate::ble_state::{
     BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL, BONDS_RESPONSE_CHANNEL,
     STATUS_RESPONSE_CHANNEL,
 };
+use crate::defmt_usb::DEFMT_CHANNEL;
 use crate::framing::{self, FrameAccumulator, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE};
 use crate::protocol::{self, ConnectionState, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 use crate::rpc_log::LOG_CHANNEL;
@@ -78,17 +79,19 @@ pub async fn rpc_task(
     let mut last_state = ConnectionState::Disconnected;
     let mut log_subscribed = false;
     let mut log_min_level: u8 = 0;
+    let mut defmt_subscribed = false;
 
     loop {
-        match select3(
+        match select4(
             reader.read(&mut rx_buf),
             BLE_EVENT_CHANNEL.receive(),
             LOG_CHANNEL.receive(),
+            DEFMT_CHANNEL.receive(),
         )
         .await
         {
             // ── HID RX: decode COBS frames and dispatch requests ──
-            Either3::First(Ok(n)) if n > 0 => {
+            Either4::First(Ok(n)) if n > 0 => {
                 let mut offset = 0;
                 while offset < n {
                     let (consumed, frame) = accumulator.feed(&rx_buf[offset..n], &mut decoded_buf);
@@ -117,6 +120,14 @@ pub async fn rpc_task(
                                     if matches!(request, protocol::Request::UnsubscribeLogs) {
                                         log_subscribed = false;
                                         info!("Log subscription: off");
+                                    }
+                                    if matches!(request, protocol::Request::SubscribeDefmt) {
+                                        defmt_subscribed = true;
+                                        info!("Defmt subscription: on");
+                                    }
+                                    if matches!(request, protocol::Request::UnsubscribeDefmt) {
+                                        defmt_subscribed = false;
+                                        info!("Defmt subscription: off");
                                     }
 
                                     dispatch_request(
@@ -151,15 +162,15 @@ pub async fn rpc_task(
                     }
                 }
             }
-            Either3::First(Ok(_)) => {} // 0-byte read, ignore
-            Either3::First(Err(e)) => {
+            Either4::First(Ok(_)) => {} // 0-byte read, ignore
+            Either4::First(Err(e)) => {
                 warn!("HID read error: {:?}", e);
                 // USB not configured or endpoint error — wait briefly before retrying
                 embassy_time::Timer::after_millis(100).await;
             }
 
             // ── BLE events: encode and forward to host ──
-            Either3::Second(event) => {
+            Either4::Second(event) => {
                 let cbor_len = encode_ble_event(&event, &mut cbor_buf, &mut last_state);
                 if cbor_len > 0 {
                     send_event(&mut writer, &cbor_buf, &mut frame_buf, cbor_len).await;
@@ -167,7 +178,7 @@ pub async fn rpc_task(
             }
 
             // ── Log events: forward if subscribed ──
-            Either3::Third(log_event) => {
+            Either4::Third(log_event) => {
                 if log_subscribed && log_event.level >= log_min_level {
                     let msg = core::str::from_utf8(&log_event.message[..log_event.len as usize])
                         .unwrap_or("?");
@@ -177,6 +188,19 @@ pub async fn rpc_task(
                     }
                 }
                 // If not subscribed, the log event is silently discarded
+            }
+
+            // ── Defmt frames: forward if subscribed ──
+            Either4::Fourth(defmt_frame) => {
+                if defmt_subscribed {
+                    if let Ok(len) = protocol::encode_event_defmt(
+                        &mut cbor_buf,
+                        &defmt_frame.data[..defmt_frame.len as usize],
+                    ) {
+                        send_event(&mut writer, &cbor_buf, &mut frame_buf, len).await;
+                    }
+                }
+                // Always drain channel even when unsubscribed (prevents backpressure)
             }
         }
     }
@@ -395,6 +419,10 @@ async fn dispatch_request(
         }
 
         protocol::Request::UnsubscribeLogs => protocol::encode_response_ok(cbor_buf).unwrap_or(0),
+
+        protocol::Request::SubscribeDefmt => protocol::encode_response_ok(cbor_buf).unwrap_or(0),
+
+        protocol::Request::UnsubscribeDefmt => protocol::encode_response_ok(cbor_buf).unwrap_or(0),
 
         protocol::Request::GetVersion => {
             protocol::encode_response_version(cbor_buf, VERSION).unwrap_or(0)

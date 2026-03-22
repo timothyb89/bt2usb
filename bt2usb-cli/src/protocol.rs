@@ -48,6 +48,8 @@ pub const CMD_AUTO_CONNECT: u8 = 16;
 pub const CMD_RESTART: u8 = 17;
 pub const CMD_FORCE_REPROBE: u8 = 18;
 pub const CMD_SET_FORCED_OS: u8 = 19;
+pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
+pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 
 // ============ Response IDs ============
 
@@ -67,6 +69,7 @@ pub const EVT_PAIRING_STATUS: u8 = 2;
 pub const EVT_LOG: u8 = 3;
 pub const EVT_BOND_STORED: u8 = 4;
 pub const EVT_BATTERY_LEVEL: u8 = 5;
+pub const EVT_DEFMT: u8 = 6;
 
 // ============ Connection state ============
 
@@ -247,6 +250,12 @@ pub fn encode_request_set_config(buf: &mut [u8], key: u8, value: u32) -> EncResu
             .unwrap()
             .u32(value)
             .unwrap();
+    })
+}
+
+pub fn encode_request_subscribe_defmt(buf: &mut [u8]) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(1).unwrap().u8(CMD_SUBSCRIBE_DEFMT).unwrap();
     })
 }
 
@@ -439,6 +448,9 @@ pub enum Event {
     BatteryLevel {
         level: u8,
     },
+    DefmtFrame {
+        data: Vec<u8>,
+    },
 }
 
 pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
@@ -498,6 +510,10 @@ pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
         EVT_BATTERY_LEVEL => {
             let level = d.u8().map_err(|e| format!("level: {e}"))?;
             Ok(Event::BatteryLevel { level })
+        }
+        EVT_DEFMT => {
+            let data = d.bytes().map_err(|e| format!("defmt data: {e}"))?.to_vec();
+            Ok(Event::DefmtFrame { data })
         }
         _ => Err(format!("unknown event id: {evt_id}")),
     }
