@@ -46,6 +46,7 @@ pub const CMD_CLEAR_ACTIVE_DEVICE: u8 = 14;
 pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
 pub const CMD_AUTO_CONNECT: u8 = 16;
 pub const CMD_RESTART: u8 = 17;
+pub const CMD_FORCE_REPROBE: u8 = 18;
 
 // ============ Response IDs ============
 
@@ -264,6 +265,7 @@ pub enum Response {
         active_device_set: bool,
         active_device_address: [u8; 6],
         battery_level: u8,
+        detected_os: u8,
     },
     Bonds {
         bonds: Vec<BondEntry>,
@@ -323,6 +325,7 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             }
 
             let battery_level = d.u8().unwrap_or(0xFF);
+            let detected_os = d.u8().unwrap_or(0);
 
             Ok(Response::Status {
                 state,
@@ -331,6 +334,7 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 active_device_set,
                 active_device_address,
                 battery_level,
+                detected_os,
             })
         }
         RESP_BONDS => {
@@ -484,5 +488,15 @@ pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
             Ok(Event::BatteryLevel { level })
         }
         _ => Err(format!("unknown event id: {evt_id}")),
+    }
+}
+
+/// Human-readable name for a detected OS value.
+pub fn detected_os_name(os: u8) -> &'static str {
+    match os {
+        1 => "Windows",
+        2 => "Linux",
+        3 => "macOS",
+        _ => "Unknown",
     }
 }

@@ -2,6 +2,7 @@
 //!
 //! This module handles all USB functionality running on Core 1:
 //! - Building the USB device with keyboard, mouse, and vendor HID interfaces
+//! - Conditionally adding MT2 trackpad interface (macOS only)
 //! - Spawning USB tasks (device driver, HID report handler, RPC)
 //! - Receiving BLE HID reports and forwarding them as USB HID reports
 //!
@@ -11,7 +12,7 @@
 use core::sync::atomic::Ordering;
 use defmt::*;
 use embassy_executor::Executor;
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
@@ -19,12 +20,20 @@ use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
-use crate::ble_hid::{HidReportType, BATTERY_USB_SIGNAL, HID_REPORT_CHANNEL};
+use crate::ble_hid::{HidReportEvent, HidReportType, BATTERY_USB_SIGNAL, HID_REPORT_CHANNEL};
+use crate::scratch::DetectedOs;
 use crate::usb_hid::{
     serialize_keyboard_report, serialize_mouse_report, serialize_mouse_report_16bit,
     KeyboardHidReport, MOUSE_HIRES_16BIT_REPORT_DESC, VENDOR_RPC_REPORT_DESC,
 };
 use crate::{rpc, Irqs, CORE1_EXECUTOR_READY, EXECUTOR1};
+
+// ============ USB Device Identity ============
+
+const BT2USB_VID: u16 = 0x1209; // pid.codes open VID
+const BT2USB_PID: u16 = 0x0001; // TODO: register a proper PID
+const BT2USB_MANUFACTURER: &str = "bt2usb";
+const BT2USB_PRODUCT: &str = "BLE HID Bridge";
 
 // ============ USB Tasks ============
 
@@ -34,39 +43,175 @@ async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static, USB>>
     usb.run().await
 }
 
-/// USB HID handler task — receives HID reports from BLE (Core 0) and sends to USB.
+// ============ Shared Report Handlers ============
+
+/// Handle a keyboard HID report event.
+async fn handle_keyboard_report(
+    writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
+    event: &HidReportEvent,
+) {
+    if event.len >= 8 {
+        let report = KeyboardHidReport {
+            modifier: event.data[0],
+            reserved: event.data[1],
+            leds: 0,
+            keycodes: [
+                event.data[2],
+                event.data[3],
+                event.data[4],
+                event.data[5],
+                event.data[6],
+                event.data[7],
+            ],
+        };
+        let buf = serialize_keyboard_report(&report);
+        if let Err(e) = writer.write(&buf).await {
+            warn!("Keyboard write error: {:?}", e);
+        }
+    }
+}
+
+/// Handle a mouse HID report event (standard path, no MT2 routing).
+async fn handle_mouse_report_standard(
+    writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
+    event: &HidReportEvent,
+) {
+    if event.len < 1 {
+        return;
+    }
+
+    if event.profile.uses_16bit_reports() {
+        let mut report = event
+            .profile
+            .translate_mouse_report_16bit(&event.data, event.len);
+        let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+        let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
+        let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
+        let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
+        report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
+        report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
+        report.wheel = crate::usb_hid::apply_multiplier_i16(report.wheel, scroll_m);
+        report.pan = crate::usb_hid::apply_multiplier_i16(report.pan, pan_m);
+        let data = serialize_mouse_report_16bit(&report);
+        let mut buf = [0u8; 8];
+        buf[0] = 0x01;
+        buf[1..].copy_from_slice(&data);
+        if let Err(e) = writer.write(&buf).await {
+            warn!("Mouse write error (16-bit): {:?}", e);
+        }
+    } else {
+        let mut report = event.profile.translate_mouse_report(&event.data, event.len);
+        let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+        let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
+        let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
+        let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
+        report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
+        report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
+        report.wheel = crate::usb_hid::apply_multiplier_i8(report.wheel, scroll_m);
+        report.pan = crate::usb_hid::apply_multiplier_i8(report.pan, pan_m);
+        let data = serialize_mouse_report(&report);
+        let mut buf = [0u8; 6];
+        buf[0] = 0x01;
+        buf[1..].copy_from_slice(&data);
+        if let Err(e) = writer.write(&buf).await {
+            warn!("Mouse write error (8-bit): {:?}", e);
+        }
+    }
+}
+
+/// Send battery level on the mouse interface (Report ID 2).
+async fn send_battery_level(writer: &mut HidWriter<'static, Driver<'static, USB>, 8>, level: u8) {
+    let _ = embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        writer.write(&[0x02, level]),
+    )
+    .await;
+}
+
+/// Check if a reprobe has been requested (USB switch detected) and reset if so.
+fn check_reprobe() {
+    if crate::usb_hid::REPROBE_REQUESTED.load(Ordering::Relaxed) {
+        info!("Reprobe requested, resetting for Phase 0...");
+        crate::scratch::clear_for_reprobe();
+        crate::system_reset();
+    }
+}
+
+// ============ Standard HID Handler Task (Windows/Linux/Unknown) ============
+
+/// USB HID handler task for standard mode (no MT2).
 ///
-/// Handles two event sources concurrently via `select`:
-/// - HID_REPORT_CHANNEL: keyboard and mouse reports from BLE
-/// - BATTERY_USB_SIGNAL: battery level updates from the BLE battery poller
-///
-/// Mouse reports use Report ID 1 (prepend 0x01). Battery updates use Report ID 2
-/// ([0x02, level]) on the same mouse interface, triggering Linux's hid-battery
-/// module to update /sys/class/power_supply/hid-*/capacity.
+/// Handles keyboard and mouse reports from BLE + battery level updates.
+/// Uses `select` with 2 branches (no MT2 tick timer).
+#[embassy_executor::task]
+async fn usb_hid_handler_task_standard(
+    mut keyboard_writer: HidWriter<'static, Driver<'static, USB>, 8>,
+    mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 8>,
+) {
+    info!("USB HID handler task started (standard mode), waiting for BLE reports...");
+
+    // Send initial battery level if already known
+    let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
+    if initial_level != 0xFF {
+        send_battery_level(&mut mouse_writer, initial_level).await;
+    }
+
+    loop {
+        check_reprobe();
+
+        match select(HID_REPORT_CHANNEL.receive(), BATTERY_USB_SIGNAL.wait()).await {
+            Either::First(event) => {
+                debug!(
+                    "Received HID report: type={:?}, len={}",
+                    event.report_type, event.len
+                );
+                match event.report_type {
+                    HidReportType::Keyboard => {
+                        handle_keyboard_report(&mut keyboard_writer, &event).await;
+                    }
+                    HidReportType::Mouse => {
+                        handle_mouse_report_standard(&mut mouse_writer, &event).await;
+                    }
+                    _ => {
+                        debug!("Unhandled HID report type");
+                    }
+                }
+            }
+            Either::Second(level) => {
+                send_battery_level(&mut mouse_writer, level).await;
+            }
+        }
+    }
+}
+
+// ============ MT2 HID Handler Task (macOS) ============
+
 /// Tick interval for MT2 continuous touch report streaming (~91 Hz).
 const MT2_TICK_MS: u64 = 11;
 
+/// USB HID handler task for macOS mode (with MT2 trackpad).
+///
+/// Handles keyboard and mouse reports from BLE, battery updates,
+/// and MT2 touch synthesis tick timer.
 #[embassy_executor::task]
-async fn usb_hid_handler_task(
+async fn usb_hid_handler_task_mt2(
     mut keyboard_writer: HidWriter<'static, Driver<'static, USB>, 8>,
     mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 8>,
     mut mt2_writer: HidWriter<'static, Driver<'static, USB>, 64>,
 ) {
-    info!("USB HID handler task started, waiting for BLE reports...");
+    info!("USB HID handler task started (macOS/MT2 mode), waiting for BLE reports...");
 
     let mut touch_synth = crate::mt2::TouchSynthesizer::new();
 
-    // Send initial battery level if already known (e.g. reconnection scenario)
+    // Send initial battery level if already known
     let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
     if initial_level != 0xFF {
-        let _ = embassy_time::with_timeout(
-            embassy_time::Duration::from_secs(5),
-            mouse_writer.write(&[0x02, initial_level]),
-        )
-        .await;
+        send_battery_level(&mut mouse_writer, initial_level).await;
     }
 
     loop {
+        check_reprobe();
+
         match select3(
             HID_REPORT_CHANNEL.receive(),
             BATTERY_USB_SIGNAL.wait(),
@@ -81,53 +226,15 @@ async fn usb_hid_handler_task(
                 );
                 match event.report_type {
                     HidReportType::Keyboard => {
-                        if event.len >= 8 {
-                            let report = KeyboardHidReport {
-                                modifier: event.data[0],
-                                reserved: event.data[1],
-                                leds: 0,
-                                keycodes: [
-                                    event.data[2],
-                                    event.data[3],
-                                    event.data[4],
-                                    event.data[5],
-                                    event.data[6],
-                                    event.data[7],
-                                ],
-                            };
-                            let buf = serialize_keyboard_report(&report);
-                            if let Err(e) = keyboard_writer.write(&buf).await {
-                                warn!("Keyboard write error: {:?}", e);
-                            }
-                        }
+                        handle_keyboard_report(&mut keyboard_writer, &event).await;
                     }
                     HidReportType::Mouse => {
-                        // Lazy OS detection: if still unknown 2s after configuration,
-                        // assume macOS (doesn't enable hires or request String 0xEE).
-                        if crate::usb_hid::DETECTED_OS.load(Ordering::Relaxed)
-                            == crate::usb_hid::OS_UNKNOWN
-                        {
-                            let configured_at =
-                                crate::usb_hid::CONFIGURED_AT_TICKS.load(Ordering::Relaxed);
-                            if configured_at > 0 {
-                                let elapsed =
-                                    embassy_time::Instant::now().as_ticks() - configured_at;
-                                if elapsed > 2_000_000 {
-                                    info!("OS detected: macOS (timeout, no hires or String 0xEE)");
-                                    crate::usb_hid::DETECTED_OS
-                                        .store(crate::usb_hid::OS_MACOS, Ordering::Relaxed);
-                                }
-                            }
-                        }
-
                         if event.len >= 1 {
                             // MT2 scroll routing: if macOS activated multitouch,
                             // route scroll deltas to the trackpad synthesizer.
-                            // Non-scroll data (X/Y/buttons) still goes to the mouse.
                             let use_mt2 = crate::mt2::MT_ENABLED.load(Ordering::Relaxed);
 
                             if use_mt2 {
-                                // Extract raw scroll delta for MT2 path
                                 let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
                                     if event.len >= 2 {
                                         i16::from_le_bytes([event.data[0], event.data[1]])
@@ -154,48 +261,8 @@ async fn usb_hid_handler_task(
                                         }
                                     }
                                 }
-                            } else if event.profile.uses_16bit_reports() {
-                                let mut report = event
-                                    .profile
-                                    .translate_mouse_report_16bit(&event.data, event.len);
-                                let scroll_m =
-                                    crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-                                let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
-                                let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
-                                let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
-                                report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
-                                report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
-                                report.wheel =
-                                    crate::usb_hid::apply_multiplier_i16(report.wheel, scroll_m);
-                                report.pan =
-                                    crate::usb_hid::apply_multiplier_i16(report.pan, pan_m);
-                                let data = serialize_mouse_report_16bit(&report);
-                                let mut buf = [0u8; 8];
-                                buf[0] = 0x01;
-                                buf[1..].copy_from_slice(&data);
-                                if let Err(e) = mouse_writer.write(&buf).await {
-                                    warn!("Mouse write error (16-bit): {:?}", e);
-                                }
                             } else {
-                                let mut report =
-                                    event.profile.translate_mouse_report(&event.data, event.len);
-                                let scroll_m =
-                                    crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-                                let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
-                                let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
-                                let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
-                                report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
-                                report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
-                                report.wheel =
-                                    crate::usb_hid::apply_multiplier_i8(report.wheel, scroll_m);
-                                report.pan = crate::usb_hid::apply_multiplier_i8(report.pan, pan_m);
-                                let data = serialize_mouse_report(&report);
-                                let mut buf = [0u8; 6];
-                                buf[0] = 0x01;
-                                buf[1..].copy_from_slice(&data);
-                                if let Err(e) = mouse_writer.write(&buf).await {
-                                    warn!("Mouse write error (8-bit): {:?}", e);
-                                }
+                                handle_mouse_report_standard(&mut mouse_writer, &event).await;
                             }
                         }
                     }
@@ -205,12 +272,7 @@ async fn usb_hid_handler_task(
                 }
             }
             Either3::Second(level) => {
-                // Battery level changed: send Report ID 2 on the mouse interface.
-                let _ = embassy_time::with_timeout(
-                    embassy_time::Duration::from_secs(5),
-                    mouse_writer.write(&[0x02, level]),
-                )
-                .await;
+                send_battery_level(&mut mouse_writer, level).await;
             }
             Either3::Third(_) => {
                 // MT2 tick: send continuous touch reports while gesture is active
@@ -230,10 +292,13 @@ async fn usb_hid_handler_task(
 ///
 /// This runs inside the `spawn_core1` closure and must not return. It:
 /// 1. Enables TIMER_IRQ_0 on Core 1 (needed for embassy_time, e.g. RPC timeouts)
-/// 2. Builds the USB device with keyboard, mouse, and vendor HID interfaces
+/// 2. Builds the USB device with OS-appropriate interfaces and identity
 /// 3. Starts the Core 1 executor with all USB tasks
 /// 4. Signals Core 0 that the executor is ready via `CORE1_EXECUTOR_READY`
-pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
+pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
+    // Set the detected OS atomic so the rest of the USB subsystem knows
+    crate::usb_hid::DETECTED_OS.store(detected_os as u8, Ordering::Relaxed);
+
     // Enable TIMER_IRQ_0 on Core 1's NVIC so embassy_time works
     // (e.g. RPC timeouts). embassy_rp::init() only enables it on Core 0.
     // The timer driver uses hardware spinlocks, safe for dual-core.
@@ -248,14 +313,37 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     // Build USB device on Core 1 — this ensures USBCTRL_IRQ is enabled
     // on Core 1's NVIC (where we want USB interrupts to fire).
     let driver = Driver::new(usb, Irqs);
-    // Use Apple VID/PID so macOS TopCase driver recognizes the MT2 trackpad
-    // interface. Windows/Linux ignore the MT2 interface and use the standard
-    // keyboard/mouse interfaces normally.
-    let mut config = embassy_usb::Config::new(crate::mt2::APPLE_VID, crate::mt2::MT2_PID);
-    config.manufacturer = Some(crate::mt2::MT2_MANUFACTURER);
-    config.product = Some(crate::mt2::MT2_PRODUCT);
+
+    // Select USB identity based on detected OS
+    let is_macos = detected_os == DetectedOs::MacOs;
+    let (vid, pid, manufacturer, product, device_release) = if is_macos {
+        (
+            crate::mt2::APPLE_VID,
+            crate::mt2::MT2_PID,
+            crate::mt2::MT2_MANUFACTURER,
+            crate::mt2::MT2_PRODUCT,
+            crate::mt2::MT2_DEVICE_RELEASE,
+        )
+    } else {
+        (
+            BT2USB_VID,
+            BT2USB_PID,
+            BT2USB_MANUFACTURER,
+            BT2USB_PRODUCT,
+            0x0100u16,
+        )
+    };
+
+    info!(
+        "[core1] USB identity: VID={:04X} PID={:04X} {}",
+        vid, pid, product
+    );
+
+    let mut config = embassy_usb::Config::new(vid, pid);
+    config.manufacturer = Some(manufacturer);
+    config.product = Some(product);
     config.serial_number = Some("BT2USB0000000001");
-    config.device_release = crate::mt2::MT2_DEVICE_RELEASE;
+    config.device_release = device_release;
     config.max_power = 500;
     config.max_packet_size_0 = 64;
     config.bcd_usb = embassy_usb::UsbVersion::Two;
@@ -274,7 +362,6 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     };
 
     // Mouse (always use 16-bit descriptor for maximum capability)
-    // Profile settings control how reports are scaled/interpreted
     static MOUSE_HANDLER: StaticCell<crate::usb_hid::HiresMouseRequestHandler> = StaticCell::new();
     let mouse_config = embassy_usb::class::hid::Config {
         report_descriptor: MOUSE_HIRES_16BIT_REPORT_DESC,
@@ -283,16 +370,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
         max_packet_size: 64,
     };
 
-    // MT2 Trackpad interface — dormant on Windows/Linux, activated by macOS
-    static MT2_HANDLER: StaticCell<crate::mt2::Mt2TrackpadRequestHandler> = StaticCell::new();
-    let mt2_config = embassy_usb::class::hid::Config {
-        report_descriptor: crate::mt2::TRACKPAD_REPORT_DESC,
-        request_handler: Some(MT2_HANDLER.init(crate::mt2::Mt2TrackpadRequestHandler::new())),
-        poll_ms: 1,
-        max_packet_size: 64,
-    };
-
-    // State buffers — 512 for config desc to fit 4 interfaces, 128 for control
+    // State buffers — 512 for config desc to fit up to 4 interfaces, 128 for control
     // to accommodate Feature 0xDB (76 bytes)
     static CONFIG_DESC: StaticCell<[u8; 512]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
@@ -301,7 +379,6 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
 
     static STATE_KB: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
     static STATE_MOUSE: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
-    static STATE_MT2: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
     static STATE_RPC: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
 
     static DEVICE_HANDLER: StaticCell<crate::usb_hid::UsbDeviceHandler> = StaticCell::new();
@@ -323,20 +400,30 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     );
 
     // Mouse uses Report ID 1 for movement, Report ID 2 for battery level.
-    // Battery Level (Battery System page 0x85) embedded here so Linux's
-    // hid-battery module picks it up from the mouse input device.
     let mouse_writer = HidWriter::<_, 8>::new(
         &mut builder,
         STATE_MOUSE.init(embassy_usb::class::hid::State::new()),
         mouse_config,
     );
 
-    // MT2 Trackpad — 64-byte endpoint for 30-byte touch reports
-    let mt2_writer = HidWriter::<_, 64>::new(
-        &mut builder,
-        STATE_MT2.init(embassy_usb::class::hid::State::new()),
-        mt2_config,
-    );
+    // MT2 Trackpad — only for macOS (minimizes interface count for hub compatibility)
+    static STATE_MT2: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
+    static MT2_HANDLER: StaticCell<crate::mt2::Mt2TrackpadRequestHandler> = StaticCell::new();
+    let mt2_writer = if is_macos {
+        let mt2_config = embassy_usb::class::hid::Config {
+            report_descriptor: crate::mt2::TRACKPAD_REPORT_DESC,
+            request_handler: Some(MT2_HANDLER.init(crate::mt2::Mt2TrackpadRequestHandler::new())),
+            poll_ms: 1,
+            max_packet_size: 64,
+        };
+        Some(HidWriter::<_, 64>::new(
+            &mut builder,
+            STATE_MT2.init(embassy_usb::class::hid::State::new()),
+            mt2_config,
+        ))
+    } else {
+        None
+    };
 
     // Vendor HID interface for RPC communication
     let rpc_config = embassy_usb::class::hid::Config {
@@ -353,14 +440,26 @@ pub fn start_core1_usb(usb: Peri<'static, USB>) -> ! {
     let (rpc_reader, rpc_writer) = rpc_hid.split();
 
     let usb_dev = builder.build();
-    info!("[core1] USB HID device initialized");
+    info!(
+        "[core1] USB HID device initialized ({})",
+        if is_macos { "macOS/MT2" } else { "standard" }
+    );
 
     let executor1 = EXECUTOR1.init(Executor::new());
     executor1.run(|spawner| {
         spawner.spawn(usb_task(usb_dev)).unwrap();
-        spawner
-            .spawn(usb_hid_handler_task(kb_writer, mouse_writer, mt2_writer))
-            .unwrap();
+
+        // Spawn the appropriate HID handler task based on OS
+        if let Some(mt2_w) = mt2_writer {
+            spawner
+                .spawn(usb_hid_handler_task_mt2(kb_writer, mouse_writer, mt2_w))
+                .unwrap();
+        } else {
+            spawner
+                .spawn(usb_hid_handler_task_standard(kb_writer, mouse_writer))
+                .unwrap();
+        }
+
         spawner
             .spawn(rpc::rpc_task(rpc_writer, rpc_reader))
             .unwrap();

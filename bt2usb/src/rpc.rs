@@ -237,6 +237,8 @@ async fn dispatch_request(
         protocol::Request::GetStatus => {
             // Request status from BLE task (which has access to bonds and profile)
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::GetStatus);
+            let detected_os =
+                crate::usb_hid::DETECTED_OS.load(core::sync::atomic::Ordering::Relaxed);
 
             // Wait for response (with timeout)
             match embassy_time::with_timeout(
@@ -253,12 +255,20 @@ async fn dispatch_request(
                     status.active_device_set,
                     &status.active_device_address,
                     status.battery_level,
+                    detected_os,
                 )
                 .unwrap_or(0),
                 Err(_) => {
                     // Timeout - use defaults
                     protocol::encode_response_status(
-                        cbor_buf, last_state, 0, 0, false, &[0u8; 6], 0xFF,
+                        cbor_buf,
+                        last_state,
+                        0,
+                        0,
+                        false,
+                        &[0u8; 6],
+                        0xFF,
+                        detected_os,
                     )
                     .unwrap_or(0)
                 }
@@ -422,6 +432,18 @@ async fn dispatch_request(
         protocol::Request::Restart => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Restart);
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ForceReprobe => {
+            info!("Force reprobe requested via RPC");
+            // Send OK response first, then reset
+            let ok_len = protocol::encode_response_ok(cbor_buf).unwrap_or(0);
+            if ok_len > 0 {
+                send_response(writer, seq_id, cbor_buf, frame_buf, ok_len).await;
+            }
+            embassy_time::Timer::after_millis(50).await;
+            crate::scratch::clear_for_reprobe();
+            crate::system_reset();
         }
     };
 

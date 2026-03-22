@@ -9,9 +9,16 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::{self, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 
-/// USB VID:PID for bt2usb device (Apple Magic Trackpad 2 identity for macOS compatibility)
-const USB_VID: u16 = 0x05AC;
-const USB_PID: u16 = 0x0265;
+/// USB VID:PID pairs for bt2usb device.
+/// macOS mode uses Apple MT2 identity; other OSes use generic bt2usb identity.
+const USB_VID_APPLE: u16 = 0x05AC;
+const USB_PID_MT2: u16 = 0x0265;
+const USB_VID_BT2USB: u16 = 0x1209;
+const USB_PID_BT2USB: u16 = 0x0001;
+
+fn is_bt2usb_device(vid: u16, pid: u16) -> bool {
+    (vid == USB_VID_APPLE && pid == USB_PID_MT2) || (vid == USB_VID_BT2USB && pid == USB_PID_BT2USB)
+}
 
 /// Vendor HID usage page for the RPC interface
 const VENDOR_USAGE_PAGE: u16 = 0xFF00;
@@ -236,10 +243,13 @@ fn encode_frame(msg_type: u8, seq_id: u16, cbor_body: &[u8]) -> Vec<u8> {
 }
 
 /// Auto-detect the bt2usb vendor HID interface by VID:PID and usage page.
+///
+/// Checks both the Apple MT2 identity (macOS mode) and the generic bt2usb
+/// identity (Windows/Linux mode) since the device presents differently
+/// depending on the detected host OS.
 fn find_device_hid(api: &HidApi) -> Result<HidDevice> {
     for info in api.device_list() {
-        if info.vendor_id() == USB_VID
-            && info.product_id() == USB_PID
+        if is_bt2usb_device(info.vendor_id(), info.product_id())
             && info.usage_page() == VENDOR_USAGE_PAGE
         {
             return info
@@ -251,10 +261,12 @@ fn find_device_hid(api: &HidApi) -> Result<HidDevice> {
     // List what we did find for debugging
     let found: Vec<String> = api
         .device_list()
-        .filter(|d| d.vendor_id() == USB_VID && d.product_id() == USB_PID)
+        .filter(|d| is_bt2usb_device(d.vendor_id(), d.product_id()))
         .map(|d| {
             format!(
-                "  usage_page=0x{:04X} usage=0x{:04X} iface={}",
+                "  VID:{:04X} PID:{:04X} usage_page=0x{:04X} usage=0x{:04X} iface={}",
+                d.vendor_id(),
+                d.product_id(),
                 d.usage_page(),
                 d.usage(),
                 d.interface_number()
@@ -264,9 +276,14 @@ fn find_device_hid(api: &HidApi) -> Result<HidDevice> {
 
     if found.is_empty() {
         bail!(
-            "bt2usb device not found (VID:{USB_VID:04X} PID:{USB_PID:04X}).\n\
+            "bt2usb device not found.\n\
+             Checked VID:PID pairs: {:04X}:{:04X} (macOS), {:04X}:{:04X} (standard).\n\
              No matching USB HID devices detected.\n\
-             Use --device to specify a device path manually."
+             Use --device to specify a device path manually.",
+            USB_VID_APPLE,
+            USB_PID_MT2,
+            USB_VID_BT2USB,
+            USB_PID_BT2USB
         );
     } else {
         bail!(
