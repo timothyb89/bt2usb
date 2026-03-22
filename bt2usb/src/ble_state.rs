@@ -44,6 +44,8 @@ pub enum BleCommand {
     Restart,
     /// Set a configuration value and persist to flash.
     SetConfig { key: u8, value: u32 },
+    /// Set forced OS override (0=Auto, 1-3=forced) and persist to flash.
+    SetForcedOs { os: u8 },
 }
 
 // ============ Events (BLE -> RPC) ============

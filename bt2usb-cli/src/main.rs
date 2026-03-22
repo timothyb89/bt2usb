@@ -119,6 +119,13 @@ enum Command {
 
     /// Force re-probe the host OS (resets device into probe mode)
     Reprobe,
+
+    /// Force a specific OS identity (skip probe on soft reset)
+    #[command(name = "set-os")]
+    SetOs {
+        /// OS to force: auto, windows, linux, macos
+        os: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -156,6 +163,7 @@ fn main() -> Result<()> {
         Command::Version => cmd_version(&mut transport),
         Command::Restart => cmd_restart(&mut transport),
         Command::Reprobe => cmd_reprobe(&mut transport),
+        Command::SetOs { os } => cmd_set_os(&mut transport, &os),
     }
 }
 
@@ -502,6 +510,54 @@ fn cmd_reprobe(transport: &mut Transport) -> Result<()> {
         "Reprobe initiated. Device will re-detect host OS and present appropriate USB identity."
             .green()
     );
+    Ok(())
+}
+
+fn cmd_set_os(transport: &mut Transport, os_name: &str) -> Result<()> {
+    let os_val: u8 = match os_name.to_lowercase().as_str() {
+        "auto" | "probe" | "0" => 0,
+        "windows" | "win" | "1" => 1,
+        "linux" | "2" => 2,
+        "macos" | "mac" | "3" => 3,
+        _ => {
+            eprintln!(
+                "{}: unknown OS '{}'. Valid: auto, windows, linux, macos",
+                "Error".red(),
+                os_name
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let os_label = match os_val {
+        0 => "Auto (probe on each reset)",
+        1 => "Windows",
+        2 => "Linux",
+        3 => "macOS",
+        _ => unreachable!(),
+    };
+
+    let mut cbor_buf = [0u8; 16];
+    let cbor_len = encode_request_set_forced_os(&mut cbor_buf, os_val)
+        .map_err(|_| anyhow::anyhow!("encode failed"))?;
+    let (resp, _) = transport.request(&cbor_buf[..cbor_len], DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!("Forced OS set to: {}", os_label.bold());
+    if os_val > 0 {
+        println!(
+            "{}",
+            "Subsequent soft resets will skip OS probe and use this identity.".dimmed()
+        );
+        println!(
+            "{}",
+            "Use 'set-os auto' to re-enable automatic detection.".dimmed()
+        );
+    } else {
+        println!(
+            "{}",
+            "OS will be auto-detected on each boot/reset.".dimmed()
+        );
+    }
     Ok(())
 }
 

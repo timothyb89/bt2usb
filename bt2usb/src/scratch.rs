@@ -9,6 +9,8 @@
 //!   scratch[1] = boot phase  (0=Probe, 1=Configured)
 //!   scratch[2] = probe attempt counter
 //!   scratch[3] = magic sentinel (validates that values are ours)
+//!   scratch[4] = forced OS override (0=Auto/probe, 1-3=forced OS)
+//!                Cached from flash by Phase 1; checked by Phase 0 to skip probe.
 
 use defmt::*;
 
@@ -16,6 +18,7 @@ const SCRATCH_OS: usize = 0;
 const SCRATCH_PHASE: usize = 1;
 const SCRATCH_ATTEMPTS: usize = 2;
 const SCRATCH_MAGIC: usize = 3;
+const SCRATCH_FORCED_OS: usize = 4;
 
 const MAGIC_VALUE: u32 = 0xB72B_0001;
 const MAX_PROBE_ATTEMPTS: u8 = 3;
@@ -35,7 +38,7 @@ pub enum DetectedOs {
 }
 
 impl DetectedOs {
-    fn from_u32(val: u32) -> Self {
+    pub fn from_u32(val: u32) -> Self {
         match val {
             1 => Self::Windows,
             2 => Self::Linux,
@@ -140,4 +143,39 @@ pub fn max_attempts_exceeded(count: u8) -> bool {
 pub fn clear_for_reprobe() {
     scratch_write(SCRATCH_MAGIC, 0);
     info!("Scratch: cleared for reprobe");
+}
+
+/// Read the forced OS override from scratch[4].
+///
+/// Returns `None` (auto/probe) if the magic is invalid or the value is 0.
+/// Returns `Some(os)` if a valid forced OS is cached.
+pub fn read_forced_os() -> Option<DetectedOs> {
+    if !scratch_valid() {
+        return None;
+    }
+    let val = scratch_read(SCRATCH_FORCED_OS);
+    match val {
+        1..=3 => Some(DetectedOs::from_u32(val)),
+        _ => None,
+    }
+}
+
+/// Cache a forced OS override to scratch[4].
+///
+/// Called from Phase 1 after reading the preference from flash, so that
+/// Phase 0 can skip the probe on the next soft reset. Use `0` to clear.
+pub fn write_forced_os(os_val: u32) {
+    scratch_write(SCRATCH_FORCED_OS, os_val);
+    // Ensure magic is set so the value persists across watchdog reset
+    if !scratch_valid() {
+        scratch_write(SCRATCH_MAGIC, MAGIC_VALUE);
+    }
+    if os_val > 0 {
+        info!(
+            "Scratch: cached forced OS = {}",
+            DetectedOs::from_u32(os_val)
+        );
+    } else {
+        info!("Scratch: cleared forced OS (auto)");
+    }
 }

@@ -47,6 +47,7 @@ pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
 pub const CMD_AUTO_CONNECT: u8 = 16;
 pub const CMD_RESTART: u8 = 17;
 pub const CMD_FORCE_REPROBE: u8 = 18;
+pub const CMD_SET_FORCED_OS: u8 = 19;
 
 // ============ Response IDs ============
 
@@ -245,6 +246,17 @@ pub fn encode_request_set_config(buf: &mut [u8], key: u8, value: u32) -> EncResu
             .u8(key)
             .unwrap()
             .u32(value)
+            .unwrap();
+    })
+}
+
+pub fn encode_request_set_forced_os(buf: &mut [u8], os: u8) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(2)
+            .unwrap()
+            .u8(CMD_SET_FORCED_OS)
+            .unwrap()
+            .u8(os)
             .unwrap();
     })
 }

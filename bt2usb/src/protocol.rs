@@ -57,6 +57,7 @@ pub const CMD_UPDATE_BOND_PROFILE: u8 = 15;
 pub const CMD_AUTO_CONNECT: u8 = 16;
 pub const CMD_RESTART: u8 = 17;
 pub const CMD_FORCE_REPROBE: u8 = 18;
+pub const CMD_SET_FORCED_OS: u8 = 19;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -96,6 +97,10 @@ pub enum Request {
     AutoConnect,
     Restart,
     ForceReprobe,
+    /// Set forced OS override (0=Auto, 1=Windows, 2=Linux, 3=macOS).
+    SetForcedOs {
+        os: u8,
+    },
 }
 
 // ============ Response (device -> host) ============
@@ -225,6 +230,10 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         CMD_AUTO_CONNECT => Ok(Request::AutoConnect),
         CMD_RESTART => Ok(Request::Restart),
         CMD_FORCE_REPROBE => Ok(Request::ForceReprobe),
+        CMD_SET_FORCED_OS => {
+            let os = d.u8().map_err(|_| ProtocolError::InvalidCbor)?;
+            Ok(Request::SetForcedOs { os })
+        }
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }

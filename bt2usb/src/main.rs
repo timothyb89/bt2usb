@@ -140,6 +140,17 @@ fn main() -> ! {
 
     match boot_state.phase {
         scratch::BootPhase::Probe => {
+            // Check for a forced OS override cached in scratch[4] by Phase 1.
+            // If set, skip the probe and go straight to Phase 1 with that OS.
+            if let Some(forced_os) = scratch::read_forced_os() {
+                info!(
+                    "[core0] Phase 0: forced OS override -> {}, skipping probe",
+                    forced_os
+                );
+                scratch::write_probe_result(forced_os);
+                system_reset();
+            }
+
             // Phase 0: fingerprint the host OS via a minimal probe USB device.
             let attempts = scratch::increment_attempts();
             if scratch::max_attempts_exceeded(attempts) {

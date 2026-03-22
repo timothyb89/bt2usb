@@ -140,6 +140,14 @@ pub async fn core0_ble_main(
 
     let active_device_pref = preferences::load_active_device(&mut flash).await;
 
+    // Load forced OS override from flash and cache to scratch register.
+    // Phase 0 checks this on the next soft reset to skip the probe.
+    {
+        let forced_os =
+            preferences::load_u32_preference(&mut flash, preferences::PREF_KEY_FORCED_OS, 0).await;
+        crate::scratch::write_forced_os(forced_os);
+    }
+
     // Load axis multiplier preferences
     {
         use core::sync::atomic::Ordering::Relaxed;
@@ -366,6 +374,11 @@ pub async fn core0_ble_main(
 
                 BleCommand::SetConfig { key, value } => {
                     commands::handle_set_config(&mut flash, key, value).await;
+                    None
+                }
+
+                BleCommand::SetForcedOs { os } => {
+                    commands::handle_set_forced_os(&mut flash, os).await;
                     None
                 }
 
