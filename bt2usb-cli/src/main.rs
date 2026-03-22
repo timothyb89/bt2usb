@@ -152,8 +152,24 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Commands that don't need a device connection
-    if let Command::DumpElf { output } = &cli.command {
-        return cmd_dump_elf(output);
+    match &cli.command {
+        Command::DumpElf { output } => return cmd_dump_elf(output),
+        Command::Logs {
+            level,
+            timeout,
+            elf,
+            text,
+        } => {
+            // Logs handles its own connection lifecycle (wait-for-device + reconnect).
+            // Try to connect now but don't fail — the log loop will retry.
+            let transport = if let Some(device) = &cli.device {
+                Transport::connect_to(device).ok()
+            } else {
+                Transport::connect().ok()
+            };
+            return cmd_logs(transport, *level, *timeout, elf.as_deref(), *text);
+        }
+        _ => {}
     }
 
     let mut transport = if let Some(device) = &cli.device {
@@ -163,7 +179,7 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
-        Command::DumpElf { .. } => unreachable!(),
+        Command::DumpElf { .. } | Command::Logs { .. } => unreachable!(),
         Command::Status => cmd_status(&mut transport),
         Command::Scan { timeout } => cmd_scan(&mut transport, timeout),
         Command::Connect {
@@ -185,12 +201,6 @@ fn main() -> Result<()> {
         Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::GetConfig => cmd_get_config(&mut transport),
         Command::SetConfig { key, value } => cmd_set_config(&mut transport, &key, value),
-        Command::Logs {
-            level,
-            timeout,
-            elf,
-            text,
-        } => cmd_logs(&mut transport, level, timeout, elf.as_deref(), text),
         Command::Version => cmd_version(&mut transport),
         Command::Restart => cmd_restart(&mut transport),
         Command::Reprobe => cmd_reprobe(&mut transport),
@@ -498,15 +508,19 @@ fn cmd_dump_elf(output: &str) -> Result<()> {
     Ok(())
 }
 
+/// Polling interval when waiting for the device to appear.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 fn cmd_logs(
-    transport: &mut Transport,
+    transport: Option<Transport>,
     level: u8,
     timeout_secs: u64,
     elf_path: Option<&str>,
     text_mode: bool,
 ) -> Result<()> {
     if text_mode {
-        return cmd_logs_text(transport, level, timeout_secs);
+        let mut t = wait_for_device(transport);
+        return cmd_logs_text(&mut t, level, timeout_secs);
     }
 
     // Try to create a defmt decoder
@@ -516,7 +530,8 @@ fn cmd_logs(
             Err(e) => {
                 eprintln!("Failed to load ELF '{}': {e:#}", path);
                 eprintln!("Falling back to text log mode.");
-                return cmd_logs_text(transport, level, timeout_secs);
+                let mut t = wait_for_device(transport);
+                return cmd_logs_text(&mut t, level, timeout_secs);
             }
         }
     } else if !FIRMWARE_ELF.is_empty() {
@@ -540,52 +555,104 @@ fn cmd_logs(
     if let Some(decoder) = decoder {
         cmd_logs_defmt(transport, decoder, timeout_secs)
     } else {
-        cmd_logs_text(transport, level, timeout_secs)
+        let mut t = wait_for_device(transport);
+        cmd_logs_text(&mut t, level, timeout_secs)
+    }
+}
+
+/// Block until a device is connected, returning a live transport.
+/// If `existing` is already Some, returns it immediately.
+fn wait_for_device(existing: Option<Transport>) -> Transport {
+    if let Some(t) = existing {
+        return t;
+    }
+    eprint!("{}", "Waiting for device...".dimmed());
+    loop {
+        if let Ok(t) = Transport::connect() {
+            eprintln!(" {}", "connected".green());
+            return t;
+        }
+        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
 fn cmd_logs_defmt(
-    transport: &mut Transport,
+    mut transport: Option<Transport>,
     mut decoder: defmt_decode::DefmtDecoder,
     timeout_secs: u64,
 ) -> Result<()> {
-    // Check firmware version for mismatch warning
-    if let Ok((Response::Version { version: dev_ver }, _)) =
-        transport.request_simple(CMD_GET_VERSION, DEFAULT_TIMEOUT)
-    {
-        let cli_ver = env!("CARGO_PKG_VERSION");
-        if dev_ver != cli_ver {
-            eprintln!(
-                "{}: firmware version ({dev_ver}) != CLI version ({cli_ver})",
-                "Warning".yellow()
-            );
-            eprintln!(
-                "{}",
-                "defmt frames may not decode correctly. Rebuild with: just build-all".dimmed()
-            );
-            eprintln!();
-        }
-    }
-
     let stream_timeout = if timeout_secs == 0 {
         Duration::from_secs(86400)
     } else {
         Duration::from_secs(timeout_secs)
     };
 
-    // Auto-reconnect loop
+    let mut version_checked = false;
+
     loop {
+        // Ensure we have a connection
+        let t = match &mut transport {
+            Some(t) => t,
+            None => {
+                // Poll for device at 250ms intervals
+                loop {
+                    match Transport::connect() {
+                        Ok(new_t) => {
+                            transport = Some(new_t);
+                            eprintln!(" {}", "connected".green());
+                            break;
+                        }
+                        Err(_) => std::thread::sleep(POLL_INTERVAL),
+                    }
+                }
+                transport.as_mut().unwrap()
+            }
+        };
+
+        // Version mismatch check (once per session)
+        if !version_checked {
+            version_checked = true;
+            if let Ok((Response::Version { version: dev_ver }, _)) =
+                t.request_simple(CMD_GET_VERSION, DEFAULT_TIMEOUT)
+            {
+                let cli_ver = env!("CARGO_PKG_VERSION");
+                if dev_ver != cli_ver {
+                    eprintln!(
+                        "{}: firmware version ({dev_ver}) != CLI version ({cli_ver})",
+                        "Warning".yellow()
+                    );
+                    eprintln!(
+                        "{}",
+                        "defmt frames may not decode correctly. Rebuild with: just build-all"
+                            .dimmed()
+                    );
+                }
+            }
+        }
+
         // Subscribe to defmt stream
-        let mut cbor_buf = [0u8; 16];
-        let len = encode_request_subscribe_defmt(&mut cbor_buf)
-            .map_err(|_| anyhow::anyhow!("encode failed"))?;
-        let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
-        check_ok(&resp)?;
+        let subscribe_result = (|| -> Result<()> {
+            let mut cbor_buf = [0u8; 16];
+            let len = encode_request_subscribe_defmt(&mut cbor_buf)
+                .map_err(|_| anyhow::anyhow!("encode failed"))?;
+            let (resp, _) = t.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+            check_ok(&resp)
+        })();
 
-        println!("Streaming defmt logs... Press Ctrl+C to stop.");
-        println!();
+        if let Err(_e) = subscribe_result {
+            // Subscribe failed (device may have disconnected during handshake)
+            transport = None;
+            eprint!("{}", "Waiting for device...".dimmed());
+            std::thread::sleep(POLL_INTERVAL);
+            continue;
+        }
 
-        let result = transport.stream_messages(stream_timeout, |msg| {
+        eprintln!(
+            "{}",
+            "Streaming defmt logs... Press Ctrl+C to stop.".dimmed()
+        );
+
+        let result = t.stream_messages(stream_timeout, |msg| {
             if let Message::Event { cbor } = msg {
                 if let Ok(evt) = decode_event(&cbor) {
                     match evt {
@@ -601,27 +668,15 @@ fn cmd_logs_defmt(
             true
         });
 
-        // Try to unsubscribe (best-effort, device may be disconnected)
-        let _ = transport.request_simple(CMD_UNSUBSCRIBE_DEFMT, DEFAULT_TIMEOUT);
+        // Try to unsubscribe (best-effort)
+        let _ = t.request_simple(CMD_UNSUBSCRIBE_DEFMT, DEFAULT_TIMEOUT);
 
         match result {
             Ok(()) => return Ok(()), // Clean exit (timeout or Ctrl+C)
-            Err(e) => {
-                eprintln!(
-                    "{}. Reconnecting in 2s...",
-                    format!("Disconnected: {e}").yellow()
-                );
-                std::thread::sleep(Duration::from_secs(2));
-                match Transport::connect() {
-                    Ok(new_transport) => {
-                        *transport = new_transport;
-                        // Loop back to re-subscribe
-                    }
-                    Err(e) => {
-                        eprintln!("Reconnect failed: {e}. Retrying...");
-                        // Keep trying
-                    }
-                }
+            Err(_) => {
+                transport = None;
+                eprint!("{}", "Waiting for device...".dimmed());
+                std::thread::sleep(POLL_INTERVAL);
             }
         }
     }
