@@ -63,6 +63,10 @@ release:
 build-all profile='release': (build profile)
     cargo build --package bt2usb-cli --release
 
+# Build firmware + CLI with embedded ELF and debug probe support
+build-all-probe profile='release': (build profile)
+    cargo build --package bt2usb-cli --features probe --release
+
 # Run format check and clippy lints for the firmware
 lint:
     cargo fmt --package bt2usb --check

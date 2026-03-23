@@ -4,6 +4,8 @@
 //! using COBS-framed CBOR messages.
 
 mod defmt_decode;
+#[cfg(feature = "probe")]
+mod probe_rtt;
 mod protocol;
 mod transport;
 
@@ -109,6 +111,10 @@ enum Command {
         /// Use legacy text log mode instead of defmt decoding
         #[arg(long)]
         text: bool,
+
+        /// Read logs via debug probe RTT instead of USB (requires --features probe)
+        #[arg(long)]
+        probe: bool,
     },
 
     /// Show current configuration (axis multipliers)
@@ -159,15 +165,18 @@ fn main() -> Result<()> {
             timeout,
             elf,
             text,
+            probe,
         } => {
             // Logs handles its own connection lifecycle (wait-for-device + reconnect).
             // Try to connect now but don't fail — the log loop will retry.
-            let transport = if let Some(device) = &cli.device {
+            let transport = if *probe {
+                None // Probe mode doesn't use USB transport
+            } else if let Some(device) = &cli.device {
                 Transport::connect_to(device).ok()
             } else {
                 Transport::connect().ok()
             };
-            return cmd_logs(transport, *level, *timeout, elf.as_deref(), *text);
+            return cmd_logs(transport, *level, *timeout, elf.as_deref(), *text, *probe);
         }
         _ => {}
     }
@@ -517,40 +526,35 @@ fn cmd_logs(
     timeout_secs: u64,
     elf_path: Option<&str>,
     text_mode: bool,
+    probe_mode: bool,
 ) -> Result<()> {
     if text_mode {
         let mut t = wait_for_device(transport);
         return cmd_logs_text(&mut t, level, timeout_secs);
     }
 
-    // Try to create a defmt decoder
-    let decoder = if let Some(path) = elf_path {
-        match defmt_decode::DefmtDecoder::from_elf_path(std::path::Path::new(path)) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                eprintln!("Failed to load ELF '{}': {e:#}", path);
-                eprintln!("Falling back to text log mode.");
-                let mut t = wait_for_device(transport);
-                return cmd_logs_text(&mut t, level, timeout_secs);
-            }
+    // Resolve ELF bytes for defmt decoding
+    let (decoder, _elf_bytes) = resolve_defmt_decoder(elf_path);
+    // _elf_bytes used by probe mode for RTT address extraction
+    #[cfg(feature = "probe")]
+    let elf_bytes = _elf_bytes;
+
+    if probe_mode {
+        #[cfg(feature = "probe")]
+        {
+            let decoder = match decoder {
+                Some(d) => d,
+                None => anyhow::bail!(
+                    "--probe requires a defmt decoder. Use --elf <path> or build with `just build-all`."
+                ),
+            };
+            return probe_rtt::cmd_logs_probe(decoder, elf_bytes, timeout_secs);
         }
-    } else if !FIRMWARE_ELF.is_empty() {
-        match defmt_decode::DefmtDecoder::from_elf(FIRMWARE_ELF) {
-            Ok(d) => Some(d),
-            Err(e) => {
-                eprintln!(
-                    "Embedded ELF ({} bytes) failed to parse: {e:#}",
-                    FIRMWARE_ELF.len()
-                );
-                eprintln!("Run `bt2usb-cli dump-elf` to inspect. Falling back to text log mode.");
-                None
-            }
-        }
-    } else {
-        eprintln!("{}", "No firmware ELF embedded in this CLI build.".yellow());
-        eprintln!("Use --elf <path> or --text, or rebuild with `just build-all`.");
-        None
-    };
+        #[cfg(not(feature = "probe"))]
+        anyhow::bail!(
+            "--probe requires the probe feature. Build with: cargo build --package bt2usb-cli --features probe"
+        );
+    }
 
     if let Some(decoder) = decoder {
         cmd_logs_defmt(transport, decoder, timeout_secs)
@@ -558,6 +562,44 @@ fn cmd_logs(
         let mut t = wait_for_device(transport);
         cmd_logs_text(&mut t, level, timeout_secs)
     }
+}
+
+/// Try to create a defmt decoder from the provided ELF path or the embedded ELF.
+/// Returns the decoder (if successful) and the raw ELF bytes (for RTT address extraction).
+fn resolve_defmt_decoder(
+    elf_path: Option<&str>,
+) -> (Option<defmt_decode::DefmtDecoder>, &'static [u8]) {
+    if let Some(path) = elf_path {
+        match defmt_decode::DefmtDecoder::from_elf_path(std::path::Path::new(path)) {
+            Ok(d) => {
+                // For --elf with --probe, we'd need the bytes for RTT address extraction.
+                // The embedded ELF may still be useful for that if available.
+                return (Some(d), FIRMWARE_ELF);
+            }
+            Err(e) => {
+                eprintln!("Failed to load ELF '{}': {e:#}", path);
+                return (None, FIRMWARE_ELF);
+            }
+        }
+    }
+
+    if !FIRMWARE_ELF.is_empty() {
+        match defmt_decode::DefmtDecoder::from_elf(FIRMWARE_ELF) {
+            Ok(d) => return (Some(d), FIRMWARE_ELF),
+            Err(e) => {
+                eprintln!(
+                    "Embedded ELF ({} bytes) failed to parse: {e:#}",
+                    FIRMWARE_ELF.len()
+                );
+                eprintln!("Run `bt2usb-cli dump-elf` to inspect.");
+                return (None, FIRMWARE_ELF);
+            }
+        }
+    }
+
+    eprintln!("{}", "No firmware ELF embedded in this CLI build.".yellow());
+    eprintln!("Use --elf <path> or --text, or rebuild with `just build-all`.");
+    (None, FIRMWARE_ELF)
 }
 
 /// Block until a device is connected, returning a live transport.
