@@ -19,14 +19,23 @@ Notably, it fully supports the high resolution scrolling events emitted by the F
 ## Requirements
 
 - A Raspberry Pi Pico W with the CYW43439 wireless chipset. Other RP2040 boards with different wireless chipsets will not work. 
+- A USB cable
 
 No other hardware is required, aside from the BLE device you want to convert to USB.
+
+For development and full debugging support you'll want a debug probe. Raspberry
+Pi sells [an official debug probe](rpi-probe), but you can also build your own
+using another Pico running the [`debugprobe`
+firmware](https://github.com/raspberrypi/debugprobe).
+
+[rpi-probe]: https://www.raspberrypi.com/products/debug-probe/
 
 ## Features
 
 - Profiles for the Full Scroll Dial and Logitech MX Master 3S
 - High reporting rate for connected devices
 - Experimental 16-bit reporting mode for the Full Scroll Dial for native scroll velocity (profile `3`)
+- macOS support via Magic Trackpad 2 emulation
 
 ## TODOs
 
@@ -42,7 +51,9 @@ Longer term desired TODOs:
 
 ### Method 1: Drag-and-Drop (No debugger required)
 
-1. Build the UF2 file: `just release`
+1. Download the UF2 file from [the releases 
+   page](https://github.com/timothyb89/bt2usb/releases/latest) or build your
+   own with: `just release`
 2. Hold the BOOTSEL button on the Pico W while plugging it into USB
 3. The Pico will appear as a USB mass storage device (drive letter like `RPI-RP2`)
 4. Drag and drop `bt2usb/bt2usb.uf2` onto the drive
@@ -63,7 +74,7 @@ Once flashed, the Pico should expose both a USB HID input, as well as a HID inte
 
 ### Web UI
 
-You can open the web UI locally in any Chromium-based browser by downloading [`web/index.html`](./web/index.html). Alternative, you can browse to https://timothyb89.org/bt2usb/ for a publicly-hosted version.
+You can open the web UI locally in any Chromium-based browser by downloading [`web/index.html`](./web/index.html). Alternatively, you can browse to https://timothyb89.org/bt2usb/ for a publicly-hosted version.
 
 1. Select the "Connect" button at the top of the page to open the "BT2USB Bridge" device.
 2. Once connected, use the "Start Scan" button to search for pairable devices.
