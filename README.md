@@ -2,12 +2,6 @@
 
 BLE HID to USB HID Bridge for Raspberry Pi Pico W.
 
-## Disclosure
-
-🚨 AI SLOP WARNING 🚨
-
-This was largely made to experiment with AI tooling, and the code was predominantly written by LLMs. The functionality has been reviewed but should be used with care. This isn't a particularly dangerous project and probably doesn't have the capability to break anything other than the Pico you flash it to, if that, but you've been warned.
-
 ## Overview
 
 This firmware connects to Bluetooth LE HID devices (keyboards, mice, custom devices) and translates their input into USB HID, allowing them to be used with a USB switch between computers without re-pairing.
@@ -228,6 +222,12 @@ $ bt2usb-cli restart
 ```
 
 [defmt]: https://defmt.ferrous-systems.com/
+
+## Disclosure
+
+🚨 AI SLOP WARNING 🚨
+
+This was largely made to experiment with AI tooling, and the code was predominantly written by LLMs. The functionality has been reviewed but should be used with care. This isn't a particularly dangerous project and probably doesn't have the capability to break anything other than the Pico you flash it to, if that, but you've been warned.
 
 ## License
 
