@@ -483,8 +483,5 @@ pub fn serialize_mouse_report_16bit(report: &MouseReport16) -> [u8; 7] {
     buf[3..5].copy_from_slice(&report.wheel.to_le_bytes());
     buf[5..7].copy_from_slice(&report.pan.to_le_bytes());
 
-    debug!("USB HID 16-bit: wheel={} -> bytes=[{:02x},{:02x}], full=[{:02x},{:02x},{:02x},{:02x},{:02x},{:02x},{:02x}]",
-        report.wheel, buf[3], buf[4], buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6]);
-
     buf
 }

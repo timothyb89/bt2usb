@@ -180,14 +180,8 @@ pub async fn load_u32_preference(
     )
     .await
     {
-        Ok(Some(val)) => {
-            debug!("Loaded preference key={}: {}", key, val.percent);
-            val.percent
-        }
-        Ok(None) => {
-            debug!("No preference for key={}, defaulting to {}", key, default);
-            default
-        }
+        Ok(Some(val)) => val.percent,
+        Ok(None) => default,
         Err(e) => {
             warn!(
                 "Error loading preference key={}: {:?}",
@@ -214,14 +208,8 @@ pub async fn load_multiplier(
     )
     .await
     {
-        Ok(Some(val)) => {
-            debug!("Loaded multiplier key={}: {}%", key, val.percent);
-            val.percent
-        }
-        Ok(None) => {
-            debug!("No multiplier for key={}, defaulting to 100%", key);
-            100
-        }
+        Ok(Some(val)) => val.percent,
+        Ok(None) => 100,
         Err(e) => {
             warn!(
                 "Error loading multiplier key={}: {:?}",

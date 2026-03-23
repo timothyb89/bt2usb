@@ -134,7 +134,6 @@ fn translate_mx_master(data: &[u8], len: usize) -> MouseReport {
     let (x, y) = if len >= 5 {
         let x16 = i16::from_le_bytes([data[1], data[2]]);
         let y16 = i16::from_le_bytes([data[3], data[4]]);
-        debug!("MX Master 16-bit: X={}, Y={}", x16, y16);
         // MX Master 3S has asymmetric native resolution
         let x_scaled = (x16 / 64).clamp(-127, 127) as i8;
         let y_scaled = (y16 / 8).clamp(-127, 127) as i8;
@@ -218,17 +217,9 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
             let detents = new_acc / scroll_threshold();
             let remainder = new_acc % scroll_threshold();
             SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
-            debug!(
-                "8-bit mode (standard/accum): acc={} -> emit {} detents, remainder={}",
-                new_acc, detents, remainder
-            );
             detents.clamp(-127, 127) as i8
         } else {
             SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
-            debug!(
-                "8-bit mode (standard/accum): acc={}, below threshold",
-                new_acc
-            );
             0i8
         }
     };
@@ -263,10 +254,6 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
 
     // Device sends 16-bit scroll delta in little-endian format
     let raw = i16::from_le_bytes([data[0], data[1]]);
-    debug!(
-        "Scroll dial 16-bit: raw bytes=[{:02x},{:02x}] -> i16={}",
-        data[0], data[1], raw
-    );
 
     // SPI Corruption Workaround:
     // The specific corruption observed matches Bit 0 of Byte 1 (the high byte) being cleared (0xFE instead of 0xFF).
@@ -287,10 +274,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
 
         // If the proposed adjustment is closer to previous value, assume it's the correct one
         if diff_proposed < diff_raw {
-            warn!(
-                "SPI corruption detected: {} -> {} (delta {} vs {})",
-                raw, proposed, diff_proposed, diff_raw
-            );
+            warn!("SPI corruption: {} -> {}", raw, proposed);
             clean_raw = proposed;
         }
     }
@@ -307,12 +291,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         // 1. Corrupting GATT discovery (wrong handle selected), or
         // 2. Corrupting notification data (if handle is still 0x0020)
         if clean_raw != raw {
-            info!(
-                "16-bit mode (hires): {} passthrough (corrected to {})",
-                raw, clean_raw
-            );
-        } else {
-            info!("16-bit mode (hires): {} passthrough", clean_raw);
+            debug!("16-bit hires: {} corrected to {}", raw, clean_raw);
         }
         clean_raw
     } else {
@@ -341,20 +320,9 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
             SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
             // Emit detent count (±1..±3) rather than ×120 magnitude.
             // Small values stay in macOS's linear acceleration region.
-            let emit = detents as i16;
-            let now = embassy_time::Instant::now().as_ticks();
-            info!(
-                "16-bit mode (standard): acc={} -> emit {} ({} detents), remainder={}, t={}",
-                new_acc, emit, detents, remainder, now
-            );
-            emit
+            detents as i16
         } else {
             SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
-            let now = embassy_time::Instant::now().as_ticks();
-            info!(
-                "16-bit mode (standard): acc={}, below threshold, t={}",
-                new_acc, now
-            );
             0
         }
     };
