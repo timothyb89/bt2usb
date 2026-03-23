@@ -437,7 +437,13 @@ impl Handler for UsbDeviceHandler {
         if suspended {
             debug!("USB suspended");
         } else {
-            debug!("USB resumed");
+            // Reset high-res scroll on resume. Sleep/wake on Windows often
+            // resumes without a full bus reset or reconfiguration, but the OS
+            // may not re-send SET_REPORT to re-enable hires. Clear the flag
+            // so the host must re-negotiate — same rationale as reset()/configured().
+            HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+            crate::device_profile::reset_scroll_accumulator();
+            debug!("USB resumed, high-res scroll reset");
         }
     }
 
