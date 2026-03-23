@@ -204,8 +204,6 @@ pub async fn core0_ble_main(
     let mut rosc_rng = RoscRng;
     let mut rng_seed = [0u8; 32];
     rosc_rng.fill_bytes(&mut rng_seed);
-    info!("[core0] RNG Seed: {=[u8]:x}", rng_seed);
-
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
     let mut rng = ChaCha8Rng::from_seed(rng_seed);
@@ -354,13 +352,13 @@ pub async fn core0_ble_main(
                 }
 
                 BleCommand::GetStatus => {
-                    info!("Getting status info");
+                    debug!("Getting status info");
                     commands::handle_get_status(&loaded_bonds, active_profile, &active_device_pref);
                     None
                 }
 
                 BleCommand::GetBonds => {
-                    info!("Getting bonds list");
+                    debug!("Getting bonds list");
                     commands::handle_get_bonds(&loaded_bonds);
                     None
                 }

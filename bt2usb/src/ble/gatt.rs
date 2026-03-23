@@ -224,9 +224,6 @@ async fn discover_hid_service<'a, C: Controller>(
     {
         Ok(c) => {
             info!("Found Report characteristic (UUID 0x2A4D)");
-            info!("CRITICAL: Characteristic handle = {:?}", c.handle);
-            info!("Linux uses handle 0x0020 for symmetric scroll values");
-            info!("If we're using a different handle, that explains the asymmetry!");
             Some(c)
         }
         Err(e) => {
@@ -344,13 +341,6 @@ async fn run_hid_event_loop<'a, 'c, C: Controller>(
             Either4::First(notification) => {
                 let data = notification.as_ref();
                 if !data.is_empty() {
-                    let preview_len = data.len().min(8);
-                    debug!(
-                        "Raw notification: len={}, first {} bytes: {:?}",
-                        data.len(),
-                        preview_len,
-                        &data[..preview_len]
-                    );
                     let report = parse_hid_report(data, 0, *active_profile);
                     HID_REPORT_CHANNEL.send(report).await;
                 }
@@ -497,13 +487,13 @@ async fn handle_command_during_hid_loop<'a>(
         }
 
         BleCommand::GetStatus => {
-            info!("Getting status info (connected)");
+            debug!("Getting status info (connected)");
             commands::handle_get_status(loaded_bonds, *active_profile, active_device_pref);
             CommandResult::Continue
         }
 
         BleCommand::GetBonds => {
-            info!("Getting bonds list");
+            debug!("Getting bonds list");
             commands::handle_get_bonds(loaded_bonds);
             CommandResult::Continue
         }

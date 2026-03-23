@@ -160,23 +160,17 @@ async fn usb_hid_handler_task_standard(
         check_reprobe();
 
         match select(HID_REPORT_CHANNEL.receive(), BATTERY_USB_SIGNAL.wait()).await {
-            Either::First(event) => {
-                debug!(
-                    "Received HID report: type={:?}, len={}",
-                    event.report_type, event.len
-                );
-                match event.report_type {
-                    HidReportType::Keyboard => {
-                        handle_keyboard_report(&mut keyboard_writer, &event).await;
-                    }
-                    HidReportType::Mouse => {
-                        handle_mouse_report_standard(&mut mouse_writer, &event).await;
-                    }
-                    _ => {
-                        debug!("Unhandled HID report type");
-                    }
+            Either::First(event) => match event.report_type {
+                HidReportType::Keyboard => {
+                    handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
-            }
+                HidReportType::Mouse => {
+                    handle_mouse_report_standard(&mut mouse_writer, &event).await;
+                }
+                _ => {
+                    debug!("Unhandled HID report type");
+                }
+            },
             Either::Second(level) => {
                 send_battery_level(&mut mouse_writer, level).await;
             }
