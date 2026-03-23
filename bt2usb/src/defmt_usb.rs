@@ -39,7 +39,7 @@ pub static DEFMT_CHANNEL: Channel<CriticalSectionRawMutex, DefmtFrame, 16> = Cha
 
 // ── RTT plumbing (vendored from defmt-rtt 1.x) ─────────────────────────────
 
-const RTT_BUF_SIZE: usize = 1024;
+const RTT_BUF_SIZE: usize = 4096;
 
 /// RTT mode: don't block if buffer is full, trim output.
 const MODE_NON_BLOCKING_TRIM: u32 = 1;

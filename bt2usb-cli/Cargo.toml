@@ -9,10 +9,21 @@ name = "bt2usb-cli"
 path = "src/main.rs"
 
 [dependencies]
-hidapi = "2"
+# HID: disable default features to avoid Linux backend conflicts with probe-rs.
+# The linux-native-basic-udev backend is selected via our default feature below,
+# matching probe-rs's choice. Windows/macOS backends are always included.
+hidapi = { version = "2", default-features = false, features = ["macos-shared-device", "windows-native"] }
 minicbor = { version = "0.25", features = ["std"] }
 cobs = "0.3"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 colored = "2"
 defmt-decoder = "1"
+
+# Optional: debug probe RTT support (heavy dep, behind feature flag)
+probe-rs = { version = "0.31", optional = true }
+object = { version = "0.36", optional = true, default-features = false, features = ["elf", "read"] }
+
+[features]
+default = ["hidapi/linux-native-basic-udev"]
+probe = ["dep:probe-rs", "dep:object"]
