@@ -39,9 +39,8 @@ firmware](https://github.com/raspberrypi/debugprobe).
 
 ## TODOs
 
-- Improved bond storage robustness
+- Improved bond storage robustness for the MX Master mice
 - Generic mouse/keyboard device profiles
-- Battery reporting
 
 Longer term desired TODOs:
 
@@ -107,6 +106,22 @@ $ bt2usb-cli set-active-device <address>
 $ bt2usb-cli help
 ```
 
+### macOS Support for the Full Scroll Dial
+
+macOS does not support generic trackpads or devices that provide high
+resolution scrolling input. We work around that by emulating a Magic Trackpad 2
+and synthesizing scroll events on macOS hosts, which is the only input device
+that macOS supports that can both provide high-res scroll events and do so over
+USB rather than Bluetooth.
+
+To ensure we emulate the correct device for a given host system, on startup,
+the firmware first runs an OS probe, then reboots with the proper configuration
+for the detected host OS. This means you will notice a quick device reconnect
+whenever it's attached.
+
+The OS probing process is designed to work properly with a USB switch, and
+will probe again whenever the USB connection is interrupted.
+
 ## Building
 
 ### Quick Start with Just
@@ -163,6 +178,56 @@ foreach ($file in @("43439A0.bin", "43439A0_btfw.bin", "43439A0_clm.bin")) {
 cargo build --package bt2usb --release
 elf2uf2-rs target/thumbv6m-none-eabi/release/bt2usb bt2usb/bt2usb.uf2
 ```
+
+## Debugging
+
+The simplest way to view debug logs is to use the CLI:
+
+```
+$ bt2usb-cli logs
+```
+
+This streams bt2usb's [`defmt` logs][defmt] over the existing USB HID interface
+and does not require a debug probe. However, it can only stream logs after the
+interface has already been initialized and won't include logs from early in the
+boot process.
+
+If you need earlier logs, you'll need a debug probe (either the official
+Raspberry Pi debugging probe or one built using another Pico).
+
+Logs will stream as soon as you flash the device. However, `probe-rs` will
+disconnect after the device reboots during the init process after it finishes
+probing the host OS.
+
+The easiest way around _that_ is to either reattach probe-rs, or use our builtin
+helper:
+
+```
+$ probe-rs attach --chip RP2040 ../target/thumbv6m-none-eabi/release/bt2usb
+# or
+$ cargo build --release --features=probe && cargo run -- logs --probe
+```
+
+The helper has a more aggressive retry/reconnect loop than probe-rs, and the
+firmware is embedded directly in the CLI binary to decode `defmt` messages
+without having to specify the binary path. (Note that you will need to rebuild
+the CLI if you change logs in the firmware, as it needs an accurate reference
+for `defmt`'s interned strings.)
+
+Alternatively, once the device is running, you can force a specific OS to
+assume for the next boot, and then trigger a software reset:
+```
+# Set an OS override
+$ bt2usb-cli set-os <win/mac/linux>
+
+# ...in another session using a CLI built with the `probe` feature
+$ bt2usb-cli logs --probe
+
+# Then restart the device
+$ bt2usb-cli restart
+```
+
+[defmt]: https://defmt.ferrous-systems.com/
 
 ## License
 
