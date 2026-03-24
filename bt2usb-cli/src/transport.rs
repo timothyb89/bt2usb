@@ -22,6 +22,8 @@ fn is_bt2usb_device(vid: u16, pid: u16) -> bool {
 
 /// Vendor HID usage page for the RPC interface
 const VENDOR_USAGE_PAGE: u16 = 0xFF00;
+/// Vendor HID usage ID for the RPC interface (distinguishes from MT2's vendor collection which uses 0x0C)
+const VENDOR_USAGE_ID: u16 = 0x0001;
 
 /// Maximum sizes (must match firmware framing.rs)
 const MAX_MSG_SIZE: usize = 256;
@@ -251,6 +253,7 @@ fn find_device_hid(api: &HidApi) -> Result<HidDevice> {
     for info in api.device_list() {
         if is_bt2usb_device(info.vendor_id(), info.product_id())
             && info.usage_page() == VENDOR_USAGE_PAGE
+            && info.usage() == VENDOR_USAGE_ID
         {
             return info
                 .open_device(api)
