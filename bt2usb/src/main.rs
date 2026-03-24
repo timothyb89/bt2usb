@@ -181,7 +181,8 @@ fn main() -> ! {
         }
         scratch::BootPhase::Configured => {
             // Phase 1: present the OS-appropriate USB configuration and run BLE.
-            let detected_os = boot_state.detected_os;
+            // Forced OS override (from `set-os` command) takes precedence over probe result.
+            let detected_os = scratch::read_forced_os().unwrap_or(boot_state.detected_os);
             info!("[core0] Phase 1: configured mode, OS={}", detected_os);
 
             // Flash storage (used on Core 0 for bond and preference storage)
