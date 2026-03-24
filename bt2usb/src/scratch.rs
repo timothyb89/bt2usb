@@ -141,6 +141,7 @@ pub fn max_attempts_exceeded(count: u8) -> bool {
 
 /// Invalidate the scratch sentinel so the next boot enters Phase 0 (probe).
 pub fn clear_for_reprobe() {
+    scratch_write(SCRATCH_FORCED_OS, 0); // clear forced OS so probe runs fresh
     scratch_write(SCRATCH_MAGIC, 0);
     info!("Scratch: cleared for reprobe");
 }
