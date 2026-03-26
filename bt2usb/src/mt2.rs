@@ -12,19 +12,12 @@ use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 
 // ============ USB Device Identity ============
-// These are the real MT2's USB identity. Currently unused because the integrated
-// build uses the generic bt2usb VID/PID. Kept for reference and in case Apple
-// VID/PID is needed for TopCase compatibility on some macOS versions.
+// Real MT2 USB identity, used in macOS mode (via OS fingerprinting).
 
-#[allow(dead_code)]
 pub const APPLE_VID: u16 = 0x05AC;
-#[allow(dead_code)]
 pub const MT2_PID: u16 = 0x0265;
-#[allow(dead_code)]
 pub const MT2_DEVICE_RELEASE: u16 = 0x0871;
-#[allow(dead_code)]
 pub const MT2_MANUFACTURER: &str = "Apple Inc.";
-#[allow(dead_code)]
 pub const MT2_PRODUCT: &str = "Magic Trackpad";
 
 /// Whether multitouch mode has been activated by the host.
@@ -106,7 +99,7 @@ pub const TRACKPAD_REPORT_DESC: &[u8] = &[
 
 // ============ Feature Report Data (captured from real MT2) ============
 // Source: notes/magic-mouse/capture_trackpad_features_result.txt
-// All arrays contain DATA ONLY (no Report ID prefix — embassy-usb adds it).
+// All arrays contain DATA ONLY (no Report ID prefix — write_feature() adds it).
 
 /// Feature 0xDB — Compound device properties (Interface 1).
 /// Contains embedded sub-reports for D1, D3, D0, A1, D9, 7F.
@@ -302,7 +295,8 @@ const FINGER1_OFFSET: usize = 21;
 const Y_RESET_THRESHOLD: i16 = 3500;
 
 /// Number of reports for the lift-and-replace sequence.
-/// RELEASE(2) + NONE(1) + APPROACH(1) = 4 reports at ~11ms = ~44ms.
+/// RELEASE(2) + NONE(1) + APPROACH(1) = 4 reports at ~4ms = ~16ms.
+/// (The real MT2 reports at ~91 Hz / ~11ms; we use 250 Hz / 4ms for smoother output.)
 const REPLANT_REPORTS: u8 = 4;
 
 // Template touch reports captured from a real MT2 scroll gesture.
