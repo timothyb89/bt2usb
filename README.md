@@ -10,6 +10,10 @@ I built this to pair with the fantastic [Full Scroll Dial by Engineer Bo](https:
 
 Notably, it fully supports the high resolution scrolling events emitted by the Full Scroll Dial and translates them to USB HID. With the experimental 16-bit profile (mode `3`), there should be no loss of scrolling precision versus using the dial natively via Bluetooth. Additionally, the reporting rate (both for input via Bluetooth and output via USB HID) is enough to ensure fairly minimal added latency compared to connecting directly to the target system via Bluetooth.  
 
+Moreover, it also supports high-resolution scrolling on macOS without any software running on the host. macOS [traditionally does not support][ploopy] high-resolution scrolling for third-party input devices, accepting only line-based scrolling events to which it applies an aggressive acceleration curve. `bt2usb` works around this limitation by emulating an Apple Magic Trackpad 2 and synthesizing touch scroll events. This allows accurate pixel-level scrolling without any custom driver, and since `bt2usb` can detect when connected to macOS hosts, will automatically switch between standard HID and Magic Trackpad emulation, even on a USB switch.
+
+[ploopy]: https://ploopyco.github.io/knob/appendices/macos/
+
 ## Requirements
 
 - A Raspberry Pi Pico W with the CYW43439 wireless chipset. Other RP2040 boards with different wireless chipsets will not work. 
@@ -35,6 +39,7 @@ firmware](https://github.com/raspberrypi/debugprobe).
 
 - Improved bond storage robustness for the MX Master mice
 - Generic mouse/keyboard device profiles
+- Magic Trackpad 2 input support to emulate a generic touchpad on Windows
 
 Longer term desired TODOs:
 
