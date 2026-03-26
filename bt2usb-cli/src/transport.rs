@@ -11,10 +11,10 @@ use crate::protocol::{self, HEADER_SIZE, MSG_EVENT, MSG_REQUEST, MSG_RESPONSE};
 
 /// USB VID:PID pairs for bt2usb device.
 /// macOS mode uses Apple MT2 identity; other OSes use generic bt2usb identity.
-const USB_VID_APPLE: u16 = 0x05AC;
-const USB_PID_MT2: u16 = 0x0265;
-const USB_VID_BT2USB: u16 = 0x1209;
-const USB_PID_BT2USB: u16 = 0x0001;
+pub const USB_VID_APPLE: u16 = 0x05AC;
+pub const USB_PID_MT2: u16 = 0x0265;
+pub const USB_VID_BT2USB: u16 = 0x1209;
+pub const USB_PID_BT2USB: u16 = 0x0001;
 
 fn is_bt2usb_device(vid: u16, pid: u16) -> bool {
     (vid == USB_VID_APPLE && pid == USB_PID_MT2) || (vid == USB_VID_BT2USB && pid == USB_PID_BT2USB)

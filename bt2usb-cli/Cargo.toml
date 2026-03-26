@@ -20,10 +20,12 @@ anyhow = "1"
 colored = "2"
 defmt-decoder = "1"
 
+# ELF parsing for UF2 conversion and defmt RTT address extraction
+object = { version = "0.36", default-features = false, features = ["elf", "read"] }
+
 # Optional: debug probe RTT support (heavy dep, behind feature flag)
 probe-rs = { version = "0.31", optional = true }
-object = { version = "0.36", optional = true, default-features = false, features = ["elf", "read"] }
 
 [features]
 default = ["hidapi/linux-native-basic-udev"]
-probe = ["dep:probe-rs", "dep:object"]
+probe = ["dep:probe-rs"]
