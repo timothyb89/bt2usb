@@ -250,16 +250,43 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
 
 // ============ Touch Report Synthesis ============
 
-/// MT2 trackpad Y coordinate limits (from Linux kernel hid-magicmouse.c).
-const TRACKPAD2_MIN_Y: i16 = -2478;
-const TRACKPAD2_MAX_Y: i16 = 2587;
+/// MT2 trackpad Y coordinate limits.
+/// Extended beyond the real MT2 (-2478/+2587) to allow more finger travel
+/// before replanting. The 13-bit packed format supports ±4095.
+const TRACKPAD2_MIN_Y: i16 = -4000;
+const TRACKPAD2_MAX_Y: i16 = 4000;
 
 /// Idle timeout in ticks before lifting fingers (150ms at 1MHz tick rate).
 const IDLE_TIMEOUT_TICKS: u64 = 150_000;
 
-/// Maximum per-event Y delta. Caps finger speed to let macOS momentum handle
-/// high velocity rather than causing rapid replant loops.
+/// Maximum per-event Y delta. Caps the raw BLE delta before adding to
+/// the velocity buffer.
 const MAX_DELTA_PER_EVENT: i16 = 500;
+
+/// MT2-specific scroll scale as percentage. Applied to deltas inside the
+/// synthesizer so it only affects the MT2 trackpad path, not the standard
+/// USB mouse wheel path. Tuned so that a given MULTIPLIER_SCROLL setting
+/// produces roughly the same scroll speed on macOS (via MT2) as on
+/// Windows/Linux (via standard HID wheel).
+const MT2_SCROLL_SCALE_PCT: i32 = 200;
+
+/// Maximum drain rate (Y units per tick). Caps the tracked velocity to
+/// prevent extreme speeds in macOS's nonlinear acceleration region.
+/// At 4ms ticks: 250 units/tick = 62,500 units/sec.
+const MAX_DRAIN_RATE: i32 = 250;
+
+/// Maximum velocity buffer size. Prevents unbounded accumulation when
+/// BLE input rate exceeds drain rate momentarily.
+const MAX_BUFFER: i32 = 4000;
+
+/// Buffers at or below this size are applied in one tick instead of
+/// being smoothed. Prevents tiny deltas from being spread across many
+/// ticks at sub-threshold velocity that macOS ignores.
+const IMMEDIATE_THRESHOLD: i32 = 30;
+
+/// Tick interval in microseconds (4ms). Used to convert elapsed time
+/// between BLE events into tick counts for drain rate calculation.
+const TICK_INTERVAL_US: u64 = 4000;
 
 /// Timestamp increment per report (~8kHz / ~250Hz ≈ 32 ticks).
 const TIMESTAMP_INCREMENT: u16 = 32;
@@ -269,10 +296,10 @@ const FINGER0_OFFSET: usize = 12;
 /// Byte offset of finger 1 touch data within the 30-byte report.
 const FINGER1_OFFSET: usize = 21;
 
-/// Y range for finger travel before resetting. The real MT2 surface spans
-/// roughly -2478 to +2587 (~5000 units). We use a comfortable subset to
-/// leave room for the lift-and-replace cycle.
-const Y_RESET_THRESHOLD: i16 = 1500;
+/// Y range for finger travel before resetting. Uses most of the extended
+/// ±4000 coordinate space, leaving headroom so a max-size delta doesn't
+/// overshoot the 13-bit encoding limit (±4095).
+const Y_RESET_THRESHOLD: i16 = 3500;
 
 /// Number of reports for the lift-and-replace sequence.
 /// RELEASE(2) + NONE(1) + APPROACH(1) = 4 reports at ~11ms = ~44ms.
@@ -330,14 +357,24 @@ enum Phase {
 /// the Y coordinates. When fingers reach the edge of the virtual surface,
 /// performs a quick lift-and-replace cycle (like a real user would) to
 /// reset the Y position and continue scrolling.
+///
+/// Constant-rate drain: BLE deltas accumulate in a velocity buffer.
+/// Each BLE event updates a smoothed drain rate (delta / elapsed_ticks).
+/// tick() applies that rate uniformly, producing constant Y velocity
+/// between events. This eliminates the sawtooth velocity pattern from
+/// exponential decay that caused macOS's nonlinear acceleration to
+/// amplify peaks disproportionally (the "runaway acceleration" effect).
 pub struct TouchSynthesizer {
     /// Current Y position of both fingers on the virtual surface.
     y_pos: i16,
     /// Current gesture phase.
     phase: Phase,
-    /// Scroll direction during replant (to resume correctly).
-    /// Positive = scrolling down (fingers moving negative Y).
-    pending_delta: i16,
+    /// Accumulated Y delta to be applied across tick() calls.
+    velocity_buffer: i32,
+    /// Smoothed drain rate: Y units per tick. Updated on each BLE event
+    /// as `|delta| / elapsed_ticks`, then EMA-smoothed. Produces constant
+    /// velocity between events — no sawtooth, no nonlinear amplification.
+    drain_rate: i32,
     /// Tick count of the last scroll event (for idle detection).
     last_event_ticks: u64,
     /// Internal timestamp for report headers.
@@ -349,86 +386,81 @@ impl TouchSynthesizer {
         Self {
             y_pos: 0,
             phase: Phase::Idle,
-            pending_delta: 0,
+            velocity_buffer: 0,
+            drain_rate: 0,
             last_event_ticks: 0,
             timestamp: 10000,
         }
     }
 
-    /// Process a scroll delta. Returns 1-3 reports to send.
+    /// Process a scroll delta. Returns 0-2 reports (gesture start only).
+    ///
+    /// The delta is added to the velocity buffer. The drain rate is updated
+    /// based on `|delta| / ticks_since_last_event`, smoothed via EMA.
+    /// tick() drains the buffer at that constant rate.
     pub fn process_scroll(&mut self, delta: i16) -> heapless::Vec<[u8; 30], 3> {
         let now = embassy_time::Instant::now().as_ticks();
+        let elapsed_us = now.saturating_sub(self.last_event_ticks);
         self.last_event_ticks = now;
         let mut out = heapless::Vec::new();
 
         // Invert delta: positive dial rotation = scroll down = fingers move
         // in negative Y direction on the trackpad surface.
-        // Cap magnitude to avoid overshooting the replant threshold in one step.
-        // macOS momentum scrolling handles high velocities — we don't need to
-        // represent extreme speed as huge Y jumps.
+        // Apply MT2-specific scale to match macOS scroll speed to Windows/Linux.
         let delta = (-delta).clamp(-MAX_DELTA_PER_EVENT, MAX_DELTA_PER_EVENT);
+        let delta = ((delta as i32 * MT2_SCROLL_SCALE_PCT) / 100) as i16;
+
+        // Update drain rate from input velocity: |delta| / elapsed_ticks.
+        // EMA smoothing (75% old + 25% new) prevents jitter from
+        // irregular BLE event timing.
+        let elapsed_ticks = (elapsed_us / TICK_INTERVAL_US).max(1) as i32;
+        let new_rate = ((delta.abs() as i32) / elapsed_ticks).clamp(1, MAX_DRAIN_RATE);
+        let prev_rate = self.drain_rate;
+        self.drain_rate = if prev_rate == 0 {
+            new_rate
+        } else {
+            (prev_rate * 3 + new_rate) / 4
+        };
+
+        // If input velocity has dropped dramatically (dial nearly stopped),
+        // discard the buffered backlog. The user's intent is "stop" — not
+        // "finish draining the 4000-unit buffer at 10 units/tick."
+        if prev_rate > 0 && new_rate <= prev_rate / 4 {
+            self.velocity_buffer = 0;
+        }
 
         match self.phase {
             Phase::Idle | Phase::Ending(_) => {
                 // Start new gesture
                 self.y_pos = 0;
+                self.velocity_buffer = delta as i32;
+                self.drain_rate = new_rate;
                 debug!("MT2 touch: gesture START");
                 let _ = out.push(self.make_report(&TEMPLATE_NONE));
                 let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
                 self.phase = Phase::Scrolling;
             }
-            Phase::Replanting(_) => {
-                // Accumulate delta while replanting — will apply after replant
-                self.pending_delta += delta;
-                return out; // tick() handles the replant sequence
+            Phase::Replanting(_) | Phase::Scrolling => {
+                self.velocity_buffer = (self.velocity_buffer + delta as i32)
+                    .clamp(-MAX_BUFFER, MAX_BUFFER);
             }
-            Phase::Scrolling => {}
-        }
-
-        // Apply delta to Y position
-        self.y_pos = (self.y_pos as i32 + delta as i32)
-            .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32) as i16;
-
-        // Check if we need to replant (lift and re-place fingers)
-        if self.y_pos.abs() > Y_RESET_THRESHOLD {
-            debug!("MT2 touch: replanting (Y={})", self.y_pos);
-            // Reset Y immediately so NONE/APPROACH reports use the new
-            // position — avoids a visible Y jump when resuming TOUCH.
-            let _ = out.push(self.make_report(&TEMPLATE_RELEASE));
-            self.y_pos = 0;
-            self.pending_delta = 0;
-            self.phase = Phase::Replanting(REPLANT_REPORTS);
-        } else {
-            let _ = out.push(self.make_report(&TEMPLATE_TOUCH));
         }
 
         out
     }
 
-    /// Called on every timer tick (~11ms).
+    /// Called on every timer tick (~4ms). Drains the velocity buffer at
+    /// the tracked constant rate.
     pub fn tick(&mut self) -> Option<[u8; 30]> {
         match self.phase {
             Phase::Idle => None,
             Phase::Replanting(remaining) => {
                 if remaining == 0 {
-                    // Replant complete: resume scrolling
                     self.phase = Phase::Scrolling;
                     debug!("MT2 touch: replant done, resuming");
-                    // Apply accumulated delta, capped to avoid immediately
-                    // exceeding the threshold again
-                    if self.pending_delta != 0 {
-                        let capped = self
-                            .pending_delta
-                            .clamp(-MAX_DELTA_PER_EVENT, MAX_DELTA_PER_EVENT);
-                        self.y_pos = (self.y_pos as i32 + capped as i32)
-                            .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32)
-                            as i16;
-                        self.pending_delta = 0;
-                    }
                     Some(self.make_report(&TEMPLATE_TOUCH))
                 } else {
                     self.phase = Phase::Replanting(remaining - 1);
-                    // Sequence: RELEASE, RELEASE, NONE, APPROACH
                     match remaining {
                         4 | 3 => Some(self.make_report(&TEMPLATE_RELEASE)),
                         2 => Some(self.make_report(&TEMPLATE_NONE)),
@@ -447,9 +479,57 @@ impl TouchSynthesizer {
                 }
             }
             Phase::Scrolling => {
+                // If no BLE events for a while, the dial has stopped (or
+                // nearly so). Halve the drain rate each tick so the buffer
+                // drains rapidly instead of coasting at the old speed.
+                // 50ms ≈ 12 ticks → rate halved 12 times → effectively 0.
+                let now_ticks = embassy_time::Instant::now().as_ticks();
+                let since_last = now_ticks.saturating_sub(self.last_event_ticks);
+                if since_last > 50_000 && self.drain_rate > 0 {
+                    self.drain_rate /= 2;
+                    if self.drain_rate == 0 {
+                        self.velocity_buffer = 0;
+                    }
+                }
+
+                // Drain velocity buffer at the tracked constant rate.
+                if self.velocity_buffer != 0 {
+                    let step = if self.velocity_buffer.abs() <= IMMEDIATE_THRESHOLD {
+                        // Small buffer: apply all at once so macOS registers it
+                        self.velocity_buffer
+                    } else {
+                        // Constant-rate drain: use tracked rate, capped to
+                        // remaining buffer. Produces uniform velocity between
+                        // BLE events — no sawtooth from exponential decay.
+                        let rate = self.drain_rate.max(1);
+                        let magnitude = rate.min(self.velocity_buffer.abs());
+                        magnitude * self.velocity_buffer.signum()
+                    };
+                    self.velocity_buffer -= step;
+
+                    let new_y = (self.y_pos as i32 + step)
+                        .clamp(TRACKPAD2_MIN_Y as i32, TRACKPAD2_MAX_Y as i32)
+                        as i16;
+
+                    if new_y.abs() > Y_RESET_THRESHOLD {
+                        debug!("MT2 touch: replanting (Y={})", self.y_pos);
+                        let report = self.make_report(&TEMPLATE_RELEASE);
+                        self.y_pos = 0;
+                        self.phase = Phase::Replanting(REPLANT_REPORTS);
+                        return Some(report);
+                    }
+
+                    self.y_pos = new_y;
+                }
+
+                // End gesture when no BLE events for IDLE_TIMEOUT and
+                // buffer is fully drained (so RELEASE fires at zero velocity).
                 let now = embassy_time::Instant::now().as_ticks();
-                if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS {
-                    self.phase = Phase::Ending(1); // 1 more RELEASE, then GONE
+                if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS
+                    && self.velocity_buffer == 0
+                {
+                    self.phase = Phase::Ending(1);
+                    self.drain_rate = 0;
                     debug!("MT2 touch: gesture END");
                     Some(self.make_report(&TEMPLATE_RELEASE))
                 } else {
