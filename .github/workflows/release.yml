@@ -55,8 +55,14 @@ jobs:
           name: firmware
           path: "*.uf2"
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-elf
+          path: target/thumbv6m-none-eabi/release/bt2usb
+
   cli-windows:
     name: Build CLI (Windows)
+    needs: firmware
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -67,6 +73,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+
+      - name: Download firmware ELF
+        uses: actions/download-artifact@v8
+        with:
+          name: firmware-elf
+          path: target/thumbv6m-none-eabi/release
 
       - name: Build
         run: cargo build --package bt2usb-cli --release
@@ -81,6 +93,7 @@ jobs:
 
   cli-linux:
     name: Build CLI (Linux)
+    needs: firmware
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -94,6 +107,12 @@ jobs:
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Download firmware ELF
+        uses: actions/download-artifact@v8
+        with:
+          name: firmware-elf
+          path: target/thumbv6m-none-eabi/release
 
       - name: Build
         run: cargo build --package bt2usb-cli --release
