@@ -157,6 +157,9 @@ jobs:
           merge-multiple: true
           path: artifacts/
 
+      - name: Rename ELF for release
+        run: mv artifacts/bt2usb artifacts/bt2usb-${{ github.ref_name }}.elf
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
