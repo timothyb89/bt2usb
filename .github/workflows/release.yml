@@ -35,7 +35,7 @@ jobs:
           key: elf2uf2-rs-${{ runner.os }}
       
       - name: Install system dependencies
-        run: sudo apt-get install -y libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
 
       - name: Install elf2uf2-rs
         if: steps.cache-elf2uf2.outputs.cache-hit != 'true'
@@ -93,7 +93,7 @@ jobs:
           workspaces: "."
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
 
       - name: Build
         run: cargo build --package bt2usb-cli --release
