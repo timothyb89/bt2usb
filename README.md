@@ -8,7 +8,7 @@ This firmware connects to Bluetooth LE HID devices (keyboards, mice, custom devi
 
 I built this to pair with the fantastic [Full Scroll Dial by Engineer Bo](https://www.youtube.com/watch?v=tzqJ1rJURgs) so I could easily switch it between computers with a USB switch. The idea is inspired by the excellent [`hid-remapper`](https://github.com/jfedor2/hid-remapper), but written in embedded Rust and with specific device profiles.
 
-Notably, it fully supports the high resolution scrolling events emitted by the Full Scroll Dial and translates them to USB HID. With the experimental 16-bit profile (mode `3`), there should be no loss of scrolling precision versus using the dial natively via Bluetooth. Additionally, the reporting rate (both for input via Bluetooth and output via USB HID) is enough to ensure fairly minimal added latency compared to connecting directly to the target system via Bluetooth.  
+Notably, it fully supports the high resolution scrolling events emitted by the Full Scroll Dial and translates them to USB HID. With the default 16-bit profile, there should be no loss of scrolling precision versus using the dial natively via Bluetooth. Additionally, the reporting rate (both for input via Bluetooth and output via USB HID) is enough to ensure fairly minimal added latency compared to connecting directly to the target system via Bluetooth.
 
 Moreover, it also supports high-resolution scrolling on macOS without any software running on the host. macOS [traditionally does not support][ploopy] high-resolution scrolling for third-party input devices, accepting only line-based scrolling events to which it applies an aggressive acceleration curve. `bt2usb` works around this limitation by emulating an Apple Magic Trackpad 2 and synthesizing touch scroll events. This allows accurate pixel-level scrolling without any custom driver, and since `bt2usb` can detect when connected to macOS hosts, will automatically switch between standard HID and Magic Trackpad emulation, even on a USB switch.
 
@@ -32,7 +32,7 @@ firmware](https://github.com/raspberrypi/debugprobe).
 
 - Profiles for the Full Scroll Dial and Logitech MX Master 3S
 - High reporting rate for connected devices
-- Experimental 16-bit reporting mode for the Full Scroll Dial for native scroll velocity (profile `3`)
+- 16-bit reporting mode for the Full Scroll Dial for native scroll velocity
 - macOS support via Magic Trackpad 2 emulation
 
 ## TODOs
@@ -76,7 +76,7 @@ You can open the web UI locally in any Chromium-based browser by downloading [`w
 
 1. Select the "Connect" button at the top of the page to open the "BT2USB Bridge" device.
 2. Once connected, use the "Start Scan" button to search for pairable devices.
-3. When the desired device is found, select a profile if needed (for the Full Scroll Dial, 16bit mode is recommended for modern Linux and Windows hosts), and then select "Connect".
+3. When the desired device is found, the appropriate profile will be auto-selected (the Full Scroll Dial defaults to 16-bit mode). Select "Connect" to begin pairing.
 
 It should connect to the device and begin forwarding input events.
 
@@ -94,8 +94,7 @@ $ bt2usb-cli scan
 # Connect to a device
 $ bt2usb-cli connect <address> 
 
-# If needed, set a profile. For the Full Scroll Dial on modern Windows/Linux
-# hosts, use 16bit mode (profile 3)
+# If needed, change the profile (Full Scroll Dial defaults to 16-bit, profile 3)
 $ bt2usb-cli set-profile <address> <profile>
 
 # Mark the device as active (enables auto connect)

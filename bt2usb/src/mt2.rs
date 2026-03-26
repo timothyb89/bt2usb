@@ -441,8 +441,8 @@ impl TouchSynthesizer {
                 self.phase = Phase::Scrolling;
             }
             Phase::Replanting(_) | Phase::Scrolling => {
-                self.velocity_buffer = (self.velocity_buffer + delta as i32)
-                    .clamp(-MAX_BUFFER, MAX_BUFFER);
+                self.velocity_buffer =
+                    (self.velocity_buffer + delta as i32).clamp(-MAX_BUFFER, MAX_BUFFER);
             }
         }
 
@@ -525,9 +525,7 @@ impl TouchSynthesizer {
                 // End gesture when no BLE events for IDLE_TIMEOUT and
                 // buffer is fully drained (so RELEASE fires at zero velocity).
                 let now = embassy_time::Instant::now().as_ticks();
-                if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS
-                    && self.velocity_buffer == 0
-                {
+                if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS && self.velocity_buffer == 0 {
                     self.phase = Phase::Ending(1);
                     self.drain_rate = 0;
                     debug!("MT2 touch: gesture END");
