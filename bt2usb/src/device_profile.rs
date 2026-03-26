@@ -30,9 +30,9 @@ pub fn reset_scroll_accumulator() {
 pub enum DeviceProfile {
     /// Logitech MX Master 3S — full mouse with 16-bit X/Y, wheel, pan
     MxMaster3S,
-    /// Full Scroll Dial — scroll-only device with 8-bit wheel (scaled, compatible)
+    /// Full Scroll Dial — legacy 8-bit wheel mode (scaled, for older hosts)
     FullScrollDial,
-    /// Full Scroll Dial — experimental 16-bit wheel mode (unscaled, may have OS compatibility issues)
+    /// Full Scroll Dial — 16-bit wheel mode (unscaled, native scroll velocity)
     FullScrollDial16Bit,
     /// Fallback for unknown devices — standard 3-byte mouse
     Generic,
@@ -54,7 +54,7 @@ impl DeviceProfile {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "MX Master 3S" => Some(Self::MxMaster3S),
-            "Full Scroll Dial" => Some(Self::FullScrollDial),
+            "Full Scroll Dial" => Some(Self::FullScrollDial16Bit),
             _ => None,
         }
     }
@@ -233,7 +233,7 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
     }
 }
 
-/// Full Scroll Dial: 16-bit mode (EXPERIMENTAL).
+/// Full Scroll Dial: 16-bit mode.
 ///
 /// Same report format as 8-bit mode, but returns the full 16-bit scroll values
 /// without scaling. This preserves complete velocity information from the BLE device.

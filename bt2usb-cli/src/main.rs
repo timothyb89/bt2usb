@@ -55,7 +55,7 @@ enum Command {
         #[arg(short = 'k', long, default_value = "1")]
         addr_kind: u8,
 
-        /// Device profile: 0=generic, 1=MxMaster3S, 2=FullScrollDial, 3=FullScrollDial16Bit
+        /// Device profile: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default)
         #[arg(short, long)]
         profile: Option<u8>,
     },
@@ -74,7 +74,7 @@ enum Command {
         /// BLE address (AA:BB:CC:DD:EE:FF)
         address: String,
 
-        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial, 3=FullScrollDial16Bit
+        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default)
         profile_id: u8,
     },
 

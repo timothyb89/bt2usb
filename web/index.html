@@ -522,7 +522,7 @@
     const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4, EVT_BATTERY_LEVEL = 5;
     const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
     const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
-    const PROFILE_NAMES = ['Generic', 'MX Master 3S', 'Full Scroll Dial', 'Full Scroll Dial 16-bit'];
+    const PROFILE_NAMES = ['Generic', 'MX Master 3S', 'Full Scroll Dial (8-bit)', 'Full Scroll Dial'];
 
     // ============ WebHID Transport ============
     let device = null;
@@ -821,10 +821,18 @@
         ? `<select id="profile-${addr}" style="font-size:0.8rem;background:var(--surface2);color:var(--text);border:1px solid rgba(255,255,255,0.1);border-radius:3px;padding:0.2rem;">
          <option value="0">Generic</option>
          <option value="1">MX Master 3S</option>
-         <option value="2">Full Scroll Dial</option>
-         <option value="3">Full Scroll Dial 16-bit</option>
+         <option value="2">Full Scroll Dial (8-bit)</option>
+         <option value="3">Full Scroll Dial</option>
        </select>`
         : '';
+      // Auto-select profile based on device name
+      if (isHid && name) {
+        const sel = document.getElementById(`profile-${addr}`);
+        if (sel) {
+          if (name === 'Full Scroll Dial') sel.value = '3';
+          else if (name === 'MX Master 3S') sel.value = '1';
+        }
+      }
       cells[5].innerHTML = isHid
         ? `<button class="btn btn-sm btn-primary" onclick="connectDevice('${addr}',${addrKind})">Connect</button>`
         : '';
@@ -889,8 +897,8 @@
               <select onchange="updateBondProfile('${addr}', this.value)" style="font-size:0.8rem;background:var(--surface2);color:var(--text);border:1px solid rgba(255,255,255,0.1);border-radius:3px;padding:0.2rem;">
                 <option value="0" ${profileId === 0 ? 'selected' : ''}>Generic</option>
                 <option value="1" ${profileId === 1 ? 'selected' : ''}>MX Master 3S</option>
-                <option value="2" ${profileId === 2 ? 'selected' : ''}>Full Scroll Dial</option>
-                <option value="3" ${profileId === 3 ? 'selected' : ''}>Full Scroll Dial 16-bit</option>
+                <option value="2" ${profileId === 2 ? 'selected' : ''}>Full Scroll Dial (8-bit)</option>
+                <option value="3" ${profileId === 3 ? 'selected' : ''}>Full Scroll Dial</option>
               </select>
             </td>
             <td><button class="btn btn-sm" onclick="setActiveDevice('${addr}', ${addrKind})">Set Active</button></td>

@@ -33,7 +33,7 @@ pub struct StoredBondInfo {
     pub addr: [u8; 6],      // BdAddr raw bytes
     pub ltk: [u8; 16],      // LongTermKey raw bytes
     pub security_level: u8, // 0=None, 1=Encrypted, 2=EncryptedAuthenticated
-    pub profile_id: u8, // DeviceProfile discriminant (0=Generic, 1=MxMaster3S, 2=FullScrollDial)
+    pub profile_id: u8, // DeviceProfile discriminant (0=Generic, 1=MxMaster3S, 2=FullScrollDial8bit, 3=FullScrollDial16bit)
 }
 
 impl<'a> Value<'a> for StoredBondInfo {
