@@ -322,8 +322,8 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::Disconnect => {
-            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Disconnect);
+        protocol::Request::Disconnect { address } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Disconnect { address: *address });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
@@ -466,6 +466,14 @@ async fn dispatch_request(
             // Write to flash (via Core 0) and update the scratch cache immediately
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetForcedOs { os: *os });
             crate::scratch::write_forced_os(*os as u32);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::SetAutoConnect { address, enabled } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetAutoConnect {
+                address: *address,
+                enabled: *enabled,
+            });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 

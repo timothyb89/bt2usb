@@ -75,15 +75,17 @@ async fn handle_keyboard_report(
 async fn handle_mouse_report_standard(
     writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
     event: &HidReportEvent,
+    scroll_accum: &mut crate::device_profile::ScrollAccumState,
 ) {
     if event.len < 1 {
         return;
     }
 
     if event.profile.uses_16bit_reports() {
-        let mut report = event
-            .profile
-            .translate_mouse_report_16bit(&event.data, event.len);
+        let mut report =
+            event
+                .profile
+                .translate_mouse_report_16bit(&event.data, event.len, scroll_accum);
         let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
         let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
         let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
@@ -100,7 +102,9 @@ async fn handle_mouse_report_standard(
             warn!("Mouse write error (16-bit): {:?}", e);
         }
     } else {
-        let mut report = event.profile.translate_mouse_report(&event.data, event.len);
+        let mut report = event
+            .profile
+            .translate_mouse_report(&event.data, event.len, scroll_accum);
         let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
         let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
         let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
@@ -150,6 +154,13 @@ async fn usb_hid_handler_task_standard(
 ) {
     info!("USB HID handler task started (standard mode), waiting for BLE reports...");
 
+    // Per-slot scroll accumulators for multi-device support
+    let mut scroll_accums = [
+        crate::device_profile::ScrollAccumState::new(),
+        crate::device_profile::ScrollAccumState::new(),
+        crate::device_profile::ScrollAccumState::new(),
+    ];
+
     // Send initial battery level if already known
     let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
     if initial_level != 0xFF {
@@ -159,13 +170,23 @@ async fn usb_hid_handler_task_standard(
     loop {
         check_reprobe();
 
+        // Check if USB device handler requested a scroll accumulator reset
+        if crate::device_profile::SCROLL_ACCUM_RESET.load(Ordering::Relaxed) {
+            crate::device_profile::SCROLL_ACCUM_RESET.store(false, Ordering::Relaxed);
+            for accum in &mut scroll_accums {
+                accum.reset();
+            }
+        }
+
         match select(HID_REPORT_CHANNEL.receive(), BATTERY_USB_SIGNAL.wait()).await {
             Either::First(event) => match event.report_type {
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
                 HidReportType::Mouse => {
-                    handle_mouse_report_standard(&mut mouse_writer, &event).await;
+                    let slot = event.slot_index as usize;
+                    let accum = &mut scroll_accums[slot.min(scroll_accums.len() - 1)];
+                    handle_mouse_report_standard(&mut mouse_writer, &event, accum).await;
                 }
                 _ => {
                     debug!("Unhandled HID report type");

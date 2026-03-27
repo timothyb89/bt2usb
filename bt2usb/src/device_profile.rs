@@ -5,24 +5,44 @@
 //! - How to parse its raw BLE HID reports into USB HID reports
 //! - A storage ID for persisting the profile alongside bond data
 
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use defmt::*;
 use usbd_hid::descriptor::MouseReport;
 
 use crate::usb_hid::{MouseReport16, HIRES_SCROLL_ENABLED};
 
-static PREV_SCROLL_RAW: AtomicI32 = AtomicI32::new(0);
-static SCROLL_ACCUMULATOR: AtomicI32 = AtomicI32::new(0);
+/// Per-device scroll accumulator state.
+///
+/// Tracks scroll position and previous raw values for SPI corruption detection.
+/// Each connection slot should own its own instance of this struct.
+#[derive(Debug, defmt::Format)]
+pub struct ScrollAccumState {
+    pub accumulator: i32,
+    pub prev_raw: i32,
+}
+
+impl ScrollAccumState {
+    pub const fn new() -> Self {
+        Self {
+            accumulator: 0,
+            prev_raw: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.accumulator = 0;
+        self.prev_raw = 0;
+    }
+}
+
+/// Signal from USB device handler callbacks (reset/configured/suspended) to
+/// the HID handler tasks: "reset all scroll accumulator state."
+/// The handler tasks check and clear this flag each iteration.
+pub static SCROLL_ACCUM_RESET: AtomicBool = AtomicBool::new(false);
 
 /// Load the scroll accumulator threshold from the configurable atomic.
 fn scroll_threshold() -> i32 {
     crate::usb_hid::SCROLL_THRESHOLD.load(Ordering::Relaxed) as i32
-}
-
-/// Reset scroll accumulator state (call on USB reconfiguration).
-pub fn reset_scroll_accumulator() {
-    SCROLL_ACCUMULATOR.store(0, Ordering::Relaxed);
-    PREV_SCROLL_RAW.store(0, Ordering::Relaxed);
 }
 
 /// Known device profiles
@@ -83,11 +103,16 @@ impl DeviceProfile {
     ///
     /// Each device has its own byte layout; this dispatches to the
     /// appropriate parser. Returns a zeroed report if data is too short.
-    pub fn translate_mouse_report(&self, data: &[u8], len: usize) -> MouseReport {
+    pub fn translate_mouse_report(
+        &self,
+        data: &[u8],
+        len: usize,
+        accum: &mut ScrollAccumState,
+    ) -> MouseReport {
         match self {
             Self::MxMaster3S => translate_mx_master(data, len),
-            Self::FullScrollDial => translate_scroll_dial(data, len),
-            Self::FullScrollDial16Bit => translate_scroll_dial(data, len), // Fallback for 8-bit mode
+            Self::FullScrollDial => translate_scroll_dial(data, len, accum),
+            Self::FullScrollDial16Bit => translate_scroll_dial(data, len, accum), // Fallback for 8-bit mode
             Self::Generic => translate_generic(data, len),
         }
     }
@@ -99,9 +124,14 @@ impl DeviceProfile {
 
     /// Translate a raw BLE HID report into a 16-bit USB MouseReport16.
     /// Only valid for profiles that use 16-bit reports.
-    pub fn translate_mouse_report_16bit(&self, data: &[u8], len: usize) -> MouseReport16 {
+    pub fn translate_mouse_report_16bit(
+        &self,
+        data: &[u8],
+        len: usize,
+        accum: &mut ScrollAccumState,
+    ) -> MouseReport16 {
         match self {
-            Self::FullScrollDial16Bit => translate_scroll_dial_16bit(data, len),
+            Self::FullScrollDial16Bit => translate_scroll_dial_16bit(data, len, accum),
             // Other profiles don't support 16-bit mode, return zeros
             _ => MouseReport16 {
                 buttons: 0,
@@ -181,7 +211,7 @@ fn translate_mx_master(data: &[u8], len: usize) -> MouseReport {
 ///   High-res (120 units/detent): divide by 3 to fit in i8 USB range (-127 to 127).
 ///     ~360 raw → 120 USB units = 1 detent
 ///   Standard (1 unit/detent): divide by 360 for detent-level scrolling.
-fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
+fn translate_scroll_dial(data: &[u8], len: usize, accum: &mut ScrollAccumState) -> MouseReport {
     if len < 2 {
         return MouseReport {
             buttons: 0,
@@ -206,7 +236,7 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
         // sub-detent contributions aren't lost. This is especially important
         // on macOS which doesn't enable hires mode and filters small values.
         // Direction changes reset the accumulator for responsive reversals.
-        let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
+        let prev_acc = accum.accumulator;
         let new_acc = if raw > 0 && prev_acc < 0 || raw < 0 && prev_acc > 0 {
             raw as i32
         } else {
@@ -216,10 +246,10 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
         if new_acc.abs() >= scroll_threshold() {
             let detents = new_acc / scroll_threshold();
             let remainder = new_acc % scroll_threshold();
-            SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
+            accum.accumulator = remainder;
             detents.clamp(-127, 127) as i8
         } else {
-            SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
+            accum.accumulator = new_acc;
             0i8
         }
     };
@@ -241,7 +271,11 @@ fn translate_scroll_dial(data: &[u8], len: usize) -> MouseReport {
 /// Scaling:
 ///   High-res mode: No scaling, direct passthrough of 16-bit values
 ///   Standard mode: Divide by 120 to convert to detent units
-fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
+fn translate_scroll_dial_16bit(
+    data: &[u8],
+    len: usize,
+    accum: &mut ScrollAccumState,
+) -> MouseReport16 {
     if len < 2 {
         return MouseReport16 {
             buttons: 0,
@@ -267,7 +301,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
     if (raw & 0xFF00u16 as i16) == 0xFE00u16 as i16 {
         // Proposed fix: set bit 8 to restore 0xFF high byte
         let proposed = raw | 0x0100;
-        let prev = PREV_SCROLL_RAW.load(Ordering::Relaxed) as i16;
+        let prev = accum.prev_raw as i16;
 
         let diff_raw = (raw as i32 - prev as i32).abs();
         let diff_proposed = (proposed as i32 - prev as i32).abs();
@@ -279,7 +313,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         }
     }
 
-    PREV_SCROLL_RAW.store(clean_raw as i32, Ordering::Relaxed);
+    accum.prev_raw = clean_raw as i32;
 
     let wheel = if HIRES_SCROLL_ENABLED.load(Ordering::Relaxed) {
         // High-res: 120 units per detent.
@@ -305,7 +339,7 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         // Detents are capped so fast scrolling doesn't produce large bursts.
         let max_detents = crate::usb_hid::MAX_DETENTS_PER_EMIT.load(Ordering::Relaxed) as i32;
 
-        let prev_acc = SCROLL_ACCUMULATOR.load(Ordering::Relaxed);
+        let prev_acc = accum.accumulator;
 
         // Reset accumulator on direction change to avoid unwinding
         let new_acc = if clean_raw > 0 && prev_acc < 0 || clean_raw < 0 && prev_acc > 0 {
@@ -317,12 +351,12 @@ fn translate_scroll_dial_16bit(data: &[u8], len: usize) -> MouseReport16 {
         if new_acc.abs() >= scroll_threshold() {
             let detents = (new_acc / scroll_threshold()).clamp(-max_detents, max_detents);
             let remainder = new_acc - detents * scroll_threshold();
-            SCROLL_ACCUMULATOR.store(remainder, Ordering::Relaxed);
+            accum.accumulator = remainder;
             // Emit detent count (±1..±3) rather than ×120 magnitude.
             // Small values stay in macOS's linear acceleration region.
             detents as i16
         } else {
-            SCROLL_ACCUMULATOR.store(new_acc, Ordering::Relaxed);
+            accum.accumulator = new_acc;
             0
         }
     };

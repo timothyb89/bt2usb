@@ -10,22 +10,22 @@
 //! retrying up to MAX_PAIRING_RETRIES times before giving up.
 
 use defmt::*;
-use embassy_futures::select::{select, Either};
-use embassy_rp::flash::{Async, Flash};
-use embassy_rp::peripherals::FLASH;
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_time::{Duration, Timer};
 use trouble_host::connection::{ConnectConfig, ScanConfig};
 use trouble_host::prelude::*;
+use trouble_host::Host;
 
-use crate::ble_state::{BleCommand, BleEvent, BLE_CMD_CHANNEL, BLE_EVENT_CHANNEL};
-use crate::bonding::{self, LoadedBond};
+use crate::ble_state::{BleEvent, BLE_EVENT_CHANNEL};
+use crate::bonding;
 use crate::device_profile::DeviceProfile;
 use crate::preferences;
 use crate::protocol::ConnectionState;
 use crate::rpc_log;
-use crate::FLASH_SIZE;
 
 use super::gatt::{self, GattSessionResult};
+use super::slots::{self, SLOT_CMD_CHANNELS};
+use super::FlashMutex;
 
 const MAX_PAIRING_RETRIES: u8 = 5;
 
@@ -37,22 +37,26 @@ enum StartError {
 
 /// Connect to a BLE HID device, pair, discover GATT, and run the HID report loop.
 ///
-/// Bond storage is done directly via flash (all on Core 0, no cross-core channel needed).
-/// Returns `Some(BleCommand)` if interrupted by a command that should be re-dispatched,
-/// or `None` if the connection ended naturally or after max retries.
+/// Creates its own `Central` via `stack.build()`, so the caller's Scanner/Central
+/// is not consumed. This enables concurrent connections across multiple slots.
+///
+/// Bond storage uses the shared flash mutex (all on Core 0).
+/// Returns `None` when the connection ends naturally or after max retries.
 #[allow(clippy::too_many_arguments)]
 pub async fn ble_connect_and_run<'a, C: Controller>(
-    central: &mut Central<'a, C, DefaultPacketPool>,
     stack: &'a Stack<'a, C, DefaultPacketPool>,
-    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
+    flash: &'a FlashMutex,
     target: Address,
     active_profile: &mut DeviceProfile,
     has_stored_bond: bool,
-    loaded_bonds: &[LoadedBond],
-    active_device_pref: &Option<preferences::ActiveDevice>,
-) -> Option<BleCommand> {
+    slot: usize,
+    _active_device_pref: &Option<preferences::ActiveDevice>,
+) -> Option<()> {
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
     rpc_log::info("Connecting to BLE device");
+
+    // Get our own Central from the stack — does not consume the caller's Scanner/Central
+    let Host { mut central, .. } = stack.build();
 
     let mut config = ConnectConfig {
         connect_params: Default::default(),
@@ -71,23 +75,25 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
     'connect: loop {
         pairing_attempts += 1;
         info!(
-            "Connection attempt {} of {}",
-            pairing_attempts, MAX_PAIRING_RETRIES
+            "[slot{}] Connection attempt {} of {}",
+            slot, pairing_attempts, MAX_PAIRING_RETRIES
         );
 
         // Phase 1: Establish BLE connection
-        let conn = match connect_to_device(central, &config).await {
-            ConnectOutcome::Connected(conn) => conn,
+        let conn = match connect_to_device(&mut central, &config, slot).await {
+            ConnectOutcome::Connected(conn) => {
+                slots::set_slot_connected(slot);
+                conn
+            }
             ConnectOutcome::RetryableError => {
                 if pairing_attempts >= MAX_PAIRING_RETRIES {
-                    error!("Max connection retries exceeded");
+                    error!("[slot{}] Max connection retries exceeded", slot);
                     rpc_log::error("Max connection retries exceeded");
                     return None;
                 }
                 Timer::after(Duration::from_millis(500)).await;
                 continue 'connect;
             }
-            ConnectOutcome::InterruptedByCommand(cmd) => return Some(cmd),
             ConnectOutcome::Cancelled => return None,
         };
 
@@ -104,41 +110,49 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
         }
 
         // Phase 3: Wait for pairing to complete
-        match await_pairing(&conn, flash, *active_profile).await {
+        match await_pairing(&conn, flash, *active_profile, slot).await {
             PairingOutcome::Success => {}
             PairingOutcome::Failed => {
                 if pairing_attempts >= MAX_PAIRING_RETRIES {
-                    error!("Max pairing retries exceeded");
+                    error!("[slot{}] Max pairing retries exceeded", slot);
                     rpc_log::error("Max pairing retries exceeded");
                     return None;
                 }
                 Timer::after(Duration::from_millis(500)).await;
                 continue 'connect;
             }
-            PairingOutcome::InterruptedByCommand(cmd) => return Some(cmd),
             PairingOutcome::Cancelled => return None,
         }
 
-        // Phase 4: GATT discovery and HID report loop
-        match gatt::run_gatt_session(
-            stack,
-            &conn,
-            flash,
-            active_profile,
-            loaded_bonds,
-            active_device_pref,
-        )
-        .await
-        {
-            GattSessionResult::ConnectionLost => {
-                // Connection dropped, break to outer state machine
-                break;
-            }
-            GattSessionResult::InterruptedByCommand(cmd) => {
-                return Some(cmd);
-            }
-            GattSessionResult::Ended => {
-                break;
+        // Phase 4: GATT discovery and HID report loop (with retry).
+        //
+        // Some devices (e.g. MX Master 3S) initiate their own GATT discovery of the
+        // central immediately after encryption. Since trouble-host has no GATT server,
+        // these requests go unanswered. The device may stall our service discovery
+        // until its own ATT transaction times out (~30s). We retry GATT discovery
+        // to handle this: the first attempt may timeout, but the second succeeds
+        // after the device gives up on its own request.
+        const MAX_GATT_RETRIES: u8 = 3;
+        let mut gatt_attempts: u8 = 0;
+        loop {
+            gatt_attempts += 1;
+            match gatt::run_gatt_session(stack, &conn, active_profile, slot).await {
+                GattSessionResult::ConnectionLost => break 'connect,
+                GattSessionResult::Ended => break 'connect,
+                GattSessionResult::DiscoveryFailed => {
+                    if gatt_attempts >= MAX_GATT_RETRIES {
+                        warn!(
+                            "[slot{}] GATT discovery failed after {} attempts",
+                            slot, gatt_attempts
+                        );
+                        break 'connect;
+                    }
+                    info!(
+                        "[slot{}] GATT discovery failed, retrying ({}/{})",
+                        slot, gatt_attempts, MAX_GATT_RETRIES
+                    );
+                    Timer::after(Duration::from_millis(1000)).await;
+                }
             }
         }
     }
@@ -151,36 +165,47 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
 enum ConnectOutcome<'a> {
     Connected(Connection<'a, DefaultPacketPool>),
     RetryableError,
-    InterruptedByCommand(BleCommand),
     Cancelled,
 }
 
-/// Attempt to establish a BLE connection, with command interruption support.
+/// Attempt to establish a BLE connection, with timeout and slot command interruption.
+///
+/// Times out after 30 seconds if the target device is not found (not advertising).
 async fn connect_to_device<'a, C: Controller>(
     central: &mut Central<'a, C, DefaultPacketPool>,
     config: &ConnectConfig<'_>,
+    slot: usize,
 ) -> ConnectOutcome<'a> {
-    match select(central.connect(config), BLE_CMD_CHANNEL.receive()).await {
-        Either::First(Ok(conn)) => {
-            info!("Connected to HID device!");
+    match select3(
+        central.connect(config),
+        SLOT_CMD_CHANNELS[slot].receive(),
+        Timer::after(Duration::from_secs(30)),
+    )
+    .await
+    {
+        Either3::First(Ok(conn)) => {
+            info!("[slot{}] Connected to HID device!", slot);
             rpc_log::info("Connected to BLE device");
             let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connected));
             ConnectOutcome::Connected(conn)
         }
-        Either::First(Err(e)) => {
-            error!("Connection failed: {:?}", defmt::Debug2Format(&e));
+        Either3::First(Err(e)) => {
+            error!(
+                "[slot{}] Connection failed: {:?}",
+                slot,
+                defmt::Debug2Format(&e)
+            );
             rpc_log::error("Connection attempt failed");
             ConnectOutcome::RetryableError
         }
-        Either::Second(cmd) => {
-            info!("Command received during connection attempt: {:?}", cmd);
-            match cmd {
-                BleCommand::Connect { .. } | BleCommand::AutoConnect => {
-                    ConnectOutcome::InterruptedByCommand(cmd)
-                }
-                BleCommand::Disconnect | BleCommand::StopScan => ConnectOutcome::Cancelled,
-                _ => ConnectOutcome::Cancelled,
-            }
+        Either3::Second(cmd) => {
+            info!("[slot{}] Command during connection: {:?}", slot, cmd);
+            ConnectOutcome::Cancelled
+        }
+        Either3::Third(_) => {
+            warn!("[slot{}] Connection attempt timed out (30s)", slot);
+            rpc_log::warn("Connection timed out - device not found");
+            ConnectOutcome::RetryableError
         }
     }
 }
@@ -201,13 +226,10 @@ async fn initiate_security<'a>(
     has_stored_bond: bool,
 ) -> SecurityOutcome {
     if has_stored_bond {
-        // With existing bond, peripheral will automatically request encryption.
-        // We just wait for PairingComplete event.
         info!("Existing bond detected - waiting for automatic re-encryption...");
         rpc_log::info("Re-encryption in progress");
         SecurityOutcome::Ready
     } else {
-        // No bond exists — initiate pairing
         if let Err(e) = conn.set_bondable(true) {
             error!("Failed to set bondable: {:?}", e);
         }
@@ -234,22 +256,25 @@ async fn initiate_security<'a>(
 enum PairingOutcome {
     Success,
     Failed,
-    InterruptedByCommand(BleCommand),
     Cancelled,
 }
 
-/// Wait for pairing/re-encryption to complete, with timeout and command interruption.
+/// Wait for pairing/re-encryption to complete, with timeout and slot command interruption.
 ///
-/// On success with a new bond, stores the bond info to flash.
+/// On success with a new bond, stores the bond info to flash via the shared mutex.
 async fn await_pairing<'a>(
     conn: &Connection<'a, DefaultPacketPool>,
-    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
+    flash: &FlashMutex,
     active_profile: DeviceProfile,
+    slot: usize,
 ) -> PairingOutcome {
     let pairing_timeout = Timer::after(Duration::from_secs(15));
 
     let pairing_result = select(
-        select(wait_for_pairing_event(conn), BLE_CMD_CHANNEL.receive()),
+        select(
+            wait_for_pairing_event(conn),
+            SLOT_CMD_CHANNELS[slot].receive(),
+        ),
         pairing_timeout,
     )
     .await;
@@ -257,7 +282,10 @@ async fn await_pairing<'a>(
     match pairing_result {
         // Pairing event received
         Either::First(Either::First(Ok((security_level, bond)))) => {
-            info!("Pairing complete! Level: {:?}", security_level);
+            info!(
+                "[slot{}] Pairing complete! Level: {:?}",
+                slot, security_level
+            );
             rpc_log::info("Pairing complete");
             let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingComplete);
 
@@ -271,12 +299,12 @@ async fn await_pairing<'a>(
         Either::First(Either::First(Err(e))) => {
             match e {
                 StartError::PairingFailed(pe) => {
-                    error!("Pairing failed: {:?}", pe);
+                    error!("[slot{}] Pairing failed: {:?}", slot, pe);
                     rpc_log::error("Pairing failed");
                     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingFailed);
                 }
                 StartError::Disconnected(reason) => {
-                    error!("Disconnected during pairing: {:?}", reason);
+                    error!("[slot{}] Disconnected during pairing: {:?}", slot, reason);
                     rpc_log::error("Disconnected during pairing");
                     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingFailed);
                 }
@@ -284,9 +312,9 @@ async fn await_pairing<'a>(
             PairingOutcome::Failed
         }
 
-        // Command received during pairing
-        Either::First(Either::Second(cmd)) => {
-            info!("Command received during pairing: {:?}", cmd);
+        // Slot command received during pairing
+        Either::First(Either::Second(_cmd)) => {
+            info!("[slot{}] Command during pairing, disconnecting", slot);
             conn.disconnect();
             let _ = select(
                 async {
@@ -299,18 +327,12 @@ async fn await_pairing<'a>(
                 Timer::after(Duration::from_secs(1)),
             )
             .await;
-
-            match cmd {
-                BleCommand::Connect { .. } | BleCommand::AutoConnect => {
-                    PairingOutcome::InterruptedByCommand(cmd)
-                }
-                _ => PairingOutcome::Cancelled,
-            }
+            PairingOutcome::Cancelled
         }
 
         // Timeout
         Either::Second(_) => {
-            error!("Pairing timed out!");
+            error!("[slot{}] Pairing timed out!", slot);
             rpc_log::error("Pairing timed out");
             let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingFailed);
             PairingOutcome::Failed
@@ -341,13 +363,14 @@ async fn wait_for_pairing_event<'a>(
     }
 }
 
-/// Store a new bond to flash and emit the BondStored event.
+/// Store a new bond to flash (via shared mutex) and emit the BondStored event.
 async fn store_new_bond(
-    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
+    flash: &FlashMutex,
     bond_info: &BondInformation,
     active_profile: DeviceProfile,
 ) {
-    match bonding::store_bond(flash, bond_info, active_profile.to_id()).await {
+    let mut f = flash.lock().await;
+    match bonding::store_bond(&mut f, bond_info, active_profile.to_id()).await {
         Ok(slot) => {
             info!("Bond stored in slot {}", slot);
             let mut addr_buf = [0u8; 6];

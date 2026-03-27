@@ -288,9 +288,19 @@ pub fn cmd_connect(
     Ok(())
 }
 
-pub fn cmd_disconnect(transport: &mut Transport) -> Result<()> {
-    let (resp, _) = transport.request_simple(CMD_DISCONNECT, DEFAULT_TIMEOUT)?;
-    check_ok(&resp)?;
+pub fn cmd_disconnect(transport: &mut Transport, address: Option<&str>) -> Result<()> {
+    if let Some(addr_str) = address {
+        let addr = parse_address(addr_str)?;
+        println!("Disconnecting {}...", format_address(&addr).bold());
+        let mut cbor_buf = [0u8; 32];
+        let len = encode_request_disconnect(&mut cbor_buf, Some(&addr))
+            .map_err(|_| anyhow::anyhow!("encode failed"))?;
+        let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+        check_ok(&resp)?;
+    } else {
+        let (resp, _) = transport.request_simple(CMD_DISCONNECT, DEFAULT_TIMEOUT)?;
+        check_ok(&resp)?;
+    }
     println!("{}", "Disconnect command sent.".green());
     Ok(())
 }
@@ -384,6 +394,33 @@ pub fn cmd_clear_active_device(transport: &mut Transport) -> Result<()> {
     let (resp, _) = transport.request_simple(CMD_CLEAR_ACTIVE_DEVICE, DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
     println!("{}", "Active device cleared.".green());
+    Ok(())
+}
+
+pub fn cmd_set_auto_connect(transport: &mut Transport, address: &str, enabled: bool) -> Result<()> {
+    let addr = parse_address(address)?;
+
+    println!(
+        "{} auto-connect for {}...",
+        if enabled { "Enabling" } else { "Disabling" },
+        format_address(&addr).bold()
+    );
+
+    let mut cbor_buf = [0u8; 32];
+    let len = encode_request_set_auto_connect(&mut cbor_buf, &addr, enabled)
+        .map_err(|_| anyhow::anyhow!("encode failed"))?;
+
+    let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+
+    println!(
+        "{}",
+        if enabled {
+            "Auto-connect enabled.".green()
+        } else {
+            "Auto-connect disabled.".green()
+        }
+    );
     Ok(())
 }
 

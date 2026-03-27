@@ -50,6 +50,7 @@ pub const CMD_FORCE_REPROBE: u8 = 18;
 pub const CMD_SET_FORCED_OS: u8 = 19;
 pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
 pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
+pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 
 // ============ Response IDs ============
 
@@ -236,6 +237,38 @@ pub fn encode_request_update_bond_profile(
             .bytes(address)
             .unwrap()
             .u8(profile_id)
+            .unwrap();
+    })
+}
+
+pub fn encode_request_disconnect(buf: &mut [u8], address: Option<&[u8; 6]>) -> EncResult {
+    cbor_encode(buf, |e| {
+        if let Some(addr) = address {
+            e.array(2)
+                .unwrap()
+                .u8(CMD_DISCONNECT)
+                .unwrap()
+                .bytes(addr)
+                .unwrap();
+        } else {
+            e.array(1).unwrap().u8(CMD_DISCONNECT).unwrap();
+        }
+    })
+}
+
+pub fn encode_request_set_auto_connect(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    enabled: bool,
+) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(3)
+            .unwrap()
+            .u8(CMD_SET_AUTO_CONNECT)
+            .unwrap()
+            .bytes(address)
+            .unwrap()
+            .bool(enabled)
             .unwrap();
     })
 }
