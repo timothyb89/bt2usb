@@ -24,8 +24,8 @@ pub enum BleCommand {
         addr_kind: u8,
         ignore_bond: bool,
     },
-    /// Disconnect the current device.
-    Disconnect,
+    /// Disconnect a specific device, or all devices if address is None.
+    Disconnect { address: Option<[u8; 6]> },
     /// Get current status (bond count, active profile, active device).
     GetStatus,
     /// Get list of bonded devices.
@@ -46,6 +46,8 @@ pub enum BleCommand {
     SetConfig { key: u8, value: u32 },
     /// Set forced OS override (0=Auto, 1-3=forced) and persist to flash.
     SetForcedOs { os: u8 },
+    /// Set auto-connect flag for a bonded device.
+    SetAutoConnect { address: [u8; 6], enabled: bool },
 }
 
 // ============ Events (BLE -> RPC) ============

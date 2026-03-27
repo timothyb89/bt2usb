@@ -60,8 +60,11 @@ enum Command {
         profile: Option<u8>,
     },
 
-    /// Disconnect the current device
-    Disconnect,
+    /// Disconnect a device (all devices if no address given)
+    Disconnect {
+        /// BLE address to disconnect (omit for all)
+        address: Option<String>,
+    },
 
     /// List bonded devices
     Bonds,
@@ -90,6 +93,20 @@ enum Command {
 
     /// Clear the active device (disable auto-reconnect)
     ClearActiveDevice,
+
+    /// Enable auto-connect for a bonded device
+    #[command(name = "set-auto-connect")]
+    SetAutoConnect {
+        /// BLE address (AA:BB:CC:DD:EE:FF)
+        address: String,
+    },
+
+    /// Disable auto-connect for a bonded device
+    #[command(name = "clear-auto-connect")]
+    ClearAutoConnect {
+        /// BLE address (AA:BB:CC:DD:EE:FF)
+        address: String,
+    },
 
     /// Auto-connect to the active device from preferences
     AutoConnect,
@@ -208,7 +225,7 @@ fn main() -> Result<()> {
             addr_kind,
             profile,
         } => cmd_connect(&mut transport, &address, addr_kind, profile),
-        Command::Disconnect => cmd_disconnect(&mut transport),
+        Command::Disconnect { address } => cmd_disconnect(&mut transport, address.as_deref()),
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),
         Command::SetProfile {
@@ -219,6 +236,10 @@ fn main() -> Result<()> {
             cmd_set_active_device(&mut transport, &address, addr_kind)
         }
         Command::ClearActiveDevice => cmd_clear_active_device(&mut transport),
+        Command::SetAutoConnect { address } => cmd_set_auto_connect(&mut transport, &address, true),
+        Command::ClearAutoConnect { address } => {
+            cmd_set_auto_connect(&mut transport, &address, false)
+        }
         Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::GetConfig => cmd_get_config(&mut transport),
         Command::SetConfig { key, value } => cmd_set_config(&mut transport, &key, value),

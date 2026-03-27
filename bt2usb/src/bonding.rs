@@ -34,19 +34,21 @@ pub struct StoredBondInfo {
     pub ltk: [u8; 16],      // LongTermKey raw bytes
     pub security_level: u8, // 0=None, 1=Encrypted, 2=EncryptedAuthenticated
     pub profile_id: u8, // DeviceProfile discriminant (0=Generic, 1=MxMaster3S, 2=FullScrollDial8bit, 3=FullScrollDial16bit)
+    pub auto_connect: bool, // Whether to automatically connect on startup
 }
 
 impl<'a> Value<'a> for StoredBondInfo {
     fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        // 6 + 16 + 1 + 1 = 24 bytes
-        if buffer.len() < 24 {
+        // 6 + 16 + 1 + 1 + 1 = 25 bytes
+        if buffer.len() < 25 {
             return Err(SerializationError::BufferTooSmall);
         }
         buffer[0..6].copy_from_slice(&self.addr);
         buffer[6..22].copy_from_slice(&self.ltk);
         buffer[22] = self.security_level;
         buffer[23] = self.profile_id;
-        Ok(24)
+        buffer[24] = if self.auto_connect { 1 } else { 0 };
+        Ok(25)
     }
 
     fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
@@ -63,19 +65,27 @@ impl<'a> Value<'a> for StoredBondInfo {
         let security_level = buffer[22];
         // Handle old 23-byte records that lack profile_id
         let profile_id = if buffer.len() >= 24 { buffer[23] } else { 0 };
+        // Handle old 24-byte records that lack auto_connect
+        let auto_connect = if buffer.len() >= 25 {
+            buffer[24] != 0
+        } else {
+            false
+        };
         Ok(StoredBondInfo {
             addr,
             ltk,
             security_level,
             profile_id,
+            auto_connect,
         })
     }
 }
 
-/// A loaded bond paired with its device profile ID
+/// A loaded bond paired with its device profile ID and auto-connect flag
 pub struct LoadedBond {
     pub bond: BondInformation,
     pub profile_id: u8,
+    pub auto_connect: bool,
 }
 
 /// Load all stored bonds from flash
@@ -121,6 +131,7 @@ pub async fn load_bonds(
                 let _ = bonds.push(LoadedBond {
                     bond,
                     profile_id: stored.profile_id,
+                    auto_connect: stored.auto_connect,
                 });
             }
             Ok(None) => {
@@ -199,6 +210,7 @@ pub async fn store_bond(
             SecurityLevel::EncryptedAuthenticated => 2,
         },
         profile_id,
+        auto_connect: false,
     };
 
     match store_item(
@@ -286,6 +298,60 @@ pub async fn update_bond_profile(
                         Err(e) => {
                             error!(
                                 "Failed to update bond profile: {:?}",
+                                defmt::Debug2Format(&e)
+                            );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("Bond not found for address {:?}", address);
+    Err(())
+}
+
+/// Update the auto_connect flag for an existing bond by address.
+/// Returns Ok(slot) if found and updated, Err(()) if not found.
+pub async fn update_auto_connect(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+    enabled: bool,
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 64];
+
+    for slot in 0..MAX_BONDS as u8 {
+        match fetch_item::<u8, StoredBondInfo, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &slot,
+        )
+        .await
+        {
+            Ok(Some(mut stored)) => {
+                if stored.addr == *address {
+                    stored.auto_connect = enabled;
+                    match store_item(
+                        flash,
+                        flash_range(),
+                        &mut NoCache::new(),
+                        &mut buffer,
+                        &slot,
+                        &stored,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!("Updated auto_connect for slot {} to {}", slot, enabled);
+                            return Ok(slot);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to update auto_connect: {:?}",
                                 defmt::Debug2Format(&e)
                             );
                             return Err(());

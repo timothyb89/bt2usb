@@ -181,6 +181,32 @@ pub async fn handle_set_forced_os(flash: &mut Flash<'static, FLASH, Async, FLASH
     info!("Forced OS preference stored: {}", os);
 }
 
+/// Update the auto-connect flag for a bonded device and refresh the in-memory bond list.
+pub async fn handle_set_auto_connect(
+    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
+    address: &[u8; 6],
+    enabled: bool,
+    loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
+) {
+    info!("Setting auto_connect for {:?} to {}", address, enabled);
+    match bonding::update_auto_connect(flash, address, enabled).await {
+        Ok(slot) => {
+            info!("Auto-connect updated in slot {}", slot);
+            rpc_log::info(if enabled {
+                "Auto-connect enabled"
+            } else {
+                "Auto-connect disabled"
+            });
+            // Refresh in-memory bond list
+            *loaded_bonds = bonding::load_bonds(flash).await;
+        }
+        Err(()) => {
+            error!("Failed to update auto-connect: bond not found");
+            rpc_log::error("Bond not found");
+        }
+    }
+}
+
 /// Log a restart message and trigger a system reset.
 ///
 /// This function does not return.

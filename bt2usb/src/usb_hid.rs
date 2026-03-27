@@ -398,7 +398,7 @@ impl Handler for UsbDeviceHandler {
         // treats units as standard (1 unit = 1 detent) → 120× too fast.
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
         crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
-        crate::device_profile::reset_scroll_accumulator();
+        crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
 
         // Switch detection: if the device has been configured for >2s,
         // this bus reset is likely from a USB switch changeover or physical
@@ -425,7 +425,7 @@ impl Handler for UsbDeviceHandler {
         HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
         crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
         CONFIGURED_AT_TICKS.store(embassy_time::Instant::now().as_ticks(), Ordering::Relaxed);
-        crate::device_profile::reset_scroll_accumulator();
+        crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
         if configured {
             info!("USB device configured, scroll/MT2 reset");
         } else {
@@ -442,7 +442,7 @@ impl Handler for UsbDeviceHandler {
             // may not re-send SET_REPORT to re-enable hires. Clear the flag
             // so the host must re-negotiate — same rationale as reset()/configured().
             HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-            crate::device_profile::reset_scroll_accumulator();
+            crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
             debug!("USB resumed, high-res scroll reset");
         }
     }

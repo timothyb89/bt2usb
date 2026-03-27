@@ -26,14 +26,46 @@ pub const BATTERY_SERVICE_UUID: Uuid = Uuid::new_short(0x180F);
 /// Battery Level Characteristic UUID (0x2A19)
 pub const BATTERY_LEVEL_CHAR_UUID: Uuid = Uuid::new_short(0x2A19);
 
-/// Last known battery level from the connected device.
-/// 0xFF = unknown / not connected. Updated by the BLE task, read by any core.
+use crate::ble::slots::MAX_CONNECTIONS;
+
+/// Per-slot battery levels. 0xFF = unknown / not connected.
+/// Updated by slot tasks on Core 0, read by USB task on Core 1.
+pub static BATTERY_LEVELS: [AtomicU8; MAX_CONNECTIONS] = [
+    AtomicU8::new(0xFF),
+    AtomicU8::new(0xFF),
+    AtomicU8::new(0xFF),
+];
+
+/// Legacy single battery level — returns the minimum across connected slots.
+/// Used for backward compatibility with single-device status reporting.
 pub static BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
 
 /// Signal from BLE (Core 0) to USB battery task (Core 1).
 /// Signaled with the new battery level (0-100) whenever it changes.
 /// The USB task wakes up and sends a USB HID battery input report.
 pub static BATTERY_USB_SIGNAL: Signal<CriticalSectionRawMutex, u8> = Signal::new();
+
+/// Update battery level for a specific slot and refresh the aggregate.
+pub fn update_battery_level(slot: usize, level: u8) {
+    use core::sync::atomic::Ordering::Relaxed;
+    BATTERY_LEVELS[slot].store(level, Relaxed);
+
+    // Aggregate: minimum non-0xFF level across all slots
+    let mut min = 0xFFu8;
+    for bl in &BATTERY_LEVELS {
+        let l = bl.load(Relaxed);
+        if l != 0xFF && l < min {
+            min = l;
+        }
+    }
+    BATTERY_LEVEL.store(min, Relaxed);
+    BATTERY_USB_SIGNAL.signal(min);
+}
+
+/// Clear battery level for a specific slot and refresh the aggregate.
+pub fn clear_battery_level(slot: usize) {
+    update_battery_level(slot, 0xFF);
+}
 
 /// Maximum HID report size we'll handle
 pub const MAX_HID_REPORT_SIZE: usize = 64;
@@ -58,6 +90,8 @@ pub struct HidReportEvent {
     pub report_id: u8,
     /// Device profile that produced this report
     pub profile: DeviceProfile,
+    /// Connection slot index that produced this report
+    pub slot_index: u8,
     /// Report data
     pub data: [u8; MAX_HID_REPORT_SIZE],
     /// Actual length of data
@@ -70,6 +104,7 @@ impl HidReportEvent {
             report_type: HidReportType::Unknown(0),
             report_id: 0,
             profile: DeviceProfile::Generic,
+            slot_index: 0,
             data: [0; MAX_HID_REPORT_SIZE],
             len: 0,
         }

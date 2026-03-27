@@ -326,6 +326,7 @@
               <th>Address</th>
               <th>Name</th>
               <th>Profile</th>
+              <th>Auto-connect</th>
               <th>Active</th>
               <th></th>
             </tr>
@@ -517,7 +518,7 @@
     const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
     const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
     const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17, CMD_FORCE_REPROBE = 18, CMD_SET_FORCED_OS = 19;
-    const CMD_GET_CONFIG = 8, CMD_SET_CONFIG = 9;
+    const CMD_GET_CONFIG = 8, CMD_SET_CONFIG = 9, CMD_SET_AUTO_CONNECT = 22;
     const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_CONFIG = 4, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
     const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4, EVT_BATTERY_LEVEL = 5;
     const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
@@ -884,7 +885,7 @@
           tbody.innerHTML = '';
 
           if (bonds.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text2);padding:1rem">No bonded devices</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text2);padding:1rem">No bonded devices</td></tr>';
           } else {
             for (const bond of bonds) {
               const [addrBytes, addrKind, profileId, name] = bond;
@@ -901,6 +902,7 @@
                 <option value="3" ${profileId === 3 ? 'selected' : ''}>Full Scroll Dial</option>
               </select>
             </td>
+            <td><input type="checkbox" onchange="setAutoConnect('${addr}', ${addrKind}, this.checked)" title="Auto-connect on startup"></td>
             <td><button class="btn btn-sm" onclick="setActiveDevice('${addr}', ${addrKind})">Set Active</button></td>
             <td><button class="btn btn-sm btn-primary" onclick="connectToAddr('${addr}', ${addrKind})">Connect</button></td>
           `;
@@ -969,6 +971,19 @@
         appendLog(1, `Profile updated to ${PROFILE_NAMES[profileId]} for ${addrStr}`);
       } catch (e) {
         appendLog(3, 'Profile update failed: ' + e.message);
+      }
+    }
+
+    async function setAutoConnect(addrStr, addrKind, enabled) {
+      const parts = addrStr.split(':').map(s => parseInt(s, 16));
+      const addrBytes = new Uint8Array(6);
+      for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
+
+      try {
+        await sendRequest(CBOR.encode([CMD_SET_AUTO_CONNECT, addrBytes, enabled]));
+        appendLog(1, `Auto-connect ${enabled ? 'enabled' : 'disabled'} for ${addrStr}`);
+      } catch (e) {
+        appendLog(3, 'Set auto-connect failed: ' + e.message);
       }
     }
 

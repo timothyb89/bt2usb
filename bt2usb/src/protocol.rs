@@ -60,6 +60,7 @@ pub const CMD_FORCE_REPROBE: u8 = 18;
 pub const CMD_SET_FORCED_OS: u8 = 19;
 pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
 pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
+pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -71,7 +72,9 @@ pub enum Request {
         addr_kind: u8,
         ignore_bond: bool,
     },
-    Disconnect,
+    Disconnect {
+        address: Option<[u8; 6]>,
+    },
     GetBonds,
     ClearBonds,
     SetProfile {
@@ -105,6 +108,11 @@ pub enum Request {
     },
     SubscribeDefmt,
     UnsubscribeDefmt,
+    /// Set auto-connect flag for a bonded device.
+    SetAutoConnect {
+        address: [u8; 6],
+        enabled: bool,
+    },
 }
 
 // ============ Response (device -> host) ============
@@ -189,7 +197,21 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
                 ignore_bond,
             })
         }
-        CMD_DISCONNECT => Ok(Request::Disconnect),
+        CMD_DISCONNECT => {
+            // Optional address field for targeted disconnect (backward compatible)
+            let address = if let Ok(addr_bytes) = d.bytes() {
+                if addr_bytes.len() >= 6 {
+                    let mut address = [0u8; 6];
+                    address.copy_from_slice(&addr_bytes[..6]);
+                    Some(address)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            Ok(Request::Disconnect { address })
+        }
         CMD_GET_BONDS => Ok(Request::GetBonds),
         CMD_CLEAR_BONDS => Ok(Request::ClearBonds),
         CMD_SET_PROFILE => {
@@ -238,6 +260,16 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         CMD_SET_FORCED_OS => {
             let os = d.u8().map_err(|_| ProtocolError::InvalidCbor)?;
             Ok(Request::SetForcedOs { os })
+        }
+        CMD_SET_AUTO_CONNECT => {
+            let addr_bytes = d.bytes().map_err(|_| ProtocolError::MissingField)?;
+            if addr_bytes.len() < 6 {
+                return Err(ProtocolError::MissingField);
+            }
+            let mut address = [0u8; 6];
+            address.copy_from_slice(&addr_bytes[..6]);
+            let enabled = d.bool().map_err(|_| ProtocolError::MissingField)?;
+            Ok(Request::SetAutoConnect { address, enabled })
         }
         CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
         CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
