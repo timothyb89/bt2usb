@@ -374,6 +374,17 @@ pub fn cmd_clear_bonds(transport: &mut Transport) -> Result<()> {
     Ok(())
 }
 
+pub fn cmd_factory_reset(transport: &mut Transport) -> Result<()> {
+    let (resp, _) = transport.request_simple(CMD_FACTORY_RESET, DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!(
+        "{}",
+        "Factory reset complete (bonds and preferences cleared).".green()
+    );
+    println!("{}", "Device will restart.".dimmed());
+    Ok(())
+}
+
 pub fn cmd_clear_bond(transport: &mut Transport, address: &str) -> Result<()> {
     let addr = parse_address(address)?;
     println!("Clearing bond for {}...", format_address(&addr).bold());

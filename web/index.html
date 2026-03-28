@@ -273,6 +273,7 @@
         <div class="panel-row" style="margin-top:0.5rem">
           <button class="btn" onclick="refreshStatus()" id="btnRefresh">Refresh</button>
           <button class="btn btn-danger" onclick="restartDevice()" id="btnRestart">Restart Device</button>
+          <button class="btn btn-danger" onclick="factoryReset()" id="btnFactoryReset">Factory Reset</button>
           <button class="btn" onclick="reprobeDevice()" id="btnReprobe">Re-probe OS</button>
           <select id="forcedOsSelect" onchange="setForcedOs(this.value)" style="padding:0.3rem;border-radius:4px;border:1px solid #555;background:#2a2a2a;color:#ccc;">
             <option value="0">OS: Auto</option>
@@ -518,7 +519,7 @@
     const CMD_SUBSCRIBE_LOGS = 10, CMD_UNSUBSCRIBE_LOGS = 11, CMD_GET_VERSION = 12;
     const CMD_SET_ACTIVE_DEVICE = 13, CMD_CLEAR_ACTIVE_DEVICE = 14;
     const CMD_UPDATE_BOND_PROFILE = 15, CMD_AUTO_CONNECT = 16, CMD_RESTART = 17, CMD_FORCE_REPROBE = 18, CMD_SET_FORCED_OS = 19;
-    const CMD_GET_CONFIG = 8, CMD_SET_CONFIG = 9, CMD_SET_AUTO_CONNECT = 22;
+    const CMD_GET_CONFIG = 8, CMD_SET_CONFIG = 9, CMD_SET_AUTO_CONNECT = 22, CMD_FACTORY_RESET = 24;
     const RESP_OK = 0, RESP_ERROR = 1, RESP_STATUS = 2, RESP_BONDS = 3, RESP_CONFIG = 4, RESP_VERSION = 5, RESP_ACTIVE_DEVICE = 6;
     const EVT_SCAN_RESULT = 0, EVT_CONNECTION_STATE = 1, EVT_PAIRING_STATUS = 2, EVT_LOG = 3, EVT_BOND_STORED = 4, EVT_BATTERY_LEVEL = 5;
     const STATE_NAMES = ['Disconnected', 'Scanning', 'Connecting', 'Connected', 'Pairing', 'Ready'];
@@ -935,6 +936,17 @@
         setTimeout(() => refreshStatus(), 2000);
       } catch (e) {
         appendLog(3, 'Restart failed: ' + e.message);
+      }
+    }
+
+    async function factoryReset() {
+      if (!confirm('Factory reset? This will clear ALL bonds and preferences, then restart.')) return;
+      try {
+        await sendSimpleRequest(CMD_FACTORY_RESET);
+        appendLog(1, 'Factory reset initiated — device will restart');
+        setTimeout(() => refreshStatus(), 3000);
+      } catch (e) {
+        appendLog(3, 'Factory reset failed: ' + e.message);
       }
     }
 

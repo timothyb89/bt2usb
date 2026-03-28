@@ -8,7 +8,9 @@ use defmt::{debug, error, info, warn};
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::peripherals::FLASH;
 use sequential_storage::cache::NoCache;
-use sequential_storage::map::{fetch_item, store_item, SerializationError, Value};
+use sequential_storage::map::{
+    fetch_item, remove_all_items, store_item, SerializationError, Value,
+};
 
 /// Flash storage range for preferences
 /// Uses 16KB (4 x 4KB erase sectors) starting at 0x1F4000
@@ -120,6 +122,24 @@ pub async fn set_active_device(
         }
         Err(e) => {
             error!("Failed to set active device: {:?}", defmt::Debug2Format(&e));
+            Err(())
+        }
+    }
+}
+
+/// Clear all preferences from flash.
+pub async fn clear_all_preferences(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+) -> Result<(), ()> {
+    info!("Clearing all preferences from flash...");
+    let mut buffer = [0u8; 64];
+    match remove_all_items::<u8, _>(flash, flash_range(), &mut NoCache::new(), &mut buffer).await {
+        Ok(_) => {
+            info!("All preferences cleared!");
+            Ok(())
+        }
+        Err(e) => {
+            error!("Failed to clear preferences: {:?}", defmt::Debug2Format(&e));
             Err(())
         }
     }

@@ -62,6 +62,7 @@ pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
 pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 pub const CMD_CLEAR_BOND: u8 = 23;
+pub const CMD_FACTORY_RESET: u8 = 24;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -118,6 +119,8 @@ pub enum Request {
     ClearBond {
         address: [u8; 6],
     },
+    /// Factory reset: clear all bonds and preferences, then restart.
+    FactoryReset,
 }
 
 // ============ Response (device -> host) ============
@@ -287,6 +290,7 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         }
         CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
         CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
+        CMD_FACTORY_RESET => Ok(Request::FactoryReset),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }

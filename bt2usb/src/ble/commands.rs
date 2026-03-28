@@ -173,6 +173,32 @@ pub async fn handle_clear_bonds(flash: &mut Flash<'static, FLASH, Async, FLASH_S
     }
 }
 
+/// Factory reset: clear all bonds and preferences, then restart.
+///
+/// This function does not return on success (system resets).
+pub async fn handle_factory_reset(flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>) {
+    info!("Factory reset: clearing all bonds and preferences");
+    rpc_log::info("Factory reset...");
+
+    let bonds_ok = bonding::clear_all_bonds(flash).await.is_ok();
+    let prefs_ok = crate::preferences::clear_all_preferences(flash)
+        .await
+        .is_ok();
+
+    if bonds_ok && prefs_ok {
+        info!("Factory reset complete");
+        rpc_log::info("Factory reset complete - restarting...");
+        Timer::after_millis(100).await;
+        crate::system_reset();
+    } else {
+        error!(
+            "Factory reset partially failed (bonds={}, prefs={})",
+            bonds_ok, prefs_ok
+        );
+        rpc_log::error("Factory reset failed");
+    }
+}
+
 /// Persist a config value (axis multiplier) to flash.
 pub async fn handle_set_config(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
