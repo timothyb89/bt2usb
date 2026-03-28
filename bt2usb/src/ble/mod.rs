@@ -568,18 +568,44 @@ async fn connection_slot_task<'a, C: Controller>(
 
         let mut active_profile = request.profile;
 
-        // Run the connection lifecycle (connect, pair, GATT)
-        // The connection function creates its own Central from stack.build()
-        let _pending = connection::ble_connect_and_run(
-            stack,
-            flash,
-            target,
-            &mut active_profile,
-            request.has_stored_bond,
-            slot,
-            active_device_pref,
-        )
-        .await;
+        // Run the connection lifecycle (connect, pair, GATT).
+        // For bonded devices, auto-reconnect on unexpected disconnection.
+        loop {
+            connection::ble_connect_and_run(
+                stack,
+                flash,
+                target,
+                &mut active_profile,
+                request.has_stored_bond,
+                slot,
+                active_device_pref,
+            )
+            .await;
+
+            if !request.has_stored_bond {
+                break;
+            }
+
+            // Bonded device lost — auto-reconnect after a brief delay.
+            // Abort if a slot command arrives (e.g. user-initiated disconnect).
+            info!("[slot{}] Bonded device lost, will auto-reconnect", slot);
+            let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
+            rpc_log::info("Connection lost, reconnecting...");
+            match embassy_futures::select::select(
+                embassy_time::Timer::after(embassy_time::Duration::from_secs(2)),
+                SLOT_CMD_CHANNELS[slot].receive(),
+            )
+            .await
+            {
+                embassy_futures::select::Either::First(_) => {
+                    info!("[slot{}] Auto-reconnect attempt", slot);
+                }
+                embassy_futures::select::Either::Second(cmd) => {
+                    info!("[slot{}] Command during reconnect wait: {:?}", slot, cmd);
+                    break;
+                }
+            }
+        }
 
         info!("[slot{}] Connection ended, marking idle", slot);
         slots::set_slot_idle(slot);
