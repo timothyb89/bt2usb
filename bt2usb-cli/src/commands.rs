@@ -115,6 +115,17 @@ pub fn profile_name(id: u8) -> &'static str {
     }
 }
 
+/// Query bonds and return those with auto_connect enabled.
+fn get_auto_connect_bonds(transport: &mut Transport) -> Vec<BondEntry> {
+    let Ok((resp, _)) = transport.request_simple(CMD_GET_BONDS, DEFAULT_TIMEOUT) else {
+        return Vec::new();
+    };
+    match resp {
+        Response::Bonds { bonds } => bonds.into_iter().filter(|b| b.auto_connect).collect(),
+        _ => Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Device commands
 // ---------------------------------------------------------------------------
@@ -125,7 +136,7 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
         Response::Status {
             state,
             bonded_count,
-            active_profile,
+            active_profile: _,
             active_device_set,
             active_device_address,
             battery_level,
@@ -137,12 +148,7 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
             println!("  Bonded devices: {bonded_count}");
 
             if connected_devices.is_empty() {
-                // Legacy single-device display
-                println!(
-                    "  Active profile: {} ({})",
-                    active_profile,
-                    profile_name(active_profile)
-                );
+                println!("  Connected:      {}", "None".dimmed());
 
                 let battery_str = if battery_level == 0xFF {
                     "Unknown".dimmed().to_string()
@@ -171,16 +177,36 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                 }
             }
 
-            if active_device_set {
+            // Show auto-connect info from bonds (replaces legacy active device)
+            let auto_bonds = get_auto_connect_bonds(transport);
+            if auto_bonds.is_empty() {
                 println!(
-                    "  Active device:  {} {}",
-                    format_address(&active_device_address).bold(),
-                    "(auto-connect enabled)".green()
+                    "  Auto-connect:   {}",
+                    "disabled (use set-auto-connect to enable)".dimmed()
                 );
             } else {
+                println!("  Auto-connect:");
+                for bond in &auto_bonds {
+                    let status = if connected_devices.iter().any(|d| d.address == bond.address) {
+                        "connected".green().to_string()
+                    } else {
+                        "scanning...".yellow().to_string()
+                    };
+                    println!(
+                        "    {} {} [{}]",
+                        format_address(&bond.address).bold(),
+                        profile_name(bond.profile_id),
+                        status,
+                    );
+                }
+            }
+
+            if active_device_set {
                 println!(
-                    "  Active device:  {} (auto-connect disabled)",
-                    "None".dimmed()
+                    "  {}  {} {}",
+                    "(legacy)".dimmed(),
+                    format_address(&active_device_address),
+                    "(use factory-reset to clear, then set-auto-connect)".dimmed(),
                 );
             }
         }
@@ -338,17 +364,22 @@ pub fn cmd_bonds(transport: &mut Transport) -> Result<()> {
             } else {
                 println!("Bonded devices:");
                 for (i, bond) in bonds.iter().enumerate() {
+                    let auto = if bond.auto_connect {
+                        " auto-connect".green().to_string()
+                    } else {
+                        String::new()
+                    };
                     println!(
-                        "  {}. {}  \"{}\"  profile={}  kind={}",
+                        "  {}. {}  {}  kind={}{}",
                         i + 1,
                         format_address(&bond.address).bold(),
-                        bond.name,
-                        bond.profile_id,
+                        profile_name(bond.profile_id),
                         if bond.addr_kind == 1 {
                             "random"
                         } else {
                             "public"
-                        }
+                        },
+                        auto,
                     );
                 }
             }

@@ -382,12 +382,12 @@ pub fn encode_response_status(
 
 /// Encode a bonds response.
 /// Each bond: [address(6 bytes), addr_kind, profile_id, name_str]
-pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str)]) -> EncResult {
+pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str, bool)]) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(2).unwrap().u8(RESP_BONDS).unwrap();
         e.array(bonds.len() as u64).unwrap();
-        for (addr, kind, profile, name) in bonds {
-            e.array(4)
+        for (addr, kind, profile, name, auto_connect) in bonds {
+            e.array(5)
                 .unwrap()
                 .bytes(addr)
                 .unwrap()
@@ -396,6 +396,8 @@ pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str)]) 
                 .u8(*profile)
                 .unwrap()
                 .str(name)
+                .unwrap()
+                .bool(*auto_connect)
                 .unwrap();
         }
     })

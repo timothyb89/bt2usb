@@ -11,6 +11,8 @@
 
 use defmt::*;
 use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use trouble_host::connection::{ConnectConfig, ScanConfig};
 use trouble_host::prelude::*;
@@ -28,6 +30,11 @@ use super::slots::{self, SLOT_CMD_CHANNELS};
 use super::FlashMutex;
 
 const MAX_PAIRING_RETRIES: u8 = 5;
+
+/// Mutex to serialize BLE connection attempts across slots.
+/// The BLE controller only supports one LE Create Connection at a time.
+/// Without serialization, concurrent connect attempts fail with "Command Disallowed."
+static CONNECT_MUTEX: Mutex<CriticalSectionRawMutex, ()> = Mutex::new(());
 
 /// Error during the connection/pairing phase.
 enum StartError {
@@ -80,27 +87,37 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
             slot, pairing_attempts, MAX_PAIRING_RETRIES
         );
 
-        // Phase 1: Establish BLE connection
-        let conn = match connect_to_device(&mut central, &config, slot).await {
-            ConnectOutcome::Connected(conn) => {
-                slots::set_slot_connected(slot);
-                conn
-            }
-            ConnectOutcome::RetryableError => {
-                if pairing_attempts >= MAX_PAIRING_RETRIES {
-                    error!("[slot{}] Max connection retries exceeded", slot);
-                    rpc_log::error("Max connection retries exceeded");
-                    return None;
+        // Phase 1: Establish BLE connection.
+        // Acquire the connect mutex to serialize across slots — the BLE controller
+        // only supports one LE Create Connection at a time.
+        let conn = {
+            let _guard = CONNECT_MUTEX.lock().await;
+            match connect_to_device(&mut central, &config, slot).await {
+                ConnectOutcome::Connected(conn) => {
+                    // Release mutex (guard dropped) — connection established,
+                    // other slots can now try to connect.
+                    drop(_guard);
+                    slots::set_slot_connected(slot);
+                    conn
                 }
-                Timer::after(Duration::from_millis(500)).await;
-                continue 'connect;
+                ConnectOutcome::RetryableError => {
+                    drop(_guard);
+                    if pairing_attempts >= MAX_PAIRING_RETRIES {
+                        error!("[slot{}] Max connection retries exceeded", slot);
+                        rpc_log::error("Max connection retries exceeded");
+                        return None;
+                    }
+                    Timer::after(Duration::from_millis(500)).await;
+                    continue 'connect;
+                }
+                ConnectOutcome::Cancelled => return None,
             }
-            ConnectOutcome::Cancelled => return None,
         };
 
         // Phase 2: Pair or re-encrypt
-        match initiate_security(&conn, try_stored_bond).await {
-            SecurityOutcome::Ready => {}
+        let already_encrypted = match initiate_security(&conn, try_stored_bond).await {
+            SecurityOutcome::Ready => false,
+            SecurityOutcome::AlreadyEncrypted => true,
             SecurityOutcome::RetryableError => {
                 if pairing_attempts >= MAX_PAIRING_RETRIES {
                     return None;
@@ -108,30 +125,35 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
                 Timer::after(Duration::from_millis(500)).await;
                 continue 'connect;
             }
-        }
+        };
 
-        // Phase 3: Wait for pairing to complete
-        match await_pairing(&conn, flash, *active_profile, slot).await {
-            PairingOutcome::Success => {}
-            PairingOutcome::Failed => {
-                if try_stored_bond {
-                    // Re-encryption with stored bond failed (e.g. stale bond with wrong
-                    // EDIV/Rand). Fall back to fresh pairing on next attempt.
-                    warn!(
-                        "[slot{}] Re-encryption failed, will try fresh pairing",
-                        slot
-                    );
-                    try_stored_bond = false;
+        // Phase 3: Wait for pairing to complete.
+        // Skip if device-initiated encryption already completed in Phase 2
+        // (the PairingComplete event was consumed there).
+        if already_encrypted {
+            info!("[slot{}] Pairing complete! (device-initiated)", slot);
+            let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::PairingComplete);
+        } else {
+            match await_pairing(&conn, flash, *active_profile, slot).await {
+                PairingOutcome::Success => {}
+                PairingOutcome::Failed => {
+                    if try_stored_bond {
+                        warn!(
+                            "[slot{}] Re-encryption failed, will try fresh pairing",
+                            slot
+                        );
+                        try_stored_bond = false;
+                    }
+                    if pairing_attempts >= MAX_PAIRING_RETRIES {
+                        error!("[slot{}] Max pairing retries exceeded", slot);
+                        rpc_log::error("Max pairing retries exceeded");
+                        return None;
+                    }
+                    Timer::after(Duration::from_millis(500)).await;
+                    continue 'connect;
                 }
-                if pairing_attempts >= MAX_PAIRING_RETRIES {
-                    error!("[slot{}] Max pairing retries exceeded", slot);
-                    rpc_log::error("Max pairing retries exceeded");
-                    return None;
-                }
-                Timer::after(Duration::from_millis(500)).await;
-                continue 'connect;
+                PairingOutcome::Cancelled => return None,
             }
-            PairingOutcome::Cancelled => return None,
         }
 
         // Phase 4: GATT discovery and HID report loop (with retry).
@@ -200,12 +222,14 @@ async fn connect_to_device<'a, C: Controller>(
             ConnectOutcome::Connected(conn)
         }
         Either3::First(Err(e)) => {
-            error!(
-                "[slot{}] Connection failed: {:?}",
+            // "Command Disallowed" is expected when another slot is already connecting
+            // (BLE controller only supports one LE Create Connection at a time).
+            // Log at debug to avoid spam during multi-device auto-connect.
+            debug!(
+                "[slot{}] Connection attempt failed: {:?}",
                 slot,
                 defmt::Debug2Format(&e)
             );
-            rpc_log::error("Connection attempt failed");
             ConnectOutcome::RetryableError
         }
         Either3::Second(cmd) => {
@@ -223,7 +247,10 @@ async fn connect_to_device<'a, C: Controller>(
 // ============ Phase 2: Security Setup ============
 
 enum SecurityOutcome {
+    /// Security request sent, caller should wait for pairing completion.
     Ready,
+    /// Encryption already completed (device-initiated), skip await_pairing.
+    AlreadyEncrypted,
     RetryableError,
 }
 
@@ -244,22 +271,44 @@ async fn initiate_security<'a>(
         info!("Existing bond detected - waiting for re-encryption...");
         rpc_log::info("Re-encryption in progress");
 
-        // Give the peripheral time to initiate encryption via SMP Security Request.
-        // Most bonded devices send this within ~100ms of connection. If encryption
-        // completes (device-initiated), request_security() becomes a no-op.
-        Timer::after(Duration::from_millis(500)).await;
-
-        // Check if encryption already started (device-initiated)
-        if conn.security_level().unwrap_or(SecurityLevel::NoEncryption)
-            != SecurityLevel::NoEncryption
+        // Wait for the peripheral to initiate encryption via SMP Security Request.
+        // Most bonded devices send this within ~100ms of connection. trouble-host
+        // handles it internally (starts LE Start Encryption) and emits a
+        // PairingComplete event when encryption completes.
+        //
+        // We wait for that event rather than using a fixed delay + security_level
+        // check, because the encryption might be in-progress (LE Start Encryption
+        // sent, Encryption Change not yet received) when the delay expires.
+        match select(
+            async {
+                loop {
+                    match conn.next().await {
+                        ConnectionEvent::PairingComplete { .. } => return Ok(()),
+                        ConnectionEvent::Disconnected { reason } => {
+                            return Err(StartError::Disconnected(reason))
+                        }
+                        _ => {} // Ignore other events (conn param requests, etc.)
+                    }
+                }
+            },
+            Timer::after(Duration::from_millis(1500)),
+        )
+        .await
         {
-            info!("Re-encryption completed (device-initiated)");
-            return SecurityOutcome::Ready;
+            Either::First(Ok(())) => {
+                info!("Re-encryption completed (device-initiated)");
+                return SecurityOutcome::AlreadyEncrypted;
+            }
+            Either::First(Err(_)) => {
+                // Disconnected during wait
+                return SecurityOutcome::RetryableError;
+            }
+            Either::Second(_) => {
+                // Timeout — device didn't initiate, we'll do it explicitly
+                // (e.g. Keychron M3 8k mouse doesn't send Security Request)
+                info!("Device did not initiate encryption, requesting...");
+            }
         }
-
-        // Device didn't initiate — we need to start encryption ourselves
-        // (e.g. Keychron M3 8k mouse doesn't send Security Request)
-        info!("Device did not initiate encryption, requesting...");
     } else {
         if let Err(e) = conn.set_bondable(true) {
             error!("Failed to set bondable: {:?}", e);
