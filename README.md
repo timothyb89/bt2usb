@@ -62,7 +62,9 @@ We might consider supporting keyboards and game controllers in the future.
 
 ## Requirements
 
-- A Raspberry Pi Pico W with the CYW43439 wireless chipset. Other RP2040 boards with different wireless chipsets will not work. 
+- A Raspberry Pi Pico W with the CYW43439 wireless chipset. Other RP2040 boards
+  with different wireless chipsets will not work. The Pico 2W is currently
+  **not** supported.
 - A USB cable
 
 No other hardware is required, aside from the BLE device you want to convert to USB.
@@ -79,6 +81,7 @@ firmware](https://github.com/raspberrypi/debugprobe).
 - Improved bond storage robustness for the MX Master mice
 - Generic mouse/keyboard device profiles
 - Magic Trackpad 2 input support to emulate a generic touchpad on Windows
+- Support the Pico 2W
 
 Longer term desired TODOs:
 
