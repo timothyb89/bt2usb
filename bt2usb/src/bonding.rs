@@ -30,17 +30,20 @@ fn flash_range() -> Range<u32> {
 /// Value for storing bond info: all the data needed to restore a bond
 #[derive(Clone)]
 pub struct StoredBondInfo {
-    pub addr: [u8; 6],      // BdAddr raw bytes
-    pub ltk: [u8; 16],      // LongTermKey raw bytes
-    pub security_level: u8, // 0=None, 1=Encrypted, 2=EncryptedAuthenticated
-    pub profile_id: u8, // DeviceProfile discriminant (0=Generic, 1=MxMaster3S, 2=FullScrollDial8bit, 3=FullScrollDial16bit)
-    pub auto_connect: bool, // Whether to automatically connect on startup
+    pub addr: [u8; 6],          // BdAddr raw bytes
+    pub ltk: [u8; 16],          // LongTermKey raw bytes
+    pub security_level: u8,     // 0=None, 1=Encrypted, 2=EncryptedAuthenticated
+    pub profile_id: u8,         // DeviceProfile discriminant
+    pub auto_connect: bool,     // Whether to automatically connect on startup
+    pub ediv: u16,              // Encrypted diversifier (0 for LESC, non-zero for legacy)
+    pub rand: [u8; 8],          // Random number (zeros for LESC, non-zero for legacy)
+    pub encryption_key_len: u8, // Encryption key length in bytes (16 for LESC)
 }
 
 impl<'a> Value<'a> for StoredBondInfo {
     fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        // 6 + 16 + 1 + 1 + 1 = 25 bytes
-        if buffer.len() < 25 {
+        // 6 + 16 + 1 + 1 + 1 + 2 + 8 + 1 = 36 bytes
+        if buffer.len() < 36 {
             return Err(SerializationError::BufferTooSmall);
         }
         buffer[0..6].copy_from_slice(&self.addr);
@@ -48,7 +51,10 @@ impl<'a> Value<'a> for StoredBondInfo {
         buffer[22] = self.security_level;
         buffer[23] = self.profile_id;
         buffer[24] = if self.auto_connect { 1 } else { 0 };
-        Ok(25)
+        buffer[25..27].copy_from_slice(&self.ediv.to_le_bytes());
+        buffer[27..35].copy_from_slice(&self.rand);
+        buffer[35] = self.encryption_key_len;
+        Ok(36)
     }
 
     fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
@@ -71,12 +77,26 @@ impl<'a> Value<'a> for StoredBondInfo {
         } else {
             false
         };
+        // Handle old records that lack legacy pairing fields
+        let ediv = if buffer.len() >= 27 {
+            u16::from_le_bytes([buffer[25], buffer[26]])
+        } else {
+            0
+        };
+        let mut rand = [0u8; 8];
+        if buffer.len() >= 35 {
+            rand.copy_from_slice(&buffer[27..35]);
+        }
+        let encryption_key_len = if buffer.len() >= 36 { buffer[35] } else { 16 };
         Ok(StoredBondInfo {
             addr,
             ltk,
             security_level,
             profile_id,
             auto_connect,
+            ediv,
+            rand,
+            encryption_key_len,
         })
     }
 }
@@ -122,6 +142,9 @@ pub async fn load_bonds(
                     security_level,
                     is_bonded: true,
                     ltk: LongTermKey::from_le_bytes(stored.ltk),
+                    ediv: stored.ediv,
+                    rand: stored.rand,
+                    encryption_key_len: stored.encryption_key_len,
                 };
 
                 debug!(
@@ -211,6 +234,9 @@ pub async fn store_bond(
         },
         profile_id,
         auto_connect: false,
+        ediv: bond.ediv,
+        rand: bond.rand,
+        encryption_key_len: bond.encryption_key_len,
     };
 
     match store_item(
