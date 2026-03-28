@@ -10,7 +10,7 @@ use embassy_rp::peripherals::FLASH;
 use heapless::Vec;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{
-    fetch_item, remove_all_items, store_item, SerializationError, Value,
+    fetch_item, remove_all_items, remove_item, store_item, SerializationError, Value,
 };
 use trouble_host::prelude::{BdAddr, BondInformation, Identity, LongTermKey, SecurityLevel};
 
@@ -354,6 +354,54 @@ pub async fn update_auto_connect(
                                 "Failed to update auto_connect: {:?}",
                                 defmt::Debug2Format(&e)
                             );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("Bond not found for address {:?}", address);
+    Err(())
+}
+
+/// Remove a single bond by address.
+/// Returns Ok(slot) if found and removed, Err(()) if not found.
+pub async fn clear_bond_by_address(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 64];
+
+    for slot in 0..MAX_BONDS as u8 {
+        match fetch_item::<u8, StoredBondInfo, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &slot,
+        )
+        .await
+        {
+            Ok(Some(stored)) => {
+                if stored.addr == *address {
+                    match remove_item::<u8, _>(
+                        flash,
+                        flash_range(),
+                        &mut NoCache::new(),
+                        &mut buffer,
+                        &slot,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!("Removed bond in slot {} for {:?}", slot, address);
+                            return Ok(slot);
+                        }
+                        Err(e) => {
+                            error!("Failed to remove bond: {:?}", defmt::Debug2Format(&e));
                             return Err(());
                         }
                     }

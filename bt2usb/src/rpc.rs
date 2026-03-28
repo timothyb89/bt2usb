@@ -280,10 +280,13 @@ async fn dispatch_request(
                     &status.active_device_address,
                     status.battery_level,
                     detected_os,
+                    status.connected_count,
+                    &status.connected_devices,
                 )
                 .unwrap_or(0),
                 Err(_) => {
                     // Timeout - use defaults
+                    let empty_devs = [None, None, None];
                     protocol::encode_response_status(
                         cbor_buf,
                         last_state,
@@ -293,6 +296,8 @@ async fn dispatch_request(
                         &[0u8; 6],
                         0xFF,
                         detected_os,
+                        0,
+                        &empty_devs,
                     )
                     .unwrap_or(0)
                 }
@@ -466,6 +471,11 @@ async fn dispatch_request(
             // Write to flash (via Core 0) and update the scratch cache immediately
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetForcedOs { os: *os });
             crate::scratch::write_forced_os(*os as u32);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ClearBond { address } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond { address: *address });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 

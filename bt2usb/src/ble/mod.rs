@@ -483,6 +483,16 @@ async fn connection_manager_loop<
                 loaded_bonds.clear();
             }
 
+            BleCommand::ClearBond { address } => {
+                // Disconnect the device if connected
+                if let Some(slot) = slots::find_slot_by_address(&address) {
+                    let _ = SLOT_CMD_CHANNELS[slot].try_send(SlotCommand::Disconnect);
+                    Timer::after_millis(200).await;
+                }
+                let mut f = flash.lock().await;
+                commands::handle_clear_bond(&mut f, &address, loaded_bonds).await;
+            }
+
             BleCommand::SetConfig { key, value } => {
                 let mut f = flash.lock().await;
                 commands::handle_set_config(&mut f, key, value).await;

@@ -48,6 +48,8 @@ pub enum BleCommand {
     SetForcedOs { os: u8 },
     /// Set auto-connect flag for a bonded device.
     SetAutoConnect { address: [u8; 6], enabled: bool },
+    /// Clear a single bond by address.
+    ClearBond { address: [u8; 6] },
 }
 
 // ============ Events (BLE -> RPC) ============
@@ -95,6 +97,14 @@ pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>), 10>;
 /// Response channel for GetBonds (capacity 1, only one request at a time).
 pub static BONDS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, BondList, 1> = Channel::new();
 
+/// Per-slot connection info for status reporting.
+#[derive(Clone, Debug, defmt::Format)]
+pub struct ConnectedDeviceInfo {
+    pub address: [u8; 6],
+    pub profile_id: u8,
+    pub battery_level: u8,
+}
+
 /// Status information response
 #[derive(Clone, Debug, defmt::Format)]
 pub struct StatusInfo {
@@ -104,6 +114,10 @@ pub struct StatusInfo {
     pub active_device_address: [u8; 6],
     /// Last known battery level (0–100), or 0xFF if unknown/disconnected.
     pub battery_level: u8,
+    /// Number of currently connected devices.
+    pub connected_count: u8,
+    /// Per-device connection info (up to 3).
+    pub connected_devices: [Option<ConnectedDeviceInfo>; 3],
 }
 
 /// Response channel for GetStatus (capacity 1, only one request at a time).

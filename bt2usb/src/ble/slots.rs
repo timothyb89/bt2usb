@@ -56,7 +56,7 @@ fn set_slot_address(slot: usize, addr: [u8; 6]) {
     }
 }
 
-fn get_slot_address(slot: usize) -> [u8; 6] {
+pub fn get_slot_address(slot: usize) -> [u8; 6] {
     let base = slot * 6;
     let mut addr = [0u8; 6];
     for i in 0..6 {
