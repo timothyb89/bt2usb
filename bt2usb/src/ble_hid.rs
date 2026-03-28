@@ -20,6 +20,9 @@ pub const HID_SERVICE_UUID: Uuid = Uuid::new_short(0x1812);
 /// HID Report Characteristic UUID (0x2A4D)
 pub const HID_REPORT_CHAR_UUID: Uuid = Uuid::new_short(0x2A4D);
 
+/// HID Report Map Characteristic UUID (0x2A4B)
+pub const HID_REPORT_MAP_UUID: Uuid = Uuid::new_short(0x2A4B);
+
 /// Battery Service UUID (0x180F)
 pub const BATTERY_SERVICE_UUID: Uuid = Uuid::new_short(0x180F);
 
@@ -65,6 +68,53 @@ pub fn update_battery_level(slot: usize, level: u8) {
 /// Clear battery level for a specific slot and refresh the aggregate.
 pub fn clear_battery_level(slot: usize) {
     update_battery_level(slot, 0xFF);
+}
+
+// ============ Per-slot parsed report layouts ============
+
+use crate::hid_report_map::{MouseReportLayout, MAX_LAYOUTS};
+use core::cell::RefCell;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+
+/// Per-slot parsed mouse report layouts (multiple per slot for multi-report-ID devices).
+/// Written by BLE (Core 0) during GATT discovery, read by USB (Core 1) during translation.
+type SlotLayouts = heapless::Vec<MouseReportLayout, MAX_LAYOUTS>;
+
+static SLOT_LAYOUTS: BlockingMutex<
+    CriticalSectionRawMutex,
+    RefCell<[SlotLayouts; MAX_CONNECTIONS]>,
+> = BlockingMutex::new(RefCell::new([
+    heapless::Vec::new(),
+    heapless::Vec::new(),
+    heapless::Vec::new(),
+]));
+
+/// Store parsed report layouts for a connection slot.
+pub fn set_slot_layouts(
+    slot: usize,
+    layouts: Option<heapless::Vec<MouseReportLayout, MAX_LAYOUTS>>,
+) {
+    SLOT_LAYOUTS.lock(|inner| {
+        let mut slots = inner.borrow_mut();
+        slots[slot].clear();
+        if let Some(ls) = layouts {
+            for l in ls {
+                let _ = slots[slot].push(l);
+            }
+        }
+    });
+}
+
+/// Find the matching report layout for a notification of the given byte length.
+/// Returns the layout whose `total_bytes` matches, or None.
+pub fn find_slot_layout(slot: usize, data_len: usize) -> Option<MouseReportLayout> {
+    SLOT_LAYOUTS.lock(|inner| {
+        let slots = inner.borrow();
+        slots[slot]
+            .iter()
+            .find(|l| l.total_bytes as usize == data_len)
+            .copied()
+    })
 }
 
 /// Maximum HID report size we'll handle

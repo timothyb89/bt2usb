@@ -40,6 +40,7 @@ mod bonding;
 mod defmt_usb;
 mod device_profile;
 mod framing;
+mod hid_report_map;
 mod mt2;
 mod preferences;
 mod probe;

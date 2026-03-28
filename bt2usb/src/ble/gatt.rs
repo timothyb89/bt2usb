@@ -71,8 +71,9 @@ pub async fn run_gatt_session<'a, C: Controller>(
     )
     .await;
 
-    // Clear battery level for this slot on disconnect
+    // Clear per-slot state on disconnect
     ble_hid::clear_battery_level(slot);
+    ble_hid::set_slot_layouts(slot, None);
 
     match run_result {
         Either3::First(_) => {
@@ -97,11 +98,14 @@ async fn run_hid_session<'a, C: Controller>(
     active_profile: &mut DeviceProfile,
     slot: usize,
 ) -> GattSessionResult {
-    // --- Discover HID service ---
-    let report_char = match discover_hid_service(client, slot).await {
-        Some(c) => c,
+    // --- Discover HID service and parse Report Map ---
+    let (report_char, mouse_layout) = match discover_hid_service(client, slot).await {
+        Some(result) => result,
         None => return GattSessionResult::DiscoveryFailed,
     };
+
+    // Store parsed layouts for this slot (used by USB handler on Core 1)
+    ble_hid::set_slot_layouts(slot, mouse_layout);
 
     // --- Subscribe to HID notifications ---
     let mut listener = match client.subscribe(&report_char, false).await {
@@ -176,11 +180,22 @@ async fn run_hid_session<'a, C: Controller>(
     .await
 }
 
-/// Discover the HID service and its Report characteristic.
+/// Discover the HID service, its Report characteristic, and parse the Report Map.
+///
+/// Returns the Report characteristic for notification subscription, plus an optional
+/// parsed mouse layout from the Report Map descriptor (used for Generic profile translation).
 async fn discover_hid_service<'a, C: Controller>(
     client: &GattClient<'a, C, DefaultPacketPool, 10>,
     slot: usize,
-) -> Option<Characteristic<[u8; 64]>> {
+) -> Option<(
+    Characteristic<[u8; 64]>,
+    Option<
+        heapless::Vec<
+            crate::hid_report_map::MouseReportLayout,
+            { crate::hid_report_map::MAX_LAYOUTS },
+        >,
+    >,
+)> {
     let services = match embassy_time::with_timeout(
         embassy_time::Duration::from_secs(10),
         client.services_by_uuid(&HID_SERVICE_UUID),
@@ -210,13 +225,13 @@ async fn discover_hid_service<'a, C: Controller>(
     info!("[slot{}] Found HID service", slot);
     rpc_log::info("HID service discovered");
 
-    match client
+    let report_char = match client
         .characteristic_by_uuid(hid_service, &HID_REPORT_CHAR_UUID)
         .await
     {
         Ok(c) => {
             info!("[slot{}] Found Report characteristic (UUID 0x2A4D)", slot);
-            Some(c)
+            c
         }
         Err(e) => {
             error!(
@@ -224,6 +239,76 @@ async fn discover_hid_service<'a, C: Controller>(
                 slot,
                 defmt::Debug2Format(&e)
             );
+            return None;
+        }
+    };
+
+    // --- Read and parse the Report Map (best-effort) ---
+    let mouse_layout = read_report_map(client, hid_service, slot).await;
+
+    Some((report_char, mouse_layout))
+}
+
+/// Read and parse the HID Report Map characteristic.
+///
+/// Returns a MouseReportLayout if the Report Map was successfully read and contains
+/// mouse-like fields. Returns None on any failure (characteristic not found, read error,
+/// parse failure) — the caller falls back to heuristic-based parsing.
+async fn read_report_map<'a, C: Controller>(
+    client: &GattClient<'a, C, DefaultPacketPool, 10>,
+    hid_service: &ServiceHandle,
+    slot: usize,
+) -> Option<
+    heapless::Vec<crate::hid_report_map::MouseReportLayout, { crate::hid_report_map::MAX_LAYOUTS }>,
+> {
+    // Discover the Report Map characteristic handle
+    let report_map_char: Characteristic<[u8; 512]> = match client
+        .characteristic_by_uuid(hid_service, &ble_hid::HID_REPORT_MAP_UUID)
+        .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            debug!("[slot{}] Report Map characteristic not found", slot);
+            return None;
+        }
+    };
+
+    // Read the full descriptor (auto long-read if > MTU)
+    let mut buf = [0u8; 512];
+    let len = match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        client.read_characteristic(&report_map_char, &mut buf),
+    )
+    .await
+    {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => {
+            warn!(
+                "[slot{}] Failed to read Report Map: {:?}",
+                slot,
+                defmt::Debug2Format(&e)
+            );
+            return None;
+        }
+        Err(_) => {
+            warn!("[slot{}] Report Map read timeout", slot);
+            return None;
+        }
+    };
+
+    info!("[slot{}] Read Report Map ({} bytes)", slot, len);
+
+    match crate::hid_report_map::parse_report_map(&buf[..len]) {
+        Some(layouts) => {
+            info!(
+                "[slot{}] Parsed {} report layout(s) from Report Map",
+                slot,
+                layouts.len()
+            );
+            Some(layouts)
+        }
+        None => {
+            info!("[slot{}] Report Map did not contain a mouse layout", slot);
             None
         }
     }
@@ -383,20 +468,38 @@ async fn handle_connection_events<'a, C: Controller>(
     stack: &'a Stack<'a, C, DefaultPacketPool>,
     slot: usize,
 ) {
+    // Track the last accepted params to avoid retry loops.
+    // When accept fails with LL Procedure Collision, trouble-host sends an L2CAP
+    // rejection, which makes the peripheral retry immediately. By skipping
+    // duplicate requests, we let the LL-level update complete on its own.
+    let mut last_accepted_interval: u16 = 0;
+    let mut last_accepted_latency: u16 = 0;
+
     loop {
         match conn.next().await {
             ConnectionEvent::RequestConnectionParams(req) => {
-                info!(
-                    "[slot{}] Accepting connection parameter update: {:?}",
-                    slot,
-                    req.params()
-                );
-                if let Err(e) = req.accept(None, stack).await {
-                    warn!(
-                        "[slot{}] Failed to accept conn params: {:?}",
-                        slot,
-                        defmt::Debug2Format(&e)
-                    );
+                let params = req.params();
+                let interval = params.max_connection_interval.as_micros() as u16;
+                let latency = params.max_latency;
+
+                if interval == last_accepted_interval && latency == last_accepted_latency {
+                    // Same params we already accepted or attempted — skip to avoid
+                    // collision → rejection → retry loop.
+                    drop(req);
+                    continue;
+                }
+
+                debug!("[slot{}] Connection parameter update requested", slot);
+                match req.accept(None, stack).await {
+                    Ok(()) => {
+                        last_accepted_interval = interval;
+                        last_accepted_latency = latency;
+                    }
+                    Err(_) => {
+                        // LL Procedure Collision — record as attempted so we skip retries.
+                        last_accepted_interval = interval;
+                        last_accepted_latency = latency;
+                    }
                 }
             }
             ConnectionEvent::Disconnected { reason } => {

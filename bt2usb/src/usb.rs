@@ -81,6 +81,84 @@ async fn handle_mouse_report_standard(
         return;
     }
 
+    // Layout-aware path: when Generic profile has a parsed Report Map, use it
+    // for accurate field extraction instead of heuristics.
+    if event.profile == crate::device_profile::DeviceProfile::Generic {
+        if let Some(layout) = crate::ble_hid::find_slot_layout(event.slot_index as usize, event.len)
+        {
+            // BLE HID-over-GATT (HOGP) never includes the report ID in notification
+            // data — it's implied by the characteristic handle. Use data as-is.
+            let report_data = &event.data[..event.len];
+
+            let mut report16 = crate::usb_hid::MouseReport16 {
+                buttons: layout
+                    .buttons
+                    .map(|loc| crate::hid_report_map::extract_field(report_data, &loc) as u8)
+                    .unwrap_or(0)
+                    & 0x1F,
+                x: layout
+                    .x
+                    .map(|loc| {
+                        crate::hid_report_map::extract_field(report_data, &loc).clamp(-127, 127)
+                            as i8
+                    })
+                    .unwrap_or(0),
+                y: layout
+                    .y
+                    .map(|loc| {
+                        crate::hid_report_map::extract_field(report_data, &loc).clamp(-127, 127)
+                            as i8
+                    })
+                    .unwrap_or(0),
+                wheel: layout
+                    .wheel
+                    .map(|loc| {
+                        crate::hid_report_map::extract_field(report_data, &loc)
+                            .clamp(i16::MIN as i32, i16::MAX as i32) as i16
+                    })
+                    .unwrap_or(0),
+                pan: layout
+                    .pan
+                    .map(|loc| {
+                        crate::hid_report_map::extract_field(report_data, &loc)
+                            .clamp(i16::MIN as i32, i16::MAX as i32) as i16
+                    })
+                    .unwrap_or(0),
+            };
+
+            let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+            let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
+            let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
+            let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
+            report16.x = crate::usb_hid::apply_multiplier_i8(report16.x, x_m);
+            report16.y = crate::usb_hid::apply_multiplier_i8(report16.y, y_m);
+            report16.wheel = crate::usb_hid::apply_multiplier_i16(report16.wheel, scroll_m);
+            report16.pan = crate::usb_hid::apply_multiplier_i16(report16.pan, pan_m);
+
+            // Apply hires scroll scaling only for standard mice (≤8-bit wheel).
+            // Devices with 16-bit wheel fields already send fine-grained values.
+            let wheel_is_hires_native = layout.wheel.is_some_and(|l| l.bit_size > 8);
+            let pan_is_hires_native = layout.pan.is_some_and(|l| l.bit_size > 8);
+            if crate::usb_hid::HIRES_SCROLL_ENABLED.load(Ordering::Relaxed) {
+                if !wheel_is_hires_native {
+                    report16.wheel = report16.wheel.saturating_mul(120);
+                }
+                if !pan_is_hires_native {
+                    report16.pan = report16.pan.saturating_mul(120);
+                }
+            }
+
+            let data = serialize_mouse_report_16bit(&report16);
+            let mut buf = [0u8; 8];
+            buf[0] = 0x01;
+            buf[1..].copy_from_slice(&data);
+            if let Err(e) = writer.write(&buf).await {
+                warn!("Mouse write error (layout): {:?}", e);
+            }
+            return;
+        }
+    }
+
     if event.profile.uses_16bit_reports() {
         let mut report =
             event
