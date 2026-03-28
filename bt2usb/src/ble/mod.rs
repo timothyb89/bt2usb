@@ -151,7 +151,7 @@ pub async fn core0_ble_main(
         );
     }
 
-    let active_device_pref = preferences::load_active_device(&mut flash).await;
+    let mut active_device_pref = preferences::load_active_device(&mut flash).await;
 
     // Load forced OS override from flash and cache to scratch register.
     // Phase 0 checks this on the next soft reset to skip the probe.
@@ -195,10 +195,22 @@ pub async fn core0_ble_main(
         );
     }
 
+    // Validate ActiveDevice preference against loaded bonds.
+    // A stale preference (e.g. bonds cleared but preference persists) would
+    // cause a futile auto-connect attempt on boot.
     if let Some(ref dev) = active_device_pref {
-        info!("[core0] Active device preference: {:?}", dev.address);
-    } else {
-        info!("[core0] No active device preference set");
+        let has_matching_bond = loaded_bonds
+            .iter()
+            .any(|lb| lb.bond.identity.bd_addr.raw() == dev.address);
+        if has_matching_bond {
+            info!("[core0] Active device preference: {:?}", dev.address);
+        } else {
+            warn!(
+                "[core0] Ignoring stale active device {:?} (no matching bond)",
+                dev.address
+            );
+            active_device_pref = None;
+        }
     }
     // --- Build BLE stack ---
     let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
@@ -513,6 +525,21 @@ async fn connection_manager_loop<
 
             BleCommand::Restart => {
                 commands::handle_restart().await;
+            }
+
+            BleCommand::FactoryReset => {
+                // Disconnect all first
+                for (i, ch) in SLOT_CMD_CHANNELS.iter().enumerate() {
+                    if !slots::is_slot_idle(i) {
+                        let _ = ch.try_send(SlotCommand::Disconnect);
+                    }
+                }
+                Timer::after_millis(200).await;
+
+                let mut f = flash.lock().await;
+                commands::handle_factory_reset(&mut f).await;
+                // handle_factory_reset resets on success; if we get here it failed
+                loaded_bonds.clear();
             }
         }
 

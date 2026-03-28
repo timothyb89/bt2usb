@@ -50,6 +50,8 @@ pub enum BleCommand {
     SetAutoConnect { address: [u8; 6], enabled: bool },
     /// Clear a single bond by address.
     ClearBond { address: [u8; 6] },
+    /// Factory reset: clear all bonds and preferences, then restart.
+    FactoryReset,
 }
 
 // ============ Events (BLE -> RPC) ============

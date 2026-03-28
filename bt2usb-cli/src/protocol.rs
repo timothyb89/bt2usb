@@ -52,6 +52,7 @@ pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
 pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 pub const CMD_CLEAR_BOND: u8 = 23;
+pub const CMD_FACTORY_RESET: u8 = 24;
 
 // ============ Response IDs ============
 

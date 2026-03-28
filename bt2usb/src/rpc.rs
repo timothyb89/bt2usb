@@ -487,6 +487,11 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
+        protocol::Request::FactoryReset => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::FactoryReset);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
         protocol::Request::ForceReprobe => {
             info!("Force reprobe requested via RPC");
             // Send OK response first, then reset
