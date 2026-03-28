@@ -3,11 +3,15 @@
 //! Defines the command/event protocol between the RPC handler and the
 //! BLE central logic. The BLE task receives commands and emits events.
 
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use embassy_sync::signal::Signal;
 use trouble_host::prelude::*;
 use trouble_host::scan::LeAdvReportsIter;
 
+use crate::bonding::MAX_BONDS;
 use crate::protocol::ConnectionState;
 
 // ============ Commands (RPC -> BLE) ============
@@ -126,22 +130,74 @@ pub struct StatusInfo {
 pub static STATUS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, StatusInfo, 1> =
     Channel::new();
 
+// ============ Background Scan State ============
+
+/// Signal from scanner handler to manager when a bonded device is seen advertising.
+pub static BONDED_DEVICE_SEEN: Signal<CriticalSectionRawMutex, [u8; 6]> = Signal::new();
+
+/// Whether a background scan is active (handler should check bonded addresses).
+pub static BG_SCAN_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Number of valid entries in `BG_SCAN_FILTER_ADDRS`.
+pub static BG_SCAN_FILTER_COUNT: AtomicU8 = AtomicU8::new(0);
+
+/// Addresses being monitored during background scan. Each entry is 7 bytes:
+/// [addr0..addr5, addr_kind]. Only the first `BG_SCAN_FILTER_COUNT` entries are valid.
+#[allow(clippy::declare_interior_mutable_const)]
+pub static BG_SCAN_FILTER_ADDRS: [AtomicU8; 7 * MAX_BONDS] = {
+    const ZERO: AtomicU8 = AtomicU8::new(0);
+    [ZERO; 7 * MAX_BONDS]
+};
+
+/// Populate the background scan filter with addresses to monitor.
+pub fn set_bg_scan_filter(addrs: &[([u8; 6], u8)]) {
+    for (i, (addr, kind)) in addrs.iter().enumerate() {
+        let base = i * 7;
+        for j in 0..6 {
+            BG_SCAN_FILTER_ADDRS[base + j].store(addr[j], Ordering::Relaxed);
+        }
+        BG_SCAN_FILTER_ADDRS[base + 6].store(*kind, Ordering::Relaxed);
+    }
+    BG_SCAN_FILTER_COUNT.store(addrs.len() as u8, Ordering::Relaxed);
+}
+
 // ============ Scanner Event Handler ============
 
 /// BLE advertisement event handler that emits ScanResult events
-/// for all discovered HID devices.
+/// for all discovered HID devices, and signals when bonded devices
+/// are seen during background scanning.
 pub struct RpcScannerHandler;
 
 impl EventHandler for RpcScannerHandler {
     fn on_adv_reports(&self, mut it: LeAdvReportsIter<'_>) {
+        let bg_active = BG_SCAN_ACTIVE.load(Ordering::Relaxed);
+
         while let Some(Ok(report)) = it.next() {
+            // Background scan: check if this is a monitored bonded device
+            if bg_active {
+                let mut addr_bytes = [0u8; 6];
+                addr_bytes.copy_from_slice(report.addr.raw());
+                let count = BG_SCAN_FILTER_COUNT.load(Ordering::Relaxed) as usize;
+                for i in 0..count {
+                    let base = i * 7;
+                    let mut filter_addr = [0u8; 6];
+                    for j in 0..6 {
+                        filter_addr[j] = BG_SCAN_FILTER_ADDRS[base + j].load(Ordering::Relaxed);
+                    }
+                    if filter_addr == addr_bytes {
+                        BONDED_DEVICE_SEEN.signal(addr_bytes);
+                        return;
+                    }
+                }
+            }
+
+            // User-initiated scan: parse AD structures for HID devices
             let data = report.data;
             let mut i = 0;
             let mut name = [0u8; 32];
             let mut name_len: u8 = 0;
             let mut is_hid = false;
 
-            // Parse AD structures
             while i < data.len() {
                 let len = data[i] as usize;
                 if len == 0 || i + 1 + len > data.len() {
@@ -171,7 +227,6 @@ impl EventHandler for RpcScannerHandler {
                 i += 1 + len;
             }
 
-            // Emit event for HID devices
             if is_hid {
                 let mut addr_bytes = [0u8; 6];
                 addr_bytes.copy_from_slice(report.addr.raw());

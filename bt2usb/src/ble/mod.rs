@@ -341,7 +341,44 @@ async fn connection_manager_loop<
     info!("[manager] Connection manager started");
 
     loop {
-        let cmd = BLE_CMD_CHANNEL.receive().await;
+        // Check if we should run a background scan for bonded auto-connect devices
+        let unconnected = get_unconnected_auto_connect_addresses(loaded_bonds);
+        let has_idle_slot = slots::find_idle_slot().is_some();
+
+        let cmd = if !unconnected.is_empty() && has_idle_slot {
+            match run_background_scan(scanner, &unconnected).await {
+                BgScanOutcome::BondedDeviceSeen(addr) => {
+                    info!("[manager] Background scan: bonded device seen {:?}", addr);
+                    rpc_log::info("Bonded device detected, connecting...");
+                    // Small delay for HCI state to settle after scan stop
+                    Timer::after_millis(50).await;
+                    let addr_kind = if (addr[5] & 0xC0) == 0xC0 { 1u8 } else { 0u8 };
+                    BleCommand::Connect {
+                        address: addr,
+                        addr_kind,
+                        ignore_bond: false,
+                    }
+                }
+                BgScanOutcome::Command(cmd) => {
+                    // Small delay for HCI state to settle after scan stop
+                    Timer::after_millis(50).await;
+                    cmd
+                }
+                BgScanOutcome::Timeout => continue, // Refresh filter list and restart scan
+            }
+        } else {
+            // No background scanning needed. Periodically re-check in case
+            // a slot goes idle (device disconnects while we're waiting).
+            match embassy_futures::select::select(
+                BLE_CMD_CHANNEL.receive(),
+                Timer::after(embassy_time::Duration::from_secs(5)),
+            )
+            .await
+            {
+                embassy_futures::select::Either::First(cmd) => cmd,
+                embassy_futures::select::Either::Second(_) => continue,
+            }
+        };
 
         match cmd {
             BleCommand::StartScan => {
@@ -596,43 +633,18 @@ async fn connection_slot_task<'a, C: Controller>(
         let mut active_profile = request.profile;
 
         // Run the connection lifecycle (connect, pair, GATT).
-        // For bonded devices, auto-reconnect on unexpected disconnection.
-        loop {
-            connection::ble_connect_and_run(
-                stack,
-                flash,
-                target,
-                &mut active_profile,
-                request.has_stored_bond,
-                slot,
-                active_device_pref,
-            )
-            .await;
-
-            if !request.has_stored_bond {
-                break;
-            }
-
-            // Bonded device lost — auto-reconnect after a brief delay.
-            // Abort if a slot command arrives (e.g. user-initiated disconnect).
-            info!("[slot{}] Bonded device lost, will auto-reconnect", slot);
-            let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
-            rpc_log::info("Connection lost, reconnecting...");
-            match embassy_futures::select::select(
-                embassy_time::Timer::after(embassy_time::Duration::from_secs(2)),
-                SLOT_CMD_CHANNELS[slot].receive(),
-            )
-            .await
-            {
-                embassy_futures::select::Either::First(_) => {
-                    info!("[slot{}] Auto-reconnect attempt", slot);
-                }
-                embassy_futures::select::Either::Second(cmd) => {
-                    info!("[slot{}] Command during reconnect wait: {:?}", slot, cmd);
-                    break;
-                }
-            }
-        }
+        // When connection ends, mark slot idle. The manager's background scan
+        // will detect the device if it re-advertises and signal this slot again.
+        connection::ble_connect_and_run(
+            stack,
+            flash,
+            target,
+            &mut active_profile,
+            request.has_stored_bond,
+            slot,
+            active_device_pref,
+        )
+        .await;
 
         info!("[slot{}] Connection ended, marking idle", slot);
         slots::set_slot_idle(slot);
@@ -703,6 +715,109 @@ fn resolve_auto_connect_target(
             None
         }
     }
+}
+
+// ============ Background Scan for Auto-Reconnect ============
+
+/// Outcome of the background scan.
+enum BgScanOutcome {
+    /// A bonded device was seen advertising.
+    BondedDeviceSeen([u8; 6]),
+    /// A BLE command arrived while scanning.
+    Command(BleCommand),
+    /// Scan timed out (time to refresh the filter list).
+    Timeout,
+}
+
+/// Returns addresses of bonded devices with `auto_connect=true` that aren't
+/// currently connected in any slot.
+fn get_unconnected_auto_connect_addresses(
+    loaded_bonds: &[bonding::LoadedBond],
+) -> heapless::Vec<([u8; 6], u8), { bonding::MAX_BONDS }> {
+    let mut addrs = heapless::Vec::new();
+    for lb in loaded_bonds {
+        if !lb.auto_connect {
+            continue;
+        }
+        let mut addr = [0u8; 6];
+        addr.copy_from_slice(lb.bond.identity.bd_addr.raw());
+        if slots::find_slot_by_address(&addr).is_some() {
+            continue;
+        }
+        let addr_kind = if (addr[5] & 0xC0) == 0xC0 { 1u8 } else { 0u8 };
+        let _ = addrs.push((addr, addr_kind));
+    }
+    addrs
+}
+
+/// Run a passive background scan for bonded-but-not-connected devices.
+///
+/// Starts a passive scan with a filter accept list of bonded addresses.
+/// Returns when a bonded device is seen, a command arrives, or the scan times out.
+async fn run_background_scan<
+    C: Controller + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeSetScanParams>,
+>(
+    scanner: &mut Scanner<'_, C, DefaultPacketPool>,
+    bonded_addrs: &[([u8; 6], u8)],
+) -> BgScanOutcome {
+    use bt_hci::param::AddrKind;
+    use trouble_host::prelude::BdAddr;
+
+    // Build filter accept list from bonded addresses
+    let mut bd_addrs: heapless::Vec<BdAddr, { bonding::MAX_BONDS }> = heapless::Vec::new();
+    for (addr, _) in bonded_addrs {
+        let _ = bd_addrs.push(BdAddr::new(*addr));
+    }
+    let mut filter_list: heapless::Vec<(AddrKind, &BdAddr), { bonding::MAX_BONDS }> =
+        heapless::Vec::new();
+    for (i, (_, kind)) in bonded_addrs.iter().enumerate() {
+        let addr_kind = if *kind == 1 {
+            AddrKind::RANDOM
+        } else {
+            AddrKind::PUBLIC
+        };
+        let _ = filter_list.push((addr_kind, &bd_addrs[i]));
+    }
+
+    let scan_config = trouble_host::connection::ScanConfig {
+        active: false, // Passive scan — lower power
+        filter_accept_list: &filter_list,
+        interval: embassy_time::Duration::from_millis(200),
+        window: embassy_time::Duration::from_millis(100),
+        timeout: embassy_time::Duration::from_secs(0), // No HCI timeout
+        ..Default::default()
+    };
+
+    // Set the filter state for the scanner handler
+    crate::ble_state::set_bg_scan_filter(bonded_addrs);
+    crate::ble_state::BONDED_DEVICE_SEEN.reset();
+    crate::ble_state::BG_SCAN_ACTIVE.store(true, core::sync::atomic::Ordering::Relaxed);
+
+    let result = match scanner.scan(&scan_config).await {
+        Ok(_session) => {
+            // _session keeps scan alive; dropping it stops the scan
+            match embassy_futures::select::select3(
+                crate::ble_state::BONDED_DEVICE_SEEN.wait(),
+                BLE_CMD_CHANNEL.receive(),
+                Timer::after(embassy_time::Duration::from_secs(60)),
+            )
+            .await
+            {
+                embassy_futures::select::Either3::First(addr) => {
+                    BgScanOutcome::BondedDeviceSeen(addr)
+                }
+                embassy_futures::select::Either3::Second(cmd) => BgScanOutcome::Command(cmd),
+                embassy_futures::select::Either3::Third(_) => BgScanOutcome::Timeout,
+            }
+        }
+        Err(_) => {
+            // Scan failed to start (e.g. HCI busy) — just wait for a command
+            BgScanOutcome::Command(BLE_CMD_CHANNEL.receive().await)
+        }
+    };
+
+    crate::ble_state::BG_SCAN_ACTIVE.store(false, core::sync::atomic::Ordering::Relaxed);
+    result
 }
 
 /// Run a BLE scan session with a 30-second timeout, interruptible by commands.
