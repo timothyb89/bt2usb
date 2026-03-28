@@ -4,15 +4,61 @@ BLE HID to USB HID Bridge for Raspberry Pi Pico W.
 
 ## Overview
 
-This firmware connects to Bluetooth LE HID devices (keyboards, mice, custom devices) and translates their input into USB HID, allowing them to be used with a USB switch between computers without re-pairing.
+This firmware connects to Bluetooth LE HID devices (mainly mice) and translates their input into USB HID, allowing them to be used with a USB switch between computers without re-pairing.
 
-I built this to pair with the fantastic [Full Scroll Dial by Engineer Bo](https://www.youtube.com/watch?v=tzqJ1rJURgs) so I could easily switch it between computers with a USB switch. The idea is inspired by the excellent [`hid-remapper`](https://github.com/jfedor2/hid-remapper), but written in embedded Rust and with specific device profiles.
+I built this to pair with the fantastic
+[Full Scroll Dial by Engineer Bo](https://www.youtube.com/watch?v=tzqJ1rJURgs)
+so I could easily switch it between computers with a USB switch. The idea is
+inspired by the excellent
+[`hid-remapper`](https://github.com/jfedor2/hid-remapper), but without support
+for actually remapping inputs and instead focusing on providing native-like
+input feel and explicit support for a few tricky devices. It's since evolved to
+help bridge OS support gaps by emulating supported devices on OSes that wouldn't
+otherwise support them (like the Full Scroll Dial on macOS).
 
-Notably, it fully supports the high resolution scrolling events emitted by the Full Scroll Dial and translates them to USB HID with no noticeable loss of scrolling precision versus using the dial natively via Bluetooth. Additionally, the reporting rate (both for input via Bluetooth and output via USB HID) is enough to ensure fairly minimal added latency compared to connecting directly to the target system via Bluetooth.
+Notably, it fully supports the high resolution scrolling events emitted by the
+Full Scroll Dial and translates them to USB HID with no noticeable loss of
+scrolling precision versus using the dial natively via Bluetooth. Additionally,
+the reporting rate (both for input via Bluetooth and output via USB HID) is
+enough to ensure fairly minimal added latency compared to connecting directly
+to the target system via Bluetooth.
 
-Moreover, it also supports high-resolution scrolling on macOS without any software running on the host. macOS [traditionally does not support][ploopy] high-resolution scrolling for third-party input devices, accepting only line-based scrolling events to which it applies an aggressive acceleration curve. `bt2usb` works around this limitation by emulating an Apple Magic Trackpad 2 and synthesizing touch scroll events. This allows accurate pixel-level scrolling without any custom driver, and since `bt2usb` can detect when connected to macOS hosts, will automatically switch between standard HID and Magic Trackpad emulation, even on a USB switch.
+Moreover, it also supports high-resolution scrolling on macOS without any
+software running on the host. macOS [traditionally does not support][ploopy]
+high-resolution scrolling for third-party input devices, accepting only
+line-based scrolling events to which it applies an aggressive acceleration
+curve. `bt2usb` works around this limitation by emulating an Apple Magic
+Trackpad 2 and synthesizing touch scroll events. This allows accurate
+pixel-level scrolling without any custom driver, and since `bt2usb` can
+detect when connected to macOS hosts, will automatically switch between
+standard HID and Magic Trackpad emulation, even on a USB switch.
 
 [ploopy]: https://ploopyco.github.io/knob/appendices/macos/
+
+## Features
+
+- High reporting rate for native-like input performance
+- Explicit support for high-res scrolling devices, particularly the Full Scroll
+  Dial
+- macOS support for high-res (smooth, pixel-level) scrolling via Magic Trackpad 2
+  emulation
+- Supports up to 3 concurrently connected devices
+
+## Device support notes
+
+I've tested a number of BLE devices successfully. The `Generic` (default)
+profile should be sufficient for most standard Bluetooth HID mice.
+
+Known to work:
+- Full Scroll Dial
+- Logitech MX Master 3
+- Keychron M3 8K
+
+Not currently supported:
+- Keyboards
+- Game controllers
+
+We might consider supporting keyboards and game controllers in the future.
 
 ## Requirements
 
@@ -28,13 +74,6 @@ firmware](https://github.com/raspberrypi/debugprobe).
 
 [rpi-probe]: https://www.raspberrypi.com/products/debug-probe/
 
-## Features
-
-- Profiles for the Full Scroll Dial and Logitech MX Master 3S
-- High reporting rate for connected devices
-- 16-bit reporting mode for the Full Scroll Dial for native scroll velocity
-- macOS support via Magic Trackpad 2 emulation
-
 ## TODOs
 
 - Improved bond storage robustness for the MX Master mice
@@ -44,6 +83,7 @@ firmware](https://github.com/raspberrypi/debugprobe).
 Longer term desired TODOs:
 
 - Bluetooth Classic support. Supported by the Pico W, but not by `trouble`.
+  Many Bluetooth keyboards only support Bluetooth Classic.
 
 ## Flashing
 
