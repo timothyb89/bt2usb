@@ -217,36 +217,35 @@ enum SecurityOutcome {
     RetryableError,
 }
 
-/// Initiate the security process based on whether a bond exists.
+/// Initiate the security process.
 ///
-/// - With an existing bond: just wait for automatic re-encryption
-/// - Without a bond: request security (pairing)
+/// Always calls `request_security()` — trouble-host checks for a stored bond
+/// and uses LE Start Encryption (re-encryption) if one exists, or falls back
+/// to SMP Pairing for new devices.
 async fn initiate_security<'a>(
     conn: &Connection<'a, DefaultPacketPool>,
     has_stored_bond: bool,
 ) -> SecurityOutcome {
     if has_stored_bond {
-        info!("Existing bond detected - waiting for automatic re-encryption...");
+        info!("Existing bond detected - requesting re-encryption...");
         rpc_log::info("Re-encryption in progress");
-        SecurityOutcome::Ready
     } else {
         if let Err(e) = conn.set_bondable(true) {
             error!("Failed to set bondable: {:?}", e);
         }
-
         let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Pairing));
         rpc_log::info("Initiating pairing");
         info!("Requesting security (bondable: true)...");
+    }
 
-        match conn.request_security() {
-            Ok(_) => {
-                info!("Security request sent");
-                SecurityOutcome::Ready
-            }
-            Err(e) => {
-                error!("Failed to request security: {:?}", e);
-                SecurityOutcome::RetryableError
-            }
+    match conn.request_security() {
+        Ok(_) => {
+            info!("Security request sent");
+            SecurityOutcome::Ready
+        }
+        Err(e) => {
+            error!("Failed to request security: {:?}", e);
+            SecurityOutcome::RetryableError
         }
     }
 }

@@ -469,6 +469,7 @@ pub fn serialize_keyboard_report(report: &KeyboardHidReport) -> [u8; 8] {
 
 /// Serialize a MouseReport to bytes for USB transmission
 /// MouseReport layout: buttons (1), x (1), y (1), wheel (1), pan (1) = 5 bytes
+#[allow(dead_code)]
 pub fn serialize_mouse_report(report: &MouseReport) -> [u8; 5] {
     let mut buf = [0u8; 5];
     buf[0] = report.buttons;

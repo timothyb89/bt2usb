@@ -12,7 +12,7 @@
 //! - Battery level polling fallback (if notifications not supported)
 
 use defmt::*;
-use embassy_futures::select::{select, select4, Either, Either4};
+use embassy_futures::select::{select, select3, select4, Either3, Either4};
 use embassy_time::Ticker;
 use trouble_host::prelude::*;
 
@@ -61,11 +61,13 @@ pub async fn run_gatt_session<'a, C: Controller>(
         }
     };
 
-    // Run GATT client driver and HID session concurrently.
+    // Run GATT client driver, HID session, and connection event handler concurrently.
     // client.task() must run for GATT operations to proceed.
-    let run_result = select(
+    // Connection events must be polled to handle parameter update requests from the peripheral.
+    let run_result = select3(
         client.task(),
         run_hid_session(&client, conn, active_profile, slot),
+        handle_connection_events(conn, stack, slot),
     )
     .await;
 
@@ -73,11 +75,18 @@ pub async fn run_gatt_session<'a, C: Controller>(
     ble_hid::clear_battery_level(slot);
 
     match run_result {
-        Either::First(_) => {
+        Either3::First(_) => {
             info!("[slot{}] GATT client task ended - connection lost", slot);
             GattSessionResult::ConnectionLost
         }
-        Either::Second(result) => result,
+        Either3::Second(result) => result,
+        Either3::Third(_) => {
+            info!(
+                "[slot{}] Connection event handler ended - connection lost",
+                slot
+            );
+            GattSessionResult::ConnectionLost
+        }
     }
 }
 
@@ -360,6 +369,44 @@ async fn run_hid_event_loop<'a, 'c, C: Controller>(
                     read_battery_level(client, c, slot).await;
                 }
             }
+        }
+    }
+}
+
+/// Handle connection events during the GATT session.
+///
+/// Polls `conn.next()` to process events like connection parameter update requests.
+/// Without this, the peripheral's L2CAP parameter update request goes unanswered
+/// and it disconnects after the 30-second signaling timeout.
+async fn handle_connection_events<'a, C: Controller>(
+    conn: &Connection<'a, DefaultPacketPool>,
+    stack: &'a Stack<'a, C, DefaultPacketPool>,
+    slot: usize,
+) {
+    loop {
+        match conn.next().await {
+            ConnectionEvent::RequestConnectionParams(req) => {
+                info!(
+                    "[slot{}] Accepting connection parameter update: {:?}",
+                    slot,
+                    req.params()
+                );
+                if let Err(e) = req.accept(None, stack).await {
+                    warn!(
+                        "[slot{}] Failed to accept conn params: {:?}",
+                        slot,
+                        defmt::Debug2Format(&e)
+                    );
+                }
+            }
+            ConnectionEvent::Disconnected { reason } => {
+                info!(
+                    "[slot{}] Connection event: disconnected ({:?})",
+                    slot, reason
+                );
+                break;
+            }
+            _ => {}
         }
     }
 }

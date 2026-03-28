@@ -382,11 +382,34 @@ fn translate_generic(data: &[u8], len: usize) -> MouseReport {
         };
     }
 
-    MouseReport {
-        buttons: data[0],
-        x: data[1] as i8,
-        y: data[2] as i8,
-        wheel: data.get(3).copied().unwrap_or(0) as i8,
-        pan: data.get(4).copied().unwrap_or(0) as i8,
+    // USB descriptor defines 5 buttons (bits 0-4). Mask off upper bits to prevent
+    // catastrophic button floods when a non-mouse device (e.g. scroll dial) sends
+    // data that doesn't match the expected mouse report format.
+    let buttons = data[0] & 0x1F;
+
+    // 5 bytes is the max for 8-bit fields (buttons + X + Y + wheel + pan).
+    // 6+ bytes means 16-bit XY (modern/gaming mice like Keychron M3 8k).
+    // Wheel/pan remain 8-bit — the common 7-byte format is:
+    //   [buttons(1), X(i16 LE), Y(i16 LE), wheel(i8), pad/pan(i8)]
+    if len >= 6 {
+        let x = i16::from_le_bytes([data[1], data[2]]).clamp(-127, 127) as i8;
+        let y = i16::from_le_bytes([data[3], data[4]]).clamp(-127, 127) as i8;
+        let wheel = if len >= 6 { data[5] as i8 } else { 0 };
+        let pan = if len >= 7 { data[6] as i8 } else { 0 };
+        MouseReport {
+            buttons,
+            x,
+            y,
+            wheel,
+            pan,
+        }
+    } else {
+        MouseReport {
+            buttons,
+            x: data[1] as i8,
+            y: data[2] as i8,
+            wheel: data.get(3).copied().unwrap_or(0) as i8,
+            pan: data.get(4).copied().unwrap_or(0) as i8,
+        }
     }
 }

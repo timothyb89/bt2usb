@@ -23,8 +23,8 @@ use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use crate::ble_hid::{HidReportEvent, HidReportType, BATTERY_USB_SIGNAL, HID_REPORT_CHANNEL};
 use crate::scratch::DetectedOs;
 use crate::usb_hid::{
-    serialize_keyboard_report, serialize_mouse_report, serialize_mouse_report_16bit,
-    KeyboardHidReport, MOUSE_HIRES_16BIT_REPORT_DESC, VENDOR_RPC_REPORT_DESC,
+    serialize_keyboard_report, serialize_mouse_report_16bit, KeyboardHidReport,
+    MOUSE_HIRES_16BIT_REPORT_DESC, VENDOR_RPC_REPORT_DESC,
 };
 use crate::{rpc, Irqs, CORE1_EXECUTOR_READY, EXECUTOR1};
 
@@ -113,8 +113,24 @@ async fn handle_mouse_report_standard(
         report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
         report.wheel = crate::usb_hid::apply_multiplier_i8(report.wheel, scroll_m);
         report.pan = crate::usb_hid::apply_multiplier_i8(report.pan, pan_m);
-        let data = serialize_mouse_report(&report);
-        let mut buf = [0u8; 6];
+        // USB descriptor always uses 16-bit wheel/pan — promote to MouseReport16.
+        // When hires scroll is active, the OS expects scroll in 1/120th-notch units
+        // (per the Resolution Multiplier in the descriptor). Standard mice send ±1
+        // per detent, so scale by 120 to get one full notch per click.
+        let hires_scale: i16 = if crate::usb_hid::HIRES_SCROLL_ENABLED.load(Ordering::Relaxed) {
+            120
+        } else {
+            1
+        };
+        let report16 = crate::usb_hid::MouseReport16 {
+            buttons: report.buttons,
+            x: report.x,
+            y: report.y,
+            wheel: (report.wheel as i16) * hires_scale,
+            pan: (report.pan as i16) * hires_scale,
+        };
+        let data = serialize_mouse_report_16bit(&report16);
+        let mut buf = [0u8; 8];
         buf[0] = 0x01;
         buf[1..].copy_from_slice(&data);
         if let Err(e) = writer.write(&buf).await {
