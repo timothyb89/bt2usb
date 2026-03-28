@@ -71,6 +71,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
     config.connect_params.supervision_timeout = Duration::from_secs(2);
 
     let mut pairing_attempts: u8 = 0;
+    let mut try_stored_bond = has_stored_bond;
 
     'connect: loop {
         pairing_attempts += 1;
@@ -98,7 +99,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
         };
 
         // Phase 2: Pair or re-encrypt
-        match initiate_security(&conn, has_stored_bond).await {
+        match initiate_security(&conn, try_stored_bond).await {
             SecurityOutcome::Ready => {}
             SecurityOutcome::RetryableError => {
                 if pairing_attempts >= MAX_PAIRING_RETRIES {
@@ -113,6 +114,15 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
         match await_pairing(&conn, flash, *active_profile, slot).await {
             PairingOutcome::Success => {}
             PairingOutcome::Failed => {
+                if try_stored_bond {
+                    // Re-encryption with stored bond failed (e.g. stale bond with wrong
+                    // EDIV/Rand). Fall back to fresh pairing on next attempt.
+                    warn!(
+                        "[slot{}] Re-encryption failed, will try fresh pairing",
+                        slot
+                    );
+                    try_stored_bond = false;
+                }
                 if pairing_attempts >= MAX_PAIRING_RETRIES {
                     error!("[slot{}] Max pairing retries exceeded", slot);
                     rpc_log::error("Max pairing retries exceeded");
@@ -219,16 +229,37 @@ enum SecurityOutcome {
 
 /// Initiate the security process.
 ///
-/// Always calls `request_security()` — trouble-host checks for a stored bond
-/// and uses LE Start Encryption (re-encryption) if one exists, or falls back
-/// to SMP Pairing for new devices.
+/// For bonded devices: wait briefly for the peripheral to send an SMP Security Request
+/// (which trouble-host handles internally by starting LE Start Encryption). If the
+/// peripheral doesn't initiate within the timeout, we explicitly call `request_security()`.
+/// This avoids a race where both sides initiate encryption simultaneously, which causes
+/// trouble-host's SMP state machine to reject the peripheral's Security Request.
+///
+/// For new devices: immediately call `request_security()` to start SMP Pairing.
 async fn initiate_security<'a>(
     conn: &Connection<'a, DefaultPacketPool>,
     has_stored_bond: bool,
 ) -> SecurityOutcome {
     if has_stored_bond {
-        info!("Existing bond detected - requesting re-encryption...");
+        info!("Existing bond detected - waiting for re-encryption...");
         rpc_log::info("Re-encryption in progress");
+
+        // Give the peripheral time to initiate encryption via SMP Security Request.
+        // Most bonded devices send this within ~100ms of connection. If encryption
+        // completes (device-initiated), request_security() becomes a no-op.
+        Timer::after(Duration::from_millis(500)).await;
+
+        // Check if encryption already started (device-initiated)
+        if conn.security_level().unwrap_or(SecurityLevel::NoEncryption)
+            != SecurityLevel::NoEncryption
+        {
+            info!("Re-encryption completed (device-initiated)");
+            return SecurityOutcome::Ready;
+        }
+
+        // Device didn't initiate — we need to start encryption ourselves
+        // (e.g. Keychron M3 8k mouse doesn't send Security Request)
+        info!("Device did not initiate encryption, requesting...");
     } else {
         if let Err(e) = conn.set_bondable(true) {
             error!("Failed to set bondable: {:?}", e);
