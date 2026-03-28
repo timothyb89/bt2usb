@@ -25,11 +25,31 @@ pub fn handle_get_status(
     active_profile: DeviceProfile,
     active_device_pref: &Option<preferences::ActiveDevice>,
 ) {
+    use crate::ble::slots;
+
     let (has_active, active_addr) = if let Some(ref pref) = active_device_pref {
         (pref.address != [0u8; 6], pref.address)
     } else {
         (false, [0u8; 6])
     };
+
+    // Gather per-slot connection info
+    let mut connected_devices: [Option<ble_state::ConnectedDeviceInfo>; 3] = [None, None, None];
+    let mut connected_count = 0u8;
+    for (i, dev) in connected_devices
+        .iter_mut()
+        .enumerate()
+        .take(slots::MAX_CONNECTIONS)
+    {
+        if !slots::is_slot_idle(i) {
+            *dev = Some(ble_state::ConnectedDeviceInfo {
+                address: slots::get_slot_address(i),
+                profile_id: slots::SLOT_PROFILES[i].load(Ordering::Relaxed),
+                battery_level: ble_hid::BATTERY_LEVELS[i].load(Ordering::Relaxed),
+            });
+            connected_count += 1;
+        }
+    }
 
     let status = ble_state::StatusInfo {
         bonded_count: loaded_bonds.len() as u8,
@@ -37,6 +57,8 @@ pub fn handle_get_status(
         active_device_set: has_active,
         active_device_address: active_addr,
         battery_level: ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed),
+        connected_count,
+        connected_devices,
     };
 
     let _ = ble_state::STATUS_RESPONSE_CHANNEL.try_send(status);
@@ -202,6 +224,26 @@ pub async fn handle_set_auto_connect(
         }
         Err(()) => {
             error!("Failed to update auto-connect: bond not found");
+            rpc_log::error("Bond not found");
+        }
+    }
+}
+
+/// Remove a single bond by address and refresh the in-memory bond list.
+pub async fn handle_clear_bond(
+    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
+    address: &[u8; 6],
+    loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
+) {
+    info!("Clearing bond for {:?}", address);
+    match bonding::clear_bond_by_address(flash, address).await {
+        Ok(slot) => {
+            info!("Bond removed from slot {}", slot);
+            rpc_log::info("Bond removed");
+            *loaded_bonds = bonding::load_bonds(flash).await;
+        }
+        Err(()) => {
+            error!("Failed to clear bond: not found");
             rpc_log::error("Bond not found");
         }
     }

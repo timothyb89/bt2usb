@@ -72,6 +72,12 @@ enum Command {
     /// Clear all bonds
     ClearBonds,
 
+    /// Clear a single bond by address
+    ClearBond {
+        /// BLE address (AA:BB:CC:DD:EE:FF)
+        address: String,
+    },
+
     /// Set the profile for a bonded device
     SetProfile {
         /// BLE address (AA:BB:CC:DD:EE:FF)
@@ -228,6 +234,7 @@ fn main() -> Result<()> {
         Command::Disconnect { address } => cmd_disconnect(&mut transport, address.as_deref()),
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),
+        Command::ClearBond { address } => cmd_clear_bond(&mut transport, &address),
         Command::SetProfile {
             address,
             profile_id,

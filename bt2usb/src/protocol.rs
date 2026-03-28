@@ -61,6 +61,7 @@ pub const CMD_SET_FORCED_OS: u8 = 19;
 pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
 pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
+pub const CMD_CLEAR_BOND: u8 = 23;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -112,6 +113,10 @@ pub enum Request {
     SetAutoConnect {
         address: [u8; 6],
         enabled: bool,
+    },
+    /// Clear a single bond by address.
+    ClearBond {
+        address: [u8; 6],
     },
 }
 
@@ -271,6 +276,15 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let enabled = d.bool().map_err(|_| ProtocolError::MissingField)?;
             Ok(Request::SetAutoConnect { address, enabled })
         }
+        CMD_CLEAR_BOND => {
+            let addr_bytes = d.bytes().map_err(|_| ProtocolError::MissingField)?;
+            if addr_bytes.len() < 6 {
+                return Err(ProtocolError::MissingField);
+            }
+            let mut address = [0u8; 6];
+            address.copy_from_slice(&addr_bytes[..6]);
+            Ok(Request::ClearBond { address })
+        }
         CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
         CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
@@ -312,8 +326,8 @@ pub fn encode_response_error(buf: &mut [u8], code: u8, message: &str) -> EncResu
 }
 
 /// Encode a status response.
-/// Extended format includes active device info and battery level
-/// (backward compatible - clients can ignore extra fields).
+/// Extended format includes active device info, battery level, and connected devices.
+/// (backward compatible - older clients ignore extra fields).
 pub fn encode_response_status(
     buf: &mut [u8],
     state: ConnectionState,
@@ -323,9 +337,11 @@ pub fn encode_response_status(
     active_device_address: &[u8; 6],
     battery_level: u8,
     detected_os: u8,
+    connected_count: u8,
+    connected_devices: &[Option<crate::ble_state::ConnectedDeviceInfo>; 3],
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(8)
+        e.array(10)
             .unwrap()
             .u8(RESP_STATUS)
             .unwrap()
@@ -342,7 +358,21 @@ pub fn encode_response_status(
             .u8(battery_level)
             .unwrap()
             .u8(detected_os)
+            .unwrap()
+            .u8(connected_count)
             .unwrap();
+        // Connected devices array
+        e.array(connected_count as u64).unwrap();
+        for dev in connected_devices.iter().flatten() {
+            e.array(3)
+                .unwrap()
+                .bytes(&dev.address)
+                .unwrap()
+                .u8(dev.profile_id)
+                .unwrap()
+                .u8(dev.battery_level)
+                .unwrap();
+        }
     })
 }
 

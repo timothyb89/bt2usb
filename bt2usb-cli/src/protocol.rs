@@ -51,6 +51,7 @@ pub const CMD_SET_FORCED_OS: u8 = 19;
 pub const CMD_SUBSCRIBE_DEFMT: u8 = 20;
 pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
+pub const CMD_CLEAR_BOND: u8 = 23;
 
 // ============ Response IDs ============
 
@@ -273,6 +274,17 @@ pub fn encode_request_set_auto_connect(
     })
 }
 
+pub fn encode_request_clear_bond(buf: &mut [u8], address: &[u8; 6]) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(2)
+            .unwrap()
+            .u8(CMD_CLEAR_BOND)
+            .unwrap()
+            .bytes(address)
+            .unwrap();
+    })
+}
+
 pub fn encode_request_set_config(buf: &mut [u8], key: u8, value: u32) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(3)
@@ -320,6 +332,7 @@ pub enum Response {
         active_device_address: [u8; 6],
         battery_level: u8,
         detected_os: u8,
+        connected_devices: Vec<ConnectedDeviceInfo>,
     },
     Bonds {
         bonds: Vec<BondEntry>,
@@ -349,6 +362,13 @@ pub struct BondEntry {
     pub addr_kind: u8,
     pub profile_id: u8,
     pub name: String,
+}
+
+#[derive(Debug)]
+pub struct ConnectedDeviceInfo {
+    pub address: [u8; 6],
+    pub profile_id: u8,
+    pub battery_level: u8,
 }
 
 pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
@@ -381,6 +401,34 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             let battery_level = d.u8().unwrap_or(0xFF);
             let detected_os = d.u8().unwrap_or(0);
 
+            // Extended: connected device list (backward compatible - optional)
+            let connected_count = d.u8().unwrap_or(0);
+            let mut connected_devices = Vec::new();
+            if connected_count > 0 {
+                if let Ok(_arr) = d.array() {
+                    for _ in 0..connected_count {
+                        if d.array().is_err() {
+                            break;
+                        }
+                        let addr_bytes = match d.bytes() {
+                            Ok(b) if b.len() >= 6 => {
+                                let mut a = [0u8; 6];
+                                a.copy_from_slice(&b[..6]);
+                                a
+                            }
+                            _ => break,
+                        };
+                        let profile_id = d.u8().unwrap_or(0);
+                        let bat = d.u8().unwrap_or(0xFF);
+                        connected_devices.push(ConnectedDeviceInfo {
+                            address: addr_bytes,
+                            profile_id,
+                            battery_level: bat,
+                        });
+                    }
+                }
+            }
+
             Ok(Response::Status {
                 state,
                 bonded_count,
@@ -389,6 +437,7 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 active_device_address,
                 battery_level,
                 detected_os,
+                connected_devices,
             })
         }
         RESP_BONDS => {

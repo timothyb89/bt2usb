@@ -130,15 +130,46 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
             active_device_address,
             battery_level,
             detected_os,
+            connected_devices,
         } => {
             println!("  State:          {}", state.label().bold());
             println!("  Host OS:        {}", detected_os_name(detected_os).bold());
             println!("  Bonded devices: {bonded_count}");
-            println!(
-                "  Active profile: {} ({})",
-                active_profile,
-                profile_name(active_profile)
-            );
+
+            if connected_devices.is_empty() {
+                // Legacy single-device display
+                println!(
+                    "  Active profile: {} ({})",
+                    active_profile,
+                    profile_name(active_profile)
+                );
+
+                let battery_str = if battery_level == 0xFF {
+                    "Unknown".dimmed().to_string()
+                } else {
+                    format!("{}%", battery_level).bold().to_string()
+                };
+                println!("  Battery:        {battery_str}");
+            } else {
+                println!(
+                    "  Connected:      {}/3",
+                    connected_devices.len().to_string().bold()
+                );
+                for (i, dev) in connected_devices.iter().enumerate() {
+                    let bat = if dev.battery_level == 0xFF {
+                        "?".dimmed().to_string()
+                    } else {
+                        format!("{}%", dev.battery_level)
+                    };
+                    println!(
+                        "    {}. {}  {}  battery: {}",
+                        i + 1,
+                        format_address(&dev.address).bold(),
+                        profile_name(dev.profile_id),
+                        bat,
+                    );
+                }
+            }
 
             if active_device_set {
                 println!(
@@ -152,13 +183,6 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                     "None".dimmed()
                 );
             }
-
-            let battery_str = if battery_level == 0xFF {
-                "Unknown".dimmed().to_string()
-            } else {
-                format!("{}%", battery_level).bold().to_string()
-            };
-            println!("  Battery:        {battery_str}");
         }
         Response::Error { code, message } => {
             eprintln!("{} (code {code}): {message}", "Error".red());
@@ -343,6 +367,28 @@ pub fn cmd_clear_bonds(transport: &mut Transport) -> Result<()> {
     let (resp, _) = transport.request_simple(CMD_CLEAR_BONDS, DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
     println!("{}", "All bonds cleared.".green());
+    println!(
+        "{}",
+        "Note: reboot the device to remove bonds from the BLE stack.".dimmed()
+    );
+    Ok(())
+}
+
+pub fn cmd_clear_bond(transport: &mut Transport, address: &str) -> Result<()> {
+    let addr = parse_address(address)?;
+    println!("Clearing bond for {}...", format_address(&addr).bold());
+
+    let mut cbor_buf = [0u8; 32];
+    let len = encode_request_clear_bond(&mut cbor_buf, &addr)
+        .map_err(|_| anyhow::anyhow!("encode failed"))?;
+
+    let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!("{}", "Bond cleared.".green());
+    println!(
+        "{}",
+        "Note: reboot the device to remove the bond from the BLE stack.".dimmed()
+    );
     Ok(())
 }
 
