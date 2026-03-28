@@ -319,6 +319,7 @@ pub fn encode_request_set_forced_os(buf: &mut [u8], os: u8) -> EncResult {
 // ============ Response decoding (device -> host) ============
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum Response {
     Ok,
     Error {
@@ -358,11 +359,13 @@ pub enum Response {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BondEntry {
     pub address: [u8; 6],
     pub addr_kind: u8,
     pub profile_id: u8,
     pub name: String,
+    pub auto_connect: bool,
 }
 
 #[derive(Debug)]
@@ -457,11 +460,13 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 let addr_kind = d.u8().map_err(|e| format!("kind: {e}"))?;
                 let profile_id = d.u8().map_err(|e| format!("profile: {e}"))?;
                 let name = d.str().map_err(|e| format!("name: {e}"))?.to_string();
+                let auto_connect = d.bool().unwrap_or(false);
                 bonds.push(BondEntry {
                     address,
                     addr_kind,
                     profile_id,
                     name,
+                    auto_connect,
                 });
             }
             Ok(Response::Bonds { bonds })

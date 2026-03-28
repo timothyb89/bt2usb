@@ -98,7 +98,8 @@ pub static BLE_CMD_CHANNEL: Channel<CriticalSectionRawMutex, BleCommand, 4> = Ch
 pub static BLE_EVENT_CHANNEL: Channel<CriticalSectionRawMutex, BleEvent, 8> = Channel::new();
 
 /// Bond list response for GetBonds command
-pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>), 10>;
+/// Bond list entry: (address, addr_kind, profile_id, name, auto_connect)
+pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>, bool), 10>;
 
 /// Response channel for GetBonds (capacity 1, only one request at a time).
 pub static BONDS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, BondList, 1> = Channel::new();

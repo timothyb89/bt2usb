@@ -81,6 +81,11 @@ pub fn is_slot_idle(slot: usize) -> bool {
     get_slot_state(slot) == SLOT_IDLE
 }
 
+/// Check if any slot is currently in the connecting state.
+pub fn any_slot_connecting() -> bool {
+    (0..MAX_CONNECTIONS).any(|i| get_slot_state(i) == SLOT_CONNECTING)
+}
+
 pub fn set_slot_idle(slot: usize) {
     set_slot_state(slot, SLOT_IDLE);
     set_slot_address(slot, [0; 6]);

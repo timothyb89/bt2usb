@@ -87,7 +87,7 @@ pub fn handle_get_bonds(loaded_bonds: &[LoadedBond]) {
             name_str
         });
 
-        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name));
+        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect));
     }
 
     let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);

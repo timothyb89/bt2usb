@@ -273,26 +273,11 @@ pub async fn core0_ble_main(
     static FLASH_MUTEX: StaticCell<FlashMutex> = StaticCell::new();
     let flash_mutex = FLASH_MUTEX.init(Mutex::new(flash));
 
-    // Auto-connect on startup: connect to bonds with auto_connect flag,
-    // or fall back to legacy ActiveDevice preference for backward compatibility.
-    let has_auto_connect_bonds = loaded_bonds.iter().any(|lb| lb.auto_connect);
-    if has_auto_connect_bonds {
-        // Queue AutoConnect for each bond with auto_connect=true
-        for lb in &loaded_bonds {
-            if lb.auto_connect {
-                let mut addr = [0u8; 6];
-                addr.copy_from_slice(lb.bond.identity.bd_addr.raw());
-                let addr_kind = if (addr[5] & 0xC0) == 0xC0 { 1u8 } else { 0u8 };
-                info!("[core0] Queuing auto-connect for {:?}", addr);
-                let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
-                    address: addr,
-                    addr_kind,
-                    ignore_bond: false,
-                });
-            }
-        }
-    } else if active_device_pref.is_some() {
-        // Legacy: single active device preference
+    // Auto-connect is handled by the background scan in the connection manager.
+    // It detects bonded auto_connect devices as they advertise and connects them
+    // one at a time, avoiding HCI command collisions.
+    // Legacy: single active device preference (queues one connect at most).
+    if !loaded_bonds.iter().any(|lb| lb.auto_connect) && active_device_pref.is_some() {
         let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
     }
 
@@ -345,7 +330,12 @@ async fn connection_manager_loop<
         let unconnected = get_unconnected_auto_connect_addresses(loaded_bonds);
         let has_idle_slot = slots::find_idle_slot().is_some();
 
-        let cmd = if !unconnected.is_empty() && has_idle_slot {
+        // Don't start a background scan while any slot is actively connecting —
+        // the scan would take the HCI scan state and cause "Command Disallowed"
+        // when the slot retries its LE Create Connection.
+        let any_connecting = slots::any_slot_connecting();
+
+        let cmd = if !unconnected.is_empty() && has_idle_slot && !any_connecting {
             match run_background_scan(scanner, &unconnected).await {
                 BgScanOutcome::BondedDeviceSeen(addr) => {
                     info!("[manager] Background scan: bonded device seen {:?}", addr);

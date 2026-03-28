@@ -345,10 +345,11 @@ async fn dispatch_request(
             {
                 Ok(bonds) => {
                     // Convert heapless types to slices for encoding
-                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str), 10> =
+                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str, bool), 10> =
                         heapless::Vec::new();
-                    for (addr, kind, profile, name) in &bonds {
-                        let _ = bond_refs.push((*addr, *kind, *profile, name.as_str()));
+                    for (addr, kind, profile, name, auto_connect) in &bonds {
+                        let _ =
+                            bond_refs.push((*addr, *kind, *profile, name.as_str(), *auto_connect));
                     }
                     protocol::encode_response_bonds(cbor_buf, bond_refs.as_slice()).unwrap_or(0)
                 }
