@@ -20,6 +20,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::join::{join, join3};
 use embassy_futures::select::{select, Either};
+use embassy_rp::dma;
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{DMA_CH0, FLASH, PIN_23, PIN_24, PIN_25, PIN_29, PIO0};
@@ -59,7 +60,7 @@ pub type FlashMutex = Mutex<CriticalSectionRawMutex, Flash<'static, FLASH, Async
 /// CYW43 task — required to run the WiFi/BLE chip (spawned on Core 0).
 #[embassy_executor::task]
 async fn cyw43_task(
-    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+    runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>>,
 ) -> ! {
     runner.run().await
 }
@@ -97,13 +98,15 @@ pub async fn core0_ble_main(
     // --- CYW43 Initialization ---
     info!("[core0] Initializing CYW43...");
 
-    let fw = include_bytes!("../../cyw43-firmware/43439A0.bin");
+    let fw = cyw43::aligned_bytes!("../../cyw43-firmware/43439A0.bin");
     let clm = include_bytes!("../../cyw43-firmware/43439A0_clm.bin");
-    let btfw = include_bytes!("../../cyw43-firmware/43439A0_btfw.bin");
+    let btfw = cyw43::aligned_bytes!("../../cyw43-firmware/43439A0_btfw.bin");
+    let nvram = cyw43::aligned_bytes!("../../cyw43-firmware/nvram_rp2040.bin");
 
     let pwr = Output::new(pin_23, Level::Low);
     let cs = Output::new(pin_25, Level::High);
     let mut pio = Pio::new(pio0, Irqs);
+    let dma = dma::Channel::new(dma_ch0, Irqs);
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
@@ -112,14 +115,14 @@ pub async fn core0_ble_main(
         cs,
         pin_24,
         pin_29,
-        dma_ch0,
+        dma,
     );
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
 
     let (_net_device, bt_device, mut control, runner) =
-        cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw).await;
+        cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw, nvram).await;
 
     // Spawn CYW43 background task on Core 0
     unwrap!(spawner.spawn(cyw43_task(runner)));

@@ -17,6 +17,8 @@ download-firmware:
     @curl -fsSL "https://raw.githubusercontent.com/embassy-rs/embassy/main/cyw43-firmware/43439A0_btfw.bin" -o "bt2usb/cyw43-firmware/43439A0_btfw.bin"
     @echo "  Downloading 43439A0_clm.bin..."
     @curl -fsSL "https://raw.githubusercontent.com/embassy-rs/embassy/main/cyw43-firmware/43439A0_clm.bin" -o "bt2usb/cyw43-firmware/43439A0_clm.bin"
+    @echo "  Downloading nvram_rp2040.bin..."
+    @curl -fsSL "https://raw.githubusercontent.com/embassy-rs/embassy/main/cyw43-firmware/nvram_rp2040.bin" -o "bt2usb/cyw43-firmware/nvram_rp2040.bin"
     @echo "Firmware download complete!"
 
 # Build the firmware binary

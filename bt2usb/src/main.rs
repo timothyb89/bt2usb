@@ -66,6 +66,8 @@ use static_cell::StaticCell;
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<USB>;
+    DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<embassy_rp::peripherals::DMA_CH0>,
+                  embassy_rp::dma::InterruptHandler<embassy_rp::peripherals::DMA_CH1>;
 });
 
 /// Flash size for RP2040 (2MB).
@@ -186,7 +188,7 @@ fn main() -> ! {
             info!("[core0] Phase 1: configured mode, OS={}", detected_os);
 
             // Flash storage (used on Core 0 for bond and preference storage)
-            let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1);
+            let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1, Irqs);
 
             let usb = p.USB;
             spawn_core1(
