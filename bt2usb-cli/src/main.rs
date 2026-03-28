@@ -90,7 +90,8 @@ enum Command {
         profile_id: u8,
     },
 
-    /// Set the active device for auto-reconnect
+    /// [Deprecated] Set the active device for auto-reconnect. Use set-auto-connect instead.
+    #[command(hide = true)]
     SetActiveDevice {
         /// BLE address (AA:BB:CC:DD:EE:FF)
         address: String,
@@ -100,7 +101,8 @@ enum Command {
         addr_kind: u8,
     },
 
-    /// Clear the active device (disable auto-reconnect)
+    /// [Deprecated] Clear the active device. Use set-auto-connect or factory-reset instead.
+    #[command(hide = true)]
     ClearActiveDevice,
 
     /// Enable auto-connect for a bonded device
@@ -117,7 +119,8 @@ enum Command {
         address: String,
     },
 
-    /// Auto-connect to the active device from preferences
+    /// [Deprecated] Auto-connect to the active device from preferences.
+    #[command(hide = true)]
     AutoConnect,
 
     /// Stream live logs from device
