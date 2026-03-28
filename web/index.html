@@ -319,7 +319,6 @@
           <button class="btn" onclick="refreshBonds()" id="btnRefreshBonds">Refresh</button>
           <button class="btn btn-danger" onclick="clearAllBonds()" id="btnClearBonds">Clear All (Forces
             Restart)</button>
-          <button class="btn btn-primary" onclick="autoConnect()" id="btnAutoConnect">Auto-Connect</button>
         </div>
         <table id="bondsTable" style="margin-top:0.5rem">
           <thead>
@@ -904,7 +903,6 @@
               </select>
             </td>
             <td><input type="checkbox" onchange="setAutoConnect('${addr}', ${addrKind}, this.checked)" title="Auto-connect on startup"></td>
-            <td><button class="btn btn-sm" onclick="setActiveDevice('${addr}', ${addrKind})">Set Active</button></td>
             <td><button class="btn btn-sm btn-primary" onclick="connectToAddr('${addr}', ${addrKind})">Connect</button></td>
           `;
               tbody.appendChild(row);
