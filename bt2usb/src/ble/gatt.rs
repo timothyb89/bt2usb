@@ -484,8 +484,9 @@ async fn handle_connection_events<'a, C: Controller>(
 
                 if interval == last_accepted_interval && latency == last_accepted_latency {
                     // Same params we already accepted or attempted — skip to avoid
-                    // collision → rejection → retry loop.
-                    drop(req);
+                    // collision → rejection → retry loop. Use forget to suppress
+                    // trouble-host's Drop handler ("ConnParamRequest dropped" error).
+                    core::mem::forget(req);
                     continue;
                 }
 
