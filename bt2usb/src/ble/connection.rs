@@ -448,8 +448,13 @@ async fn store_new_bond(
     bond_info: &BondInformation,
     active_profile: DeviceProfile,
 ) {
+    // Look up the device name from the scan cache
+    let mut addr_buf = [0u8; 6];
+    addr_buf.copy_from_slice(bond_info.identity.bd_addr.raw());
+    let (name, name_len) = crate::ble_state::hid_cache_get_name(&addr_buf);
+
     let mut f = flash.lock().await;
-    match bonding::store_bond(&mut f, bond_info, active_profile.to_id()).await {
+    match bonding::store_bond(&mut f, bond_info, active_profile.to_id(), &name, name_len).await {
         Ok(slot) => {
             info!("Bond stored in slot {}", slot);
             let mut addr_buf = [0u8; 6];

@@ -164,26 +164,29 @@ pub fn set_bg_scan_filter(addrs: &[([u8; 6], u8)]) {
 
 // ============ Scanner Event Handler ============
 
-/// Max number of recently-seen HID addresses to cache for merging scan responses.
+/// Max number of recently-seen HID devices to cache for merging scan responses.
 const SCAN_HID_CACHE_SIZE: usize = 16;
 
-/// Number of valid entries in `SCAN_HID_CACHE`.
+/// Per-entry size: 6 (addr) + 32 (name) + 1 (name_len) = 39 bytes
+const CACHE_ENTRY_SIZE: usize = 6 + 32 + 1;
+
+/// Number of valid entries in the cache.
 static SCAN_HID_CACHE_COUNT: AtomicU8 = AtomicU8::new(0);
 
-/// Cache of recently-seen HID device addresses (6 bytes each) so that scan
-/// responses (which carry the name but not the HID UUID) can be matched back.
+/// Cache of recently-seen HID device addresses and names so that scan
+/// responses (which carry the name but not the HID UUID) can be matched back,
+/// and so the name is available at bond-store time.
 #[allow(clippy::declare_interior_mutable_const)]
-static SCAN_HID_CACHE: [AtomicU8; 6 * SCAN_HID_CACHE_SIZE] = {
+static SCAN_HID_CACHE: [AtomicU8; CACHE_ENTRY_SIZE * SCAN_HID_CACHE_SIZE] = {
     const ZERO: AtomicU8 = AtomicU8::new(0);
-    [ZERO; 6 * SCAN_HID_CACHE_SIZE]
+    [ZERO; CACHE_ENTRY_SIZE * SCAN_HID_CACHE_SIZE]
 };
 
-/// Record a HID device address so future scan responses can be matched.
-fn hid_cache_insert(addr: &[u8; 6]) {
+/// Find cache index for an address, or None.
+fn hid_cache_find(addr: &[u8; 6]) -> Option<usize> {
     let count = SCAN_HID_CACHE_COUNT.load(Ordering::Relaxed) as usize;
-    // Check if already present
     for i in 0..count {
-        let base = i * 6;
+        let base = i * CACHE_ENTRY_SIZE;
         let mut found = true;
         for j in 0..6 {
             if SCAN_HID_CACHE[base + j].load(Ordering::Relaxed) != addr[j] {
@@ -192,36 +195,60 @@ fn hid_cache_insert(addr: &[u8; 6]) {
             }
         }
         if found {
-            return;
+            return Some(i);
         }
     }
-    // Insert if space available
+    None
+}
+
+/// Record a HID device address (and name if present) so future scan responses
+/// can be matched and the name is available at bond-store time.
+fn hid_cache_insert(addr: &[u8; 6], name: &[u8; 32], name_len: u8) {
+    if let Some(idx) = hid_cache_find(addr) {
+        // Already present — update name if this report has a better one
+        if name_len > 0 {
+            let base = idx * CACHE_ENTRY_SIZE;
+            for j in 0..32 {
+                SCAN_HID_CACHE[base + 6 + j].store(name[j], Ordering::Relaxed);
+            }
+            SCAN_HID_CACHE[base + 38].store(name_len, Ordering::Relaxed);
+        }
+        return;
+    }
+    // Insert new entry if space available
+    let count = SCAN_HID_CACHE_COUNT.load(Ordering::Relaxed) as usize;
     if count < SCAN_HID_CACHE_SIZE {
-        let base = count * 6;
+        let base = count * CACHE_ENTRY_SIZE;
         for j in 0..6 {
             SCAN_HID_CACHE[base + j].store(addr[j], Ordering::Relaxed);
         }
+        for j in 0..32 {
+            SCAN_HID_CACHE[base + 6 + j].store(name[j], Ordering::Relaxed);
+        }
+        SCAN_HID_CACHE[base + 38].store(name_len, Ordering::Relaxed);
         SCAN_HID_CACHE_COUNT.store((count + 1) as u8, Ordering::Relaxed);
     }
 }
 
 /// Check if an address was previously seen as a HID device.
 fn hid_cache_contains(addr: &[u8; 6]) -> bool {
-    let count = SCAN_HID_CACHE_COUNT.load(Ordering::Relaxed) as usize;
-    for i in 0..count {
-        let base = i * 6;
-        let mut found = true;
-        for j in 0..6 {
-            if SCAN_HID_CACHE[base + j].load(Ordering::Relaxed) != addr[j] {
-                found = false;
-                break;
-            }
+    hid_cache_find(addr).is_some()
+}
+
+/// Look up the cached device name for an address.
+/// Returns (name, name_len). name_len == 0 means no name was cached.
+pub fn hid_cache_get_name(addr: &[u8; 6]) -> ([u8; 32], u8) {
+    if let Some(idx) = hid_cache_find(addr) {
+        let base = idx * CACHE_ENTRY_SIZE;
+        let mut name = [0u8; 32];
+        for j in 0..32 {
+            name[j] = SCAN_HID_CACHE[base + 6 + j].load(Ordering::Relaxed);
         }
-        if found {
-            return true;
-        }
+        let name_len = SCAN_HID_CACHE[base + 38].load(Ordering::Relaxed);
+        (name, name_len)
+    } else {
+        ([0u8; 32], 0)
     }
-    false
 }
 
 /// Clear the HID cache (called when a new scan starts).
@@ -297,8 +324,9 @@ impl EventHandler for RpcScannerHandler {
             addr_bytes.copy_from_slice(report.addr.raw());
 
             if is_hid {
-                // Cache this address so scan responses can be matched
-                hid_cache_insert(&addr_bytes);
+                // Cache this address (and name) so scan responses can be matched
+                // and the name is available at bond-store time
+                hid_cache_insert(&addr_bytes, &name, name_len);
                 let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::ScanResult(ScanResultData {
                     address: addr_bytes,
                     addr_kind: if report.addr_kind == AddrKind::RANDOM {
@@ -312,7 +340,9 @@ impl EventHandler for RpcScannerHandler {
                     is_hid: true,
                 }));
             } else if name_len > 0 && hid_cache_contains(&addr_bytes) {
-                // Scan response with a name for a previously-seen HID device
+                // Scan response with a name for a previously-seen HID device —
+                // update the cached name and emit a scan result
+                hid_cache_insert(&addr_bytes, &name, name_len);
                 let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::ScanResult(ScanResultData {
                     address: addr_bytes,
                     addr_kind: if report.addr_kind == AddrKind::RANDOM {
