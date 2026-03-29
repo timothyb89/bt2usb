@@ -19,6 +19,10 @@ const SCRATCH_PHASE: usize = 1;
 const SCRATCH_ATTEMPTS: usize = 2;
 const SCRATCH_MAGIC: usize = 3;
 const SCRATCH_FORCED_OS: usize = 4;
+/// Monotonic probe generation counter. Survives clear_for_reprobe() because
+/// it's read/written without checking the magic sentinel. Used to vary
+/// bcdDevice across probe cycles, busting the Windows String 0xEE registry cache.
+const SCRATCH_GENERATION: usize = 5;
 
 const MAGIC_VALUE: u32 = 0xB72B_0001;
 const MAX_PROBE_ATTEMPTS: u8 = 3;
@@ -159,6 +163,19 @@ pub fn read_forced_os() -> Option<DetectedOs> {
         1..=3 => Some(DetectedOs::from_u32(val)),
         _ => None,
     }
+}
+
+/// Read and increment a persistent probe generation counter.
+///
+/// Reads scratch[5] directly (no magic check), increments, writes back.
+/// Survives `clear_for_reprobe()` because that only clears the magic sentinel.
+/// On cold boot scratch registers are zero, so the first call returns 1.
+pub fn next_generation() -> u16 {
+    let current = scratch_read(SCRATCH_GENERATION);
+    let next = current.wrapping_add(1);
+    scratch_write(SCRATCH_GENERATION, next);
+    debug!("Scratch: probe generation {} -> {}", current, next);
+    next as u16
 }
 
 /// Cache a forced OS override to scratch[4].
