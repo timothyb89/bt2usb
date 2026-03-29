@@ -220,52 +220,6 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64) -> Result<()> {
-    let (resp, events) = transport.request_simple(CMD_START_SCAN, DEFAULT_TIMEOUT)?;
-    check_ok(&resp)?;
-
-    println!("{}", "Scanning for BLE HID devices...".cyan());
-    println!();
-
-    for evt in events {
-        print_event(&evt);
-    }
-
-    let scan_timeout = Duration::from_secs(timeout_secs);
-    let mut device_count = 0u32;
-
-    transport.stream_messages(scan_timeout, |msg| {
-        if let Message::Event { cbor } = msg {
-            if let Ok(evt) = decode_event(&cbor) {
-                match &evt {
-                    Event::ScanResult { .. } => {
-                        device_count += 1;
-                        print_event(&evt);
-                    }
-                    Event::ConnectionState { state, .. } => {
-                        if matches!(state, ConnectionState::Disconnected) {
-                            return false;
-                        }
-                        print_event(&evt);
-                    }
-                    _ => print_event(&evt),
-                }
-            }
-        }
-        true
-    })?;
-
-    let _ = transport.request_simple(CMD_STOP_SCAN, DEFAULT_TIMEOUT);
-
-    println!();
-    println!(
-        "Scan complete. {} device(s) found.",
-        device_count.to_string().bold()
-    );
-
-    Ok(())
-}
-
 pub fn cmd_connect(
     transport: &mut Transport,
     address: &str,

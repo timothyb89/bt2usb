@@ -178,7 +178,8 @@ impl Transport {
     }
 
     /// Try to read one complete message from the HID device.
-    fn read_message(&mut self) -> Result<Option<Message>> {
+    /// Returns `Ok(None)` if no complete message is available yet (100ms poll).
+    pub(crate) fn read_message(&mut self) -> Result<Option<Message>> {
         // Read available HID report (100ms timeout)
         let mut tmp = [0u8; 64];
         match self.device.read_timeout(&mut tmp, 100) {

@@ -9,6 +9,7 @@ mod logging;
 #[cfg(feature = "probe")]
 mod probe_rtt;
 mod protocol;
+mod scan;
 mod setup_rules;
 mod transport;
 mod uf2;
@@ -39,11 +40,15 @@ enum Command {
     /// Show device status
     Status,
 
-    /// Scan for BLE HID devices
+    /// Scan for BLE HID devices (interactive: press 1-9 to connect)
     Scan {
         /// Scan duration in seconds
-        #[arg(short, long, default_value = "15")]
+        #[arg(short, long, default_value = "30")]
         timeout: u64,
+
+        /// Device profile to set on connect: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit)
+        #[arg(short, long)]
+        profile: Option<u8>,
     },
 
     /// Connect to a BLE device by address
@@ -231,7 +236,7 @@ fn main() -> Result<()> {
             unreachable!()
         }
         Command::Status => cmd_status(&mut transport),
-        Command::Scan { timeout } => cmd_scan(&mut transport, timeout),
+        Command::Scan { timeout, profile } => scan::cmd_scan(&mut transport, timeout, profile),
         Command::Connect {
             address,
             addr_kind,
