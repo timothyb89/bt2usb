@@ -267,6 +267,7 @@
           <span class="info-label">Connection:</span> <span id="bleState">-</span>
           <span class="info-label">Host OS:</span> <span id="detectedOs">-</span>
           <span class="info-label">Bonded devices:</span> <span id="bondedCount">-</span>
+          <span class="info-label">Connected:</span> <span id="connectedCount">-</span>
           <span class="info-label">Battery:</span> <span id="batteryLevel">-</span>
           <span class="info-label">Firmware:</span> <span id="fwVersion">-</span>
         </div>
@@ -326,8 +327,8 @@
               <th>Address</th>
               <th>Name</th>
               <th>Profile</th>
-              <th>Auto-connect</th>
-              <th>Active</th>
+              <th>Auto</th>
+              <th>Status</th>
               <th></th>
             </tr>
           </thead>
@@ -627,6 +628,8 @@
         case EVT_CONNECTION_STATE: {
           const [, state] = body;
           updateBleState(state);
+          // Refresh status and bonds to update connected device list
+          refreshStatus().then(() => refreshBonds());
           break;
         }
         case EVT_PAIRING_STATUS: {
@@ -738,6 +741,9 @@
       document.getElementById('logSubscribe').disabled = !connected;
     }
 
+    // ============ Connected Device Tracking ============
+    let connectedAddrs = new Set(); // Set of "AA:BB:CC:DD:EE:FF" strings
+
     // ============ Commands ============
     async function refreshStatus() {
       try {
@@ -745,12 +751,43 @@
         if (resp[0] === RESP_STATUS) {
           updateBleState(resp[1]);
           document.getElementById('bondedCount').textContent = resp[2];
-          const batteryEl = document.getElementById('batteryLevel');
-          const batteryLevel = resp[6];
-          batteryEl.textContent = (batteryLevel === undefined || batteryLevel === 0xFF) ? 'Unknown' : batteryLevel + '%';
+
           const osNames = { 1: 'Windows', 2: 'Linux', 3: 'macOS' };
           const detectedOs = resp[7];
           document.getElementById('detectedOs').textContent = osNames[detectedOs] || 'Unknown';
+
+          // Parse connected devices (fields 8-9 in extended status)
+          const connectedCount = resp[8] || 0;
+          connectedAddrs.clear();
+          const devBatteries = [];
+
+          if (connectedCount > 0 && Array.isArray(resp[9])) {
+            for (const dev of resp[9]) {
+              const addr = formatAddr(dev[0]);
+              connectedAddrs.add(addr);
+              devBatteries.push(dev[2]); // battery level
+            }
+          }
+
+          // Connected count
+          const connEl = document.getElementById('connectedCount');
+          if (connectedCount > 0) {
+            connEl.textContent = `${connectedCount}/3`;
+            connEl.style.color = 'var(--green)';
+          } else {
+            connEl.textContent = 'None';
+            connEl.style.color = 'var(--text2)';
+          }
+
+          // Battery: prefer per-device info from connected list
+          const batteryEl = document.getElementById('batteryLevel');
+          if (devBatteries.length > 0) {
+            const parts = devBatteries.map(b => b === 0xFF ? '?' : b + '%');
+            batteryEl.textContent = parts.join(' / ');
+          } else {
+            const batteryLevel = resp[6];
+            batteryEl.textContent = (batteryLevel === undefined || batteryLevel === 0xFF) ? 'N/A' : batteryLevel + '%';
+          }
         }
         const vResp = await sendSimpleRequest(CMD_GET_VERSION);
         if (vResp[0] === RESP_VERSION) {
@@ -888,8 +925,15 @@
             tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text2);padding:1rem">No bonded devices</td></tr>';
           } else {
             for (const bond of bonds) {
-              const [addrBytes, addrKind, profileId, name] = bond;
+              const [addrBytes, addrKind, profileId, name, autoConnect] = bond;
               const addr = formatAddr(addrBytes);
+              const isConn = connectedAddrs.has(addr);
+              const statusHtml = isConn
+                ? '<span style="color:var(--green)">Connected</span>'
+                : '<span style="color:var(--text2)">&mdash;</span>';
+              const actionBtn = isConn
+                ? `<button class="btn btn-sm btn-danger" onclick="disconnectDevice('${addr}')">Disconnect</button>`
+                : `<button class="btn btn-sm btn-primary" onclick="connectToAddr('${addr}', ${addrKind})">Connect</button>`;
               const row = document.createElement('tr');
               row.innerHTML = `
             <td class="addr">${addr}</td>
@@ -902,8 +946,9 @@
                 <option value="3" ${profileId === 3 ? 'selected' : ''}>Full Scroll Dial</option>
               </select>
             </td>
-            <td><input type="checkbox" onchange="setAutoConnect('${addr}', ${addrKind}, this.checked)" title="Auto-connect on startup"></td>
-            <td><button class="btn btn-sm btn-primary" onclick="connectToAddr('${addr}', ${addrKind})">Connect</button></td>
+            <td><input type="checkbox" ${autoConnect ? 'checked' : ''} onchange="setAutoConnect('${addr}', ${addrKind}, this.checked)" title="Auto-connect on startup"></td>
+            <td>${statusHtml}</td>
+            <td>${actionBtn}</td>
           `;
               tbody.appendChild(row);
             }
@@ -1020,6 +1065,21 @@
         appendLog(1, `Connecting to ${addrStr}...`);
       } catch (e) {
         appendLog(3, 'Connect failed: ' + e.message);
+      }
+    }
+
+    async function disconnectDevice(addrStr) {
+      const parts = addrStr.split(':').map(s => parseInt(s, 16));
+      const addrBytes = new Uint8Array(6);
+      for (let i = 0; i < 6; i++) addrBytes[i] = parts[5 - i];
+
+      try {
+        await sendRequest(CBOR.encode([CMD_DISCONNECT, addrBytes]));
+        appendLog(1, `Disconnecting ${addrStr}...`);
+        // Refresh after a short delay to show updated state
+        setTimeout(async () => { await refreshStatus(); await refreshBonds(); }, 1000);
+      } catch (e) {
+        appendLog(3, 'Disconnect failed: ' + e.message);
       }
     }
 
