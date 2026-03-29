@@ -38,12 +38,14 @@ pub struct StoredBondInfo {
     pub ediv: u16,              // Encrypted diversifier (0 for LESC, non-zero for legacy)
     pub rand: [u8; 8],          // Random number (zeros for LESC, non-zero for legacy)
     pub encryption_key_len: u8, // Encryption key length in bytes (16 for LESC)
+    pub name: [u8; 32],         // BLE device name (UTF-8, from advertisement/scan response)
+    pub name_len: u8,           // Actual name length (0 = unknown)
 }
 
 impl<'a> Value<'a> for StoredBondInfo {
     fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        // 6 + 16 + 1 + 1 + 1 + 2 + 8 + 1 = 36 bytes
-        if buffer.len() < 36 {
+        // 6 + 16 + 1 + 1 + 1 + 2 + 8 + 1 + 32 + 1 = 69 bytes
+        if buffer.len() < 69 {
             return Err(SerializationError::BufferTooSmall);
         }
         buffer[0..6].copy_from_slice(&self.addr);
@@ -54,7 +56,9 @@ impl<'a> Value<'a> for StoredBondInfo {
         buffer[25..27].copy_from_slice(&self.ediv.to_le_bytes());
         buffer[27..35].copy_from_slice(&self.rand);
         buffer[35] = self.encryption_key_len;
-        Ok(36)
+        buffer[36..68].copy_from_slice(&self.name);
+        buffer[68] = self.name_len;
+        Ok(69)
     }
 
     fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
@@ -88,6 +92,14 @@ impl<'a> Value<'a> for StoredBondInfo {
             rand.copy_from_slice(&buffer[27..35]);
         }
         let encryption_key_len = if buffer.len() >= 36 { buffer[35] } else { 16 };
+        // Handle old records that lack device name (pre-v69)
+        let mut name = [0u8; 32];
+        let name_len = if buffer.len() >= 69 {
+            name.copy_from_slice(&buffer[36..68]);
+            buffer[68]
+        } else {
+            0
+        };
         Ok(StoredBondInfo {
             addr,
             ltk,
@@ -97,15 +109,19 @@ impl<'a> Value<'a> for StoredBondInfo {
             ediv,
             rand,
             encryption_key_len,
+            name,
+            name_len,
         })
     }
 }
 
-/// A loaded bond paired with its device profile ID and auto-connect flag
+/// A loaded bond paired with its device profile ID, auto-connect flag, and device name.
 pub struct LoadedBond {
     pub bond: BondInformation,
     pub profile_id: u8,
     pub auto_connect: bool,
+    pub name: [u8; 32],
+    pub name_len: u8,
 }
 
 /// Load all stored bonds from flash
@@ -113,7 +129,7 @@ pub async fn load_bonds(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
 ) -> Vec<LoadedBond, MAX_BONDS> {
     let mut bonds = Vec::new();
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 128];
 
     // Try to fetch bond from each slot
     for slot in 0..MAX_BONDS as u8 {
@@ -155,6 +171,8 @@ pub async fn load_bonds(
                     bond,
                     profile_id: stored.profile_id,
                     auto_connect: stored.auto_connect,
+                    name: stored.name,
+                    name_len: stored.name_len,
                 });
             }
             Ok(None) => {
@@ -174,14 +192,17 @@ pub async fn load_bonds(
     bonds
 }
 
-/// Store a bond to flash after successful pairing
-/// Returns the slot it was stored in, or error if no slots available
+/// Store a bond to flash after successful pairing.
+/// `device_name` is the BLE device name from advertisement/scan response (may be empty).
+/// Returns the slot it was stored in, or error if no slots available.
 pub async fn store_bond(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
     bond: &BondInformation,
     profile_id: u8,
+    device_name: &[u8; 32],
+    device_name_len: u8,
 ) -> Result<u8, ()> {
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 128];
 
     // Find an empty slot or reuse slot with same address
     let mut target_slot: Option<u8> = None;
@@ -237,6 +258,8 @@ pub async fn store_bond(
         ediv: bond.ediv,
         rand: bond.rand,
         encryption_key_len: bond.encryption_key_len,
+        name: *device_name,
+        name_len: device_name_len,
     };
 
     match store_item(
@@ -265,7 +288,7 @@ pub async fn clear_all_bonds(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
 ) -> Result<(), ()> {
     info!("Clearing all bonds from flash...");
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 128];
 
     match remove_all_items::<u8, _>(flash, flash_range(), &mut NoCache::new(), &mut buffer).await {
         Ok(_) => {
@@ -286,7 +309,7 @@ pub async fn update_bond_profile(
     address: &[u8; 6],
     new_profile_id: u8,
 ) -> Result<u8, ()> {
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 128];
 
     // Find bond with matching address
     for slot in 0..MAX_BONDS as u8 {
@@ -346,7 +369,7 @@ pub async fn update_auto_connect(
     address: &[u8; 6],
     enabled: bool,
 ) -> Result<u8, ()> {
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 128];
 
     for slot in 0..MAX_BONDS as u8 {
         match fetch_item::<u8, StoredBondInfo, _>(
@@ -399,7 +422,7 @@ pub async fn clear_bond_by_address(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
     address: &[u8; 6],
 ) -> Result<u8, ()> {
-    let mut buffer = [0u8; 64];
+    let mut buffer = [0u8; 128];
 
     for slot in 0..MAX_BONDS as u8 {
         match fetch_item::<u8, StoredBondInfo, _>(

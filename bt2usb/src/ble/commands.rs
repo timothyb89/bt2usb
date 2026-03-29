@@ -78,14 +78,22 @@ pub fn handle_get_bonds(loaded_bonds: &[LoadedBond]) {
             0u8
         };
 
-        let profile = DeviceProfile::from_id(lb.profile_id);
-        let name_str = profile.name();
+        // Use stored BLE device name; fall back to profile name if not available
         let mut name: heapless::String<32> = heapless::String::new();
-        let _ = name.push_str(if name_str.is_empty() {
-            "Unknown Device"
-        } else {
-            name_str
-        });
+        if lb.name_len > 0 {
+            if let Ok(s) = core::str::from_utf8(&lb.name[..lb.name_len as usize]) {
+                let _ = name.push_str(s);
+            }
+        }
+        if name.is_empty() {
+            let profile = DeviceProfile::from_id(lb.profile_id);
+            let profile_name = profile.name();
+            let _ = name.push_str(if profile_name.is_empty() {
+                "Unknown Device"
+            } else {
+                profile_name
+            });
+        }
 
         let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect));
     }

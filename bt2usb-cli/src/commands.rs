@@ -115,13 +115,13 @@ pub fn profile_name(id: u8) -> &'static str {
     }
 }
 
-/// Query bonds and return those with auto_connect enabled.
-fn get_auto_connect_bonds(transport: &mut Transport) -> Vec<BondEntry> {
+/// Query all bonds from the device.
+fn get_all_bonds(transport: &mut Transport) -> Vec<BondEntry> {
     let Ok((resp, _)) = transport.request_simple(CMD_GET_BONDS, DEFAULT_TIMEOUT) else {
         return Vec::new();
     };
     match resp {
-        Response::Bonds { bonds } => bonds.into_iter().filter(|b| b.auto_connect).collect(),
+        Response::Bonds { bonds } => bonds,
         _ => Vec::new(),
     }
 }
@@ -147,6 +147,9 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
             println!("  Host OS:        {}", detected_os_name(detected_os).bold());
             println!("  Bonded devices: {bonded_count}");
 
+            // Fetch bonds once for name lookups and auto-connect display
+            let all_bonds = get_all_bonds(transport);
+
             if connected_devices.is_empty() {
                 println!("  Connected:      {}", "None".dimmed());
 
@@ -167,18 +170,35 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                     } else {
                         format!("{}%", dev.battery_level)
                     };
-                    println!(
-                        "    {}. {}  {}  battery: {}",
-                        i + 1,
-                        format_address(&dev.address).bold(),
-                        profile_name(dev.profile_id),
-                        bat,
-                    );
+                    // Look up device name from bonds
+                    let name = all_bonds
+                        .iter()
+                        .find(|b| b.address == dev.address)
+                        .map(|b| b.name.as_str())
+                        .unwrap_or("");
+                    if name.is_empty() {
+                        println!(
+                            "    {}. {}  {}  battery: {}",
+                            i + 1,
+                            format_address(&dev.address).bold(),
+                            profile_name(dev.profile_id),
+                            bat,
+                        );
+                    } else {
+                        println!(
+                            "    {}. {}  {}  {}  battery: {}",
+                            i + 1,
+                            format_address(&dev.address).bold(),
+                            name,
+                            profile_name(dev.profile_id).dimmed(),
+                            bat,
+                        );
+                    }
                 }
             }
 
             // Show auto-connect info from bonds (replaces legacy active device)
-            let auto_bonds = get_auto_connect_bonds(transport);
+            let auto_bonds: Vec<&BondEntry> = all_bonds.iter().filter(|b| b.auto_connect).collect();
             if auto_bonds.is_empty() {
                 println!(
                     "  Auto-connect:   {}",
@@ -192,10 +212,15 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                     } else {
                         "scanning...".yellow().to_string()
                     };
+                    let display_name = if bond.name.is_empty() {
+                        profile_name(bond.profile_id).to_string()
+                    } else {
+                        bond.name.clone()
+                    };
                     println!(
                         "    {} {} [{}]",
                         format_address(&bond.address).bold(),
-                        profile_name(bond.profile_id),
+                        display_name,
                         status,
                     );
                 }
@@ -323,10 +348,16 @@ pub fn cmd_bonds(transport: &mut Transport) -> Result<()> {
                     } else {
                         String::new()
                     };
+                    let name_display = if bond.name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", bond.name)
+                    };
                     println!(
-                        "  {}. {}  {}  kind={}{}",
+                        "  {}. {}{}  {}  kind={}{}",
                         i + 1,
                         format_address(&bond.address).bold(),
+                        name_display,
                         profile_name(bond.profile_id),
                         if bond.addr_kind == 1 {
                             "random"
