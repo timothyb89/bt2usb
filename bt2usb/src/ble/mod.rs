@@ -821,6 +821,7 @@ async fn run_scan_session<
 ) {
     info!("Starting BLE scan...");
     rpc_log::info("Scanning for BLE HID devices");
+    crate::ble_state::hid_cache_clear();
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Scanning));
 
     let scan_config = trouble_host::connection::ScanConfig {

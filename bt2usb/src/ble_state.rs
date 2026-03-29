@@ -164,6 +164,71 @@ pub fn set_bg_scan_filter(addrs: &[([u8; 6], u8)]) {
 
 // ============ Scanner Event Handler ============
 
+/// Max number of recently-seen HID addresses to cache for merging scan responses.
+const SCAN_HID_CACHE_SIZE: usize = 16;
+
+/// Number of valid entries in `SCAN_HID_CACHE`.
+static SCAN_HID_CACHE_COUNT: AtomicU8 = AtomicU8::new(0);
+
+/// Cache of recently-seen HID device addresses (6 bytes each) so that scan
+/// responses (which carry the name but not the HID UUID) can be matched back.
+#[allow(clippy::declare_interior_mutable_const)]
+static SCAN_HID_CACHE: [AtomicU8; 6 * SCAN_HID_CACHE_SIZE] = {
+    const ZERO: AtomicU8 = AtomicU8::new(0);
+    [ZERO; 6 * SCAN_HID_CACHE_SIZE]
+};
+
+/// Record a HID device address so future scan responses can be matched.
+fn hid_cache_insert(addr: &[u8; 6]) {
+    let count = SCAN_HID_CACHE_COUNT.load(Ordering::Relaxed) as usize;
+    // Check if already present
+    for i in 0..count {
+        let base = i * 6;
+        let mut found = true;
+        for j in 0..6 {
+            if SCAN_HID_CACHE[base + j].load(Ordering::Relaxed) != addr[j] {
+                found = false;
+                break;
+            }
+        }
+        if found {
+            return;
+        }
+    }
+    // Insert if space available
+    if count < SCAN_HID_CACHE_SIZE {
+        let base = count * 6;
+        for j in 0..6 {
+            SCAN_HID_CACHE[base + j].store(addr[j], Ordering::Relaxed);
+        }
+        SCAN_HID_CACHE_COUNT.store((count + 1) as u8, Ordering::Relaxed);
+    }
+}
+
+/// Check if an address was previously seen as a HID device.
+fn hid_cache_contains(addr: &[u8; 6]) -> bool {
+    let count = SCAN_HID_CACHE_COUNT.load(Ordering::Relaxed) as usize;
+    for i in 0..count {
+        let base = i * 6;
+        let mut found = true;
+        for j in 0..6 {
+            if SCAN_HID_CACHE[base + j].load(Ordering::Relaxed) != addr[j] {
+                found = false;
+                break;
+            }
+        }
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+/// Clear the HID cache (called when a new scan starts).
+pub fn hid_cache_clear() {
+    SCAN_HID_CACHE_COUNT.store(0, Ordering::Relaxed);
+}
+
 /// BLE advertisement event handler that emits ScanResult events
 /// for all discovered HID devices, and signals when bonded devices
 /// are seen during background scanning.
@@ -228,9 +293,26 @@ impl EventHandler for RpcScannerHandler {
                 i += 1 + len;
             }
 
+            let mut addr_bytes = [0u8; 6];
+            addr_bytes.copy_from_slice(report.addr.raw());
+
             if is_hid {
-                let mut addr_bytes = [0u8; 6];
-                addr_bytes.copy_from_slice(report.addr.raw());
+                // Cache this address so scan responses can be matched
+                hid_cache_insert(&addr_bytes);
+                let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::ScanResult(ScanResultData {
+                    address: addr_bytes,
+                    addr_kind: if report.addr_kind == AddrKind::RANDOM {
+                        1
+                    } else {
+                        0
+                    },
+                    name,
+                    name_len,
+                    rssi: report.rssi,
+                    is_hid: true,
+                }));
+            } else if name_len > 0 && hid_cache_contains(&addr_bytes) {
+                // Scan response with a name for a previously-seen HID device
                 let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::ScanResult(ScanResultData {
                     address: addr_bytes,
                     addr_kind: if report.addr_kind == AddrKind::RANDOM {
