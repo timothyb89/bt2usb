@@ -4,8 +4,10 @@
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error<E> {
-    /// HCI controller error.
-    Controller(E),
+    /// HCI transport/controller error.
+    Hci(E),
+    /// HCI command error.
+    Command(bt_hci::cmd::Error<E>),
     /// Connection failed or was rejected.
     ConnectionFailed,
     /// Authentication/pairing failed.
