@@ -45,10 +45,10 @@ pub fn bt_to_usb(bt_data: &[u8], usb_out: &mut [u8]) -> Option<usize> {
     usb_out[4] = 0x00;
     usb_out[5] = 0x00;
     usb_out[6] = 0x00;
-    // Byte 7: finger count/presence indicator.
+    // Byte 7: touch mode indicator.
     // From working templates: 0x03 when fingers present, 0x00 when none.
-    // Real MT2 USB uses the number of active touch points here.
-    usb_out[7] = n_fingers as u8;
+    // This is NOT a finger count — it's a mode flag that macOS expects.
+    usb_out[7] = if n_fingers > 0 { 0x03 } else { 0x00 };
     usb_out[8] = 0x31; // Constant marker
     usb_out[9] = bt_data[2]; // Timestamp low
     usb_out[10] = bt_data[3]; // Timestamp high
