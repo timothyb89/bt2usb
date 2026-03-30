@@ -323,24 +323,227 @@ pub async fn core0_ble_main(
 
 // ============ Classic BT Task ============
 
-/// Classic Bluetooth task — runs alongside BLE, handles Classic HID devices.
+/// Simple in-memory link key store for Classic BT bonding.
+/// TODO: Persist to flash alongside BLE bonds.
+struct MemoryLinkKeyStore {
+    keys: heapless::Vec<(bt_hci::param::BdAddr, bt_classic_host::LinkKeyInfo), 4>,
+}
+
+impl MemoryLinkKeyStore {
+    fn new() -> Self {
+        Self {
+            keys: heapless::Vec::new(),
+        }
+    }
+}
+
+impl bt_classic_host::LinkKeyStore for MemoryLinkKeyStore {
+    fn load(&self, addr: &bt_hci::param::BdAddr) -> Option<bt_classic_host::LinkKeyInfo> {
+        self.keys
+            .iter()
+            .find(|(a, _)| a.raw() == addr.raw())
+            .map(|(_, k)| k.clone())
+    }
+
+    fn store(&mut self, addr: &bt_hci::param::BdAddr, key: bt_classic_host::LinkKeyInfo) {
+        // Update existing or insert new
+        for (a, k) in self.keys.iter_mut() {
+            if a.raw() == addr.raw() {
+                *k = key;
+                return;
+            }
+        }
+        let _ = self.keys.push((*addr, key));
+    }
+
+    fn remove(&mut self, addr: &bt_hci::param::BdAddr) {
+        if let Some(pos) = self.keys.iter().position(|(a, _)| a.raw() == addr.raw()) {
+            self.keys.swap_remove(pos);
+        }
+    }
+}
+
+/// Classic Bluetooth task — connects to Classic HID devices (Magic Trackpad 2).
 ///
-/// Currently a placeholder that listens for commands. Will be extended to:
-/// - Connect to Classic BT HID devices (Magic Trackpad 2, etc.)
-/// - Run the HIDP session and forward reports to HID_REPORT_CHANNEL
-async fn classic_bt_task<C: bt_hci::controller::Controller>(_controller: &C) {
-    info!("[classic] Classic BT task started (idle, waiting for implementation)");
+/// Runs the full connection lifecycle: ACL → Auth → Encrypt → L2CAP → HIDP.
+/// Forwards received HID reports to HID_REPORT_CHANNEL for USB translation.
+async fn classic_bt_task<C>(controller: &C)
+where
+    C: bt_hci::controller::Controller
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::CreateConnection>
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::AuthenticationRequested>
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::SetConnectionEncryption>
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::LinkKeyRequestReply>
+        + bt_hci::controller::ControllerCmdSync<
+            bt_hci::cmd::link_control::LinkKeyRequestNegativeReply,
+        > + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::IoCapabilityRequestReply>
+        + bt_hci::controller::ControllerCmdSync<
+            bt_hci::cmd::link_control::UserConfirmationRequestReply,
+        >,
+{
+    use core::cell::RefCell;
 
-    // TODO: Phase 5 integration
-    // 1. Listen for connect commands on a Classic command channel
-    // 2. Create ClassicRunner with controller + HostResources + LinkKeyStore
-    // 3. Call runner.connect(&target_addr) to establish encrypted ACL link
-    // 4. Create L2capState and HidClient
-    // 5. Open HID channels and activate multitouch
-    // 6. Forward HIDP reports to HID_REPORT_CHANNEL
+    use bt_classic_host::hidp::ReportType;
+    use bt_classic_host::{ClassicRunner, HidClient, HostResources, L2capState};
 
-    // For now, just idle forever. The mux runner handles routing
-    // and the BLE stack continues to work normally.
+    use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL, MAX_HID_REPORT_SIZE};
+    use crate::device_profile::DeviceProfile;
+
+    info!("[classic] Classic BT task started");
+
+    // Wait a bit for BLE stack to initialize first
+    Timer::after_millis(2000).await;
+
+    // --- Magic Trackpad 2 address (hardcoded for initial testing) ---
+    let mt2_addr = bt_hci::param::BdAddr::new([0x19, 0x10, 0xF1, 0x40, 0xEB, 0xE0]);
+    info!("[classic] Target: Magic Trackpad 2 at {:?}", mt2_addr);
+
+    // --- Create resources ---
+    let link_keys = RefCell::new(MemoryLinkKeyStore::new());
+    let mut resources = HostResources::<1>::new();
+    let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
+
+    // --- Connect to Magic Trackpad 2 ---
+    info!("[classic] Connecting to Magic Trackpad 2...");
+    let handle = match runner.connect(&mt2_addr).await {
+        Ok(h) => {
+            info!("[classic] Connected and encrypted! Handle={}", h.raw());
+            h
+        }
+        Err(e) => {
+            error!("[classic] Connection failed: {:?}", defmt::Debug2Format(&e));
+            // Don't crash — just idle. User can retry via reset.
+            loop {
+                Timer::after_secs(3600).await;
+            }
+        }
+    };
+
+    // --- Open L2CAP HID channels ---
+    let mut l2cap = L2capState::<4>::new(handle);
+    let mut hid = HidClient::new();
+
+    info!("[classic] Opening HID L2CAP channels...");
+    if let Err(e) = hid.open_channels(&mut l2cap, controller).await {
+        error!(
+            "[classic] Failed to open HID channels: {:?}",
+            defmt::Debug2Format(&e)
+        );
+        loop {
+            Timer::after_secs(3600).await;
+        }
+    }
+
+    // --- Run L2CAP event loop until HID channels are open ---
+    info!("[classic] Waiting for HID channels to open...");
+    let mut acl_buf = [0u8; 512];
+    let mut attempts = 0u16;
+    while !hid.is_ready(&l2cap) {
+        let mut rx = [0u8; 259];
+        let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
+        match controller.read(rx_ref).await {
+            Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
+                let handle_and_flags = u16::from_le_bytes([rx[0], rx[1]]);
+                let data_len = u16::from_le_bytes([rx[2], rx[3]]) as usize;
+                let acl_data = &rx[4..4 + data_len.min(rx.len() - 4)];
+
+                if let Err(e) = l2cap
+                    .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
+                    .await
+                {
+                    warn!(
+                        "[classic] L2CAP error during setup: {:?}",
+                        defmt::Debug2Format(&e)
+                    );
+                }
+            }
+            Ok(_) => {} // Ignore non-ACL during channel setup
+            Err(_) => {
+                Timer::after_millis(10).await;
+            }
+        }
+        attempts += 1;
+        if attempts > 5000 {
+            error!("[classic] Timeout waiting for HID channels");
+            loop {
+                Timer::after_secs(3600).await;
+            }
+        }
+    }
+
+    info!("[classic] HID channels open! Activating multitouch...");
+
+    // --- Activate Magic Trackpad 2 multitouch ---
+    // BT Classic MT enable: SET_REPORT(Feature, report_id=0xF1, data={0x02, 0x01})
+    if let Err(e) = hid
+        .set_report(&l2cap, controller, ReportType::Feature, 0xF1, &[0x02, 0x01])
+        .await
+    {
+        warn!(
+            "[classic] Failed to enable multitouch: {:?}",
+            defmt::Debug2Format(&e)
+        );
+    } else {
+        info!("[classic] Multitouch enabled!");
+    }
+
+    // --- Main HID report loop ---
+    info!("[classic] === CLASSIC HID SESSION ACTIVE ===");
+    info!("[classic] Listening for touch reports...");
+
+    let mut report = bt_classic_host::HidReport::new();
+    loop {
+        let mut rx = [0u8; 259];
+        let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
+        match controller.read(rx_ref).await {
+            Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
+                let handle_and_flags = u16::from_le_bytes([rx[0], rx[1]]);
+                let data_len = u16::from_le_bytes([rx[2], rx[3]]) as usize;
+                let acl_data = &rx[4..4 + data_len.min(rx.len() - 4)];
+
+                match l2cap
+                    .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
+                    .await
+                {
+                    Ok(Some((channel_idx, data_len))) => {
+                        // L2CAP data arrived on a HID channel
+                        if hid.process_data(channel_idx, &acl_buf[..data_len], &mut report) {
+                            // Got a HID report! Forward to USB via HID_REPORT_CHANNEL.
+                            let mut event = HidReportEvent::new();
+                            event.report_type = HidReportType::Mouse; // Trackpad reports route as "mouse" for now
+                            event.profile = DeviceProfile::Generic; // TODO: MagicTrackpad profile
+                            event.slot_index = 3; // Classic slot (BLE uses 0-2)
+                            event.len = report.len.min(MAX_HID_REPORT_SIZE);
+                            event.data[..event.len].copy_from_slice(&report.data[..event.len]);
+                            if report.len > 0 {
+                                event.report_id = report.data[0];
+                            }
+
+                            HID_REPORT_CHANNEL.send(event).await;
+                        }
+                    }
+                    Ok(None) => {} // Signaling or fragment, handled internally
+                    Err(e) => {
+                        warn!("[classic] L2CAP error: {:?}", defmt::Debug2Format(&e));
+                    }
+                }
+            }
+            Ok(bt_hci::ControllerToHostPacket::Event(event)) => {
+                // Handle disconnection during active session
+                if event.kind == bt_hci::event::EventKind::DisconnectionComplete {
+                    error!("[classic] Disconnected!");
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => {
+                Timer::after_millis(1).await;
+            }
+        }
+    }
+
+    // Disconnected — idle until reset
+    warn!("[classic] Classic HID session ended");
     loop {
         Timer::after_secs(3600).await;
     }

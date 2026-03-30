@@ -44,6 +44,12 @@ pub struct L2capChannel {
     pub pending_signal_id: u8,
 }
 
+impl Default for L2capChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl L2capChannel {
     pub const fn new() -> Self {
         Self {
@@ -118,6 +124,12 @@ pub struct ChannelManager<const N: usize> {
     next_signal_id: u8,
 }
 
+impl<const N: usize> Default for ChannelManager<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> ChannelManager<N> {
     /// First dynamic CID per Bluetooth spec.
     const FIRST_DYNAMIC_CID: u16 = 0x0040;
@@ -154,7 +166,7 @@ impl<const N: usize> ChannelManager<N> {
     /// Get the next signaling identifier (wraps 1-255, never 0).
     pub fn next_signal_id(&mut self) -> u8 {
         let id = self.next_signal_id;
-        self.next_signal_id = if self.next_signal_id >= 255 {
+        self.next_signal_id = if self.next_signal_id == 255 {
             1
         } else {
             self.next_signal_id + 1

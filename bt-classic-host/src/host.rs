@@ -6,14 +6,14 @@
 use core::cell::RefCell;
 
 use bt_hci::cmd::link_control::*;
-use bt_hci::controller::{Controller, ControllerCmdAsync, ControllerCmdSync};
+use bt_hci::controller::{Controller, ControllerCmdSync};
 use bt_hci::event::EventKind;
 use bt_hci::param::*;
 use bt_hci::ControllerToHostPacket;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 
-use crate::connection::{ClassicConnection, ConnState, ConnectionStorage};
+use crate::connection::{ClassicConnection, ConnectionStorage};
 use crate::error::Error;
 use crate::link_key::{LinkKeyInfo, LinkKeyStore};
 use crate::pairing::{self, PairingContext, PairingState};
@@ -39,7 +39,14 @@ pub enum ConnEvent {
 pub struct HostResources<const CONNS: usize> {
     pub(crate) connections: [ConnectionStorage; CONNS],
     pub(crate) pairing: [PairingContext; CONNS],
+    #[allow(dead_code)] // Will be used for async connection event notification
     pub(crate) conn_signals: [ConnSignal; CONNS],
+}
+
+impl<const CONNS: usize> Default for HostResources<CONNS> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<const CONNS: usize> HostResources<CONNS> {
@@ -207,17 +214,16 @@ where
                                     event.data[4],
                                     event.data[5],
                                 ]);
-                                let link_keys = self.link_keys.borrow();
-                                if let Some(key_info) = link_keys.load(&addr) {
-                                    drop(link_keys);
+                                let stored_key = self.link_keys.borrow().load(&addr).map(|k| k.key);
+
+                                if let Some(key) = stored_key {
                                     #[cfg(feature = "defmt")]
                                     defmt::info!("[classic] Replying with stored link key");
                                     self.controller
-                                        .exec(&LinkKeyRequestReply::new(addr, key_info.key))
+                                        .exec(&LinkKeyRequestReply::new(addr, key))
                                         .await
                                         .map_err(Error::Command)?;
                                 } else {
-                                    drop(link_keys);
                                     #[cfg(feature = "defmt")]
                                     defmt::info!("[classic] No stored link key, negative reply (will trigger pairing)");
                                     self.controller
@@ -298,7 +304,7 @@ where
 
                         EventKind::SimplePairingComplete => {
                             // [status(1), bdaddr(6)]
-                            if event.data.len() >= 1 {
+                            if !event.data.is_empty() {
                                 let success = event.data[0] == 0x00;
                                 self.resources.pairing[target_slot]
                                     .on_simple_pairing_complete(success);
