@@ -146,6 +146,29 @@ in bt-hci 0.8's cmd::link_control module. No custom HCI definitions needed.
 Single HCI interface multiplexes both. trouble-host takes exclusive ownership of
 the controller and drops non-LE events, so we need an HCI multiplexer layer.
 
+### 2026-03-30: Touch data confirmed correct
+
+From Build 13 (logs/log-2.txt), touch data decodes correctly:
+- X range observed: ~-30 to ~2127 (within expected -3678..+3934)
+- Y range observed: ~-1464 to ~1173 (within expected -2478..+2587)
+- Pressure: 5-25 for light touch, 195-200 for hard press (click)
+- Touch state: 0x00=approach, 0x40=near, 0x80=contact (matches kernel)
+- Click: `click=1` when force-pressed (with pressure ~200)
+- Multi-finger: n=1,2,3 all work, finger IDs tracked correctly
+- The "clicks" field we logged is actually the lower byte of the timestamp
+  (it wraps rapidly), NOT the click button. The actual click bit is bit 0 of
+  the byte at offset 1 in the BT report header (per kernel: `clicks = data[1]`).
+  Our decode is correct: click=1 with high pressure = force click.
+
+### 2026-03-30: MT2 provides autonomous haptics?
+
+The user reported basic haptic feedback working without us sending any
+actuator commands. The MT2 may have built-in haptic responses for clicks
+when it detects sufficient force, or the pairing handshake enabled some
+default haptic mode. This needs further investigation — if the MT2 handles
+click haptics internally over BT, we may not need to implement actuator
+commands for basic click feedback.
+
 ### 2026-03-30: New crate architecture
 
 - `hci-mux`: HCI multiplexer between trouble-host (LE) and bt-classic-host (Classic)
@@ -154,7 +177,31 @@ the controller and drops non-LE events, so we need an HCI multiplexer layer.
 
 ## Iterations
 
-1. HCI mux scaffold + BLE passthrough verified. Existing BLE devices (Generic
-   mouse) connect, pair, and stream HID reports through the mux without issues.
-   Windows OS detected, USB HID standard mode. Logs: logs/log-1.txt
+1. `a34d763` HCI mux scaffold + BLE passthrough verified. Existing BLE devices
+   (Generic mouse) connect, pair, and stream HID reports through the mux
+   without issues. Windows OS detected, USB HID standard mode. Logs: logs/log-1.txt
+2. `bae39c1` Classic BT connection state machine + SSP pairing (Just Works).
+   Full HCI event loop: CreateConnection → LinkKeyRequest → SSP exchange →
+   AuthenticationComplete → SetConnectionEncryption → EncryptionChange.
+3. `9acf8a0` Classic L2CAP: signaling (ConnReq/Rsp, ConfigReq/Rsp), channel
+   state machine, CID allocation, ACL fragment reassembly, MTU negotiation.
+4. `9c6f992` HIDP client: opens Control+Interrupt channels, receives input
+   reports (DATA 0xA1), sends SET_REPORT/SET_PROTOCOL commands. Stack complete:
+   HCI → L2CAP → HIDP.
+5. `75b95b4` Firmware integration: HCI mux wired into bt2usb. ExternalController
+   replaced with HciMux.split(). Classic controller available in task tree.
+   Firmware builds + clippy clean. Classic task is placeholder — ready for MT2.
+6. `9caee49` Full classic_bt_task: connects to MT2 (hardcoded addr), SSP pairing,
+   L2CAP HID channels, multitouch enable, HIDP report loop → HID_REPORT_CHANNEL.
+   Ready for first hardware test.
+7. `17378e5` Fix UB: MuxShared dangling ref → store transport in HciMux.
+8. `2ca943a` Fix deadlock: remove Mutex around transport (Transport takes &self).
+9. `e63cf62` Fix dispatch: include HCI type indicator byte in packet lengths.
+10. `90fd02f` Handle PinCodeRequest for legacy pairing (MT2 doesn't use SSP).
+11. `c2e5903` Fix ACL parsing: skip HCI type indicator byte in rx buffer.
+12. `8f3868d` Filter reports by ID, log non-touch data.
+13. `70248e7` **TOUCH DATA RECEIVED!** Full Classic BT stack working end-to-end:
+    Connection → PIN pairing → Encryption → L2CAP → HIDP → multitouch reports.
+    Decoded 1/2/3-finger touch (X/Y/pressure/state), clicks (click=1 with p=200),
+    and the MT2 provides some haptic feedback autonomously. Logs: logs/log-2.txt
 
