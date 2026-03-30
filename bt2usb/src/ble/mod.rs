@@ -511,18 +511,30 @@ where
                     Ok(Some((channel_idx, data_len))) => {
                         // L2CAP data arrived on a HID channel
                         if hid.process_data(channel_idx, &acl_buf[..data_len], &mut report) {
-                            // Got a HID report! Forward to USB via HID_REPORT_CHANNEL.
-                            let mut event = HidReportEvent::new();
-                            event.report_type = HidReportType::Mouse; // Trackpad reports route as "mouse" for now
-                            event.profile = DeviceProfile::Generic; // TODO: MagicTrackpad profile
-                            event.slot_index = 3; // Classic slot (BLE uses 0-2)
-                            event.len = report.len.min(MAX_HID_REPORT_SIZE);
-                            event.data[..event.len].copy_from_slice(&report.data[..event.len]);
-                            if report.len > 0 {
-                                event.report_id = report.data[0];
-                            }
+                            // Got a HID report from the MT2.
+                            // Report ID 0x31 = BT multitouch data (4-byte header + N*9 touch points)
+                            // Other report IDs are status/control — log but don't forward yet.
+                            let report_id = if report.len > 0 { report.data[0] } else { 0 };
 
-                            HID_REPORT_CHANNEL.send(event).await;
+                            if report_id == 0x31 {
+                                // Touch report — forward to USB
+                                let mut event = HidReportEvent::new();
+                                event.report_type = HidReportType::Mouse;
+                                event.profile = DeviceProfile::Generic; // TODO: MagicTrackpad profile
+                                event.slot_index = 3;
+                                event.report_id = report_id;
+                                event.len = report.len.min(MAX_HID_REPORT_SIZE);
+                                event.data[..event.len].copy_from_slice(&report.data[..event.len]);
+                                HID_REPORT_CHANNEL.send(event).await;
+                            } else {
+                                // Log non-touch reports for debugging
+                                debug!(
+                                    "[classic] HID report id=0x{:02x} len={} data={:02x}",
+                                    report_id,
+                                    report.len,
+                                    &report.data[..report.len.min(16)]
+                                );
+                            }
                         }
                     }
                     Ok(None) => {} // Signaling or fragment, handled internally
