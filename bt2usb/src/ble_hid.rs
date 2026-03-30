@@ -118,8 +118,9 @@ pub fn find_slot_layout(slot: usize, data_len: usize) -> Option<MouseReportLayou
 }
 
 /// Maximum HID report size we'll handle.
-/// MT2 BT reports can be up to 4 + 15*9 = 139 bytes; USB reports up to 12 + 15*9 = 147.
-pub const MAX_HID_REPORT_SIZE: usize = 148;
+/// Keep at 64 to avoid stack overflow in embassy tasks — HidReportEvent is passed by value.
+/// MT2 translated reports (up to 57 bytes for 5 fingers) fit within this limit.
+pub const MAX_HID_REPORT_SIZE: usize = 64;
 
 /// Channel for passing HID reports from BLE to USB task
 pub static HID_REPORT_CHANNEL: Channel<CriticalSectionRawMutex, HidReportEvent, 8> = Channel::new();
