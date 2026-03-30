@@ -117,9 +117,12 @@ impl<const LE_SLOTS: usize, const CLASSIC_SLOTS: usize> MuxResources<LE_SLOTS, C
     }
 }
 
-/// The HCI multiplexer. Split into components via [`split()`](HciMux::split).
+/// The HCI multiplexer. Call [`split()`](HciMux::split) to obtain virtual controllers.
+///
+/// Must live for the duration of the program (on the stack of a `-> !` task).
+/// All components returned by `split()` borrow from this struct.
 pub struct HciMux<'a, T, const LE_SLOTS: usize = 10, const CLASSIC_SLOTS: usize = 4> {
-    transport: T,
+    transport: Mutex<CriticalSectionRawMutex, T>,
     res: &'a MuxResources<LE_SLOTS, CLASSIC_SLOTS>,
 }
 
@@ -130,53 +133,36 @@ where
     /// Create a new mux wrapping the given transport.
     pub fn new(transport: T, resources: &'a MuxResources<LS, CS>) -> Self {
         Self {
-            transport,
+            transport: Mutex::new(transport),
             res: resources,
         }
     }
 
     /// Split into the two virtual controllers and a runner.
     ///
-    /// The runner must be polled concurrently with both stacks.
+    /// All three components borrow from `self`, so the `HciMux` must outlive them
+    /// (lives on the stack of the `-> !` main task).
     pub fn split(
-        self,
+        &'a self,
     ) -> (
         LeController<'a, T, LS, CS>,
         ClassicController<'a, T, LS, CS>,
         MuxRunner<'a, T, LS, CS>,
     ) {
-        // Wrap transport in a mutex for shared write access
-        let shared = MuxShared {
-            transport: Mutex::new(self.transport),
-        };
-        // Safety: We need 'static-like lifetime for the shared state.
-        // The MuxResources outlives all three components since it's in a StaticCell.
-        // We leak the shared transport into a static reference.
-        // This is safe because the mux is never dropped (firmware runs forever).
-        let shared: &'a MuxShared<T> = unsafe {
-            let boxed = core::mem::ManuallyDrop::new(shared);
-            &*(&*boxed as *const MuxShared<T>)
-        };
-
         let le = LeController {
-            shared,
+            mux: self,
             res: self.res,
         };
         let classic = ClassicController {
-            shared,
+            mux: self,
             res: self.res,
         };
         let runner = MuxRunner {
-            shared,
+            mux: self,
             res: self.res,
         };
         (le, classic, runner)
     }
-}
-
-/// Shared state holding the transport behind a mutex.
-struct MuxShared<T> {
-    transport: Mutex<CriticalSectionRawMutex, T>,
 }
 
 /// Internal dispatch decision made by the runner.
@@ -197,7 +183,7 @@ enum DispatchAction {
 ///
 /// Must be polled concurrently with both BT stacks.
 pub struct MuxRunner<'a, T, const LS: usize = 10, const CS: usize = 4> {
-    shared: &'a MuxShared<T>,
+    mux: &'a HciMux<'a, T, LS, CS>,
     res: &'a MuxResources<LS, CS>,
 }
 
@@ -213,7 +199,7 @@ where
             // We use the same unsafe reborrow pattern as ExternalController to avoid
             // holding references to rx across dispatch calls.
             let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
-            let transport = self.shared.transport.lock().await;
+            let transport = self.mux.transport.lock().await;
             let result = transport.read(rx_ref).await;
             drop(transport);
 
@@ -410,7 +396,7 @@ where
 ///
 /// Implements `bt_hci::controller::Controller` — pass to `trouble_host::new()`.
 pub struct LeController<'a, T, const LS: usize = 10, const CS: usize = 4> {
-    shared: &'a MuxShared<T>,
+    mux: &'a HciMux<'a, T, LS, CS>,
     res: &'a MuxResources<LS, CS>,
 }
 
@@ -427,19 +413,19 @@ where
     T::Error: From<FromHciBytesError>,
 {
     async fn write_acl_data(&self, packet: &data::AclPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_sync_data(&self, packet: &data::SyncPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_iso_data(&self, packet: &data::IsoPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         transport.write(packet).await?;
         Ok(())
     }
@@ -464,7 +450,7 @@ where
         let mut retval: C::ReturnBuf = CmdReturnBuf::new();
         let (signal, idx) = self.res.le_slots.acquire(C::OPCODE, retval.as_mut()).await;
 
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         let write_result = transport.write(cmd).await;
         drop(transport);
 
@@ -498,7 +484,7 @@ where
     async fn exec(&self, cmd: &C) -> Result<(), cmd::Error<Self::Error>> {
         let (signal, idx) = self.res.le_slots.acquire(C::OPCODE, &mut []).await;
 
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         let write_result = transport.write(cmd).await;
         drop(transport);
 
@@ -519,7 +505,7 @@ where
 ///
 /// Implements `bt_hci::controller::Controller` — pass to `bt_classic_host::new()`.
 pub struct ClassicController<'a, T, const LS: usize = 10, const CS: usize = 4> {
-    shared: &'a MuxShared<T>,
+    mux: &'a HciMux<'a, T, LS, CS>,
     res: &'a MuxResources<LS, CS>,
 }
 
@@ -536,19 +522,19 @@ where
     T::Error: From<FromHciBytesError>,
 {
     async fn write_acl_data(&self, packet: &data::AclPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_sync_data(&self, packet: &data::SyncPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_iso_data(&self, packet: &data::IsoPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         transport.write(packet).await?;
         Ok(())
     }
@@ -575,7 +561,7 @@ where
             .acquire(C::OPCODE, retval.as_mut())
             .await;
 
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         let write_result = transport.write(cmd).await;
         drop(transport);
 
@@ -609,7 +595,7 @@ where
     async fn exec(&self, cmd: &C) -> Result<(), cmd::Error<Self::Error>> {
         let (signal, idx) = self.res.classic_slots.acquire(C::OPCODE, &mut []).await;
 
-        let transport = self.shared.transport.lock().await;
+        let transport = self.mux.transport.lock().await;
         let write_result = transport.write(cmd).await;
         drop(transport);
 
