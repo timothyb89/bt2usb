@@ -86,6 +86,7 @@ where
         + ControllerCmdSync<SetConnectionEncryption>
         + ControllerCmdSync<LinkKeyRequestReply>
         + ControllerCmdSync<LinkKeyRequestNegativeReply>
+        + ControllerCmdSync<PinCodeRequestReply>
         + ControllerCmdSync<IoCapabilityRequestReply>
         + ControllerCmdSync<UserConfirmationRequestReply>,
     L: LinkKeyStore,
@@ -233,6 +234,32 @@ where
                                     // SSP pairing will follow
                                     self.resources.pairing[target_slot].start();
                                 }
+                            }
+                        }
+
+                        EventKind::PinCodeRequest => {
+                            // [bdaddr(6)]
+                            // Legacy pairing — reply with default PIN "0000"
+                            if event.data.len() >= 6 {
+                                let addr = BdAddr::new([
+                                    event.data[0],
+                                    event.data[1],
+                                    event.data[2],
+                                    event.data[3],
+                                    event.data[4],
+                                    event.data[5],
+                                ]);
+                                #[cfg(feature = "defmt")]
+                                defmt::info!("[classic] PinCodeRequest, replying with PIN '0000'");
+                                let mut pin = [0u8; 16];
+                                pin[0] = b'0';
+                                pin[1] = b'0';
+                                pin[2] = b'0';
+                                pin[3] = b'0';
+                                self.controller
+                                    .exec(&PinCodeRequestReply::new(addr, 4, pin))
+                                    .await
+                                    .map_err(Error::Command)?;
                             }
                         }
 

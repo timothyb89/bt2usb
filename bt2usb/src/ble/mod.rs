@@ -376,7 +376,8 @@ where
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::LinkKeyRequestReply>
         + bt_hci::controller::ControllerCmdSync<
             bt_hci::cmd::link_control::LinkKeyRequestNegativeReply,
-        > + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::IoCapabilityRequestReply>
+        > + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::PinCodeRequestReply>
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::IoCapabilityRequestReply>
         + bt_hci::controller::ControllerCmdSync<
             bt_hci::cmd::link_control::UserConfirmationRequestReply,
         >,
