@@ -54,7 +54,6 @@ use bt_hci::transport::Transport;
 use bt_hci::{ControllerToHostPacket, FixedSizeValue, FromHciBytes, FromHciBytesError};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_sync::mutex::Mutex;
 use embedded_io::ErrorType;
 
 use classify::{classify_event, is_le_opcode};
@@ -122,7 +121,10 @@ impl<const LE_SLOTS: usize, const CLASSIC_SLOTS: usize> MuxResources<LE_SLOTS, C
 /// Must live for the duration of the program (on the stack of a `-> !` task).
 /// All components returned by `split()` borrow from this struct.
 pub struct HciMux<'a, T, const LE_SLOTS: usize = 10, const CLASSIC_SLOTS: usize = 4> {
-    transport: Mutex<CriticalSectionRawMutex, T>,
+    /// The raw HCI transport. Transport trait takes &self, so concurrent
+    /// read/write is handled internally by the transport implementation.
+    /// Only the MuxRunner reads; virtual controllers only write.
+    transport: T,
     res: &'a MuxResources<LE_SLOTS, CLASSIC_SLOTS>,
 }
 
@@ -133,7 +135,7 @@ where
     /// Create a new mux wrapping the given transport.
     pub fn new(transport: T, resources: &'a MuxResources<LS, CS>) -> Self {
         Self {
-            transport: Mutex::new(transport),
+            transport,
             res: resources,
         }
     }
@@ -199,9 +201,8 @@ where
             // We use the same unsafe reborrow pattern as ExternalController to avoid
             // holding references to rx across dispatch calls.
             let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
-            let transport = self.mux.transport.lock().await;
+            let transport = &self.mux.transport;
             let result = transport.read(rx_ref).await;
-            drop(transport);
 
             // Determine the dispatch action without holding a borrow on rx.
             let action = match result {
@@ -413,19 +414,19 @@ where
     T::Error: From<FromHciBytesError>,
 {
     async fn write_acl_data(&self, packet: &data::AclPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_sync_data(&self, packet: &data::SyncPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_iso_data(&self, packet: &data::IsoPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         transport.write(packet).await?;
         Ok(())
     }
@@ -450,9 +451,8 @@ where
         let mut retval: C::ReturnBuf = CmdReturnBuf::new();
         let (signal, idx) = self.res.le_slots.acquire(C::OPCODE, retval.as_mut()).await;
 
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         let write_result = transport.write(cmd).await;
-        drop(transport);
 
         if let Err(e) = write_result {
             self.res.le_slots.release(idx);
@@ -484,9 +484,8 @@ where
     async fn exec(&self, cmd: &C) -> Result<(), cmd::Error<Self::Error>> {
         let (signal, idx) = self.res.le_slots.acquire(C::OPCODE, &mut []).await;
 
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         let write_result = transport.write(cmd).await;
-        drop(transport);
 
         if let Err(e) = write_result {
             self.res.le_slots.release(idx);
@@ -522,19 +521,19 @@ where
     T::Error: From<FromHciBytesError>,
 {
     async fn write_acl_data(&self, packet: &data::AclPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_sync_data(&self, packet: &data::SyncPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         transport.write(packet).await?;
         Ok(())
     }
 
     async fn write_iso_data(&self, packet: &data::IsoPacket<'_>) -> Result<(), Self::Error> {
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         transport.write(packet).await?;
         Ok(())
     }
@@ -561,9 +560,8 @@ where
             .acquire(C::OPCODE, retval.as_mut())
             .await;
 
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         let write_result = transport.write(cmd).await;
-        drop(transport);
 
         if let Err(e) = write_result {
             self.res.classic_slots.release(idx);
@@ -595,9 +593,8 @@ where
     async fn exec(&self, cmd: &C) -> Result<(), cmd::Error<Self::Error>> {
         let (signal, idx) = self.res.classic_slots.acquire(C::OPCODE, &mut []).await;
 
-        let transport = self.mux.transport.lock().await;
+        let transport = &self.mux.transport;
         let write_result = transport.write(cmd).await;
-        drop(transport);
 
         if let Err(e) = write_result {
             self.res.classic_slots.release(idx);
