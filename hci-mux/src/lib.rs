@@ -245,28 +245,30 @@ where
         let total_len = event.data.len() + 3;
 
         match event.kind {
-            // Command responses: route by opcode, complete the slot
+            // Command responses: route to BOTH slot sets.
+            // Shared commands (Reset, SetEventMask, HostBufferSize — OGF 0x03)
+            // can be sent by either stack. Each slot set's complete() only signals
+            // if it has a pending slot matching the opcode, so routing to both is safe.
             EventKind::CommandComplete => {
                 if let Ok(e) = CommandComplete::from_hci_bytes_complete(event.data) {
                     if e.has_status() {
                         if let Ok(e) = TryInto::<CommandCompleteWithStatus>::try_into(e) {
-                            let is_le = is_le_opcode(e.cmd_opcode.to_raw());
-                            if is_le {
-                                self.res.le_slots.complete(
-                                    e.cmd_opcode,
-                                    e.status,
-                                    e.num_hci_cmd_pkts as usize,
-                                    e.return_param_bytes.as_ref(),
-                                );
-                            } else {
-                                self.res.classic_slots.complete(
-                                    e.cmd_opcode,
-                                    e.status,
-                                    e.num_hci_cmd_pkts as usize,
-                                    e.return_param_bytes.as_ref(),
-                                );
-                            }
-                            return DispatchAction::CmdComplete { is_le };
+                            // Signal both — only the set with a matching pending slot reacts
+                            self.res.le_slots.complete(
+                                e.cmd_opcode,
+                                e.status,
+                                e.num_hci_cmd_pkts as usize,
+                                e.return_param_bytes.as_ref(),
+                            );
+                            self.res.classic_slots.complete(
+                                e.cmd_opcode,
+                                e.status,
+                                e.num_hci_cmd_pkts as usize,
+                                e.return_param_bytes.as_ref(),
+                            );
+                            return DispatchAction::CmdComplete {
+                                is_le: is_le_opcode(e.cmd_opcode.to_raw()),
+                            };
                         }
                     }
                 }
@@ -274,23 +276,22 @@ where
             }
             EventKind::CommandStatus => {
                 if let Ok(e) = CommandStatus::from_hci_bytes_complete(event.data) {
-                    let is_le = is_le_opcode(e.cmd_opcode.to_raw());
-                    if is_le {
-                        self.res.le_slots.complete(
-                            e.cmd_opcode,
-                            e.status,
-                            e.num_hci_cmd_pkts as usize,
-                            &[],
-                        );
-                    } else {
-                        self.res.classic_slots.complete(
-                            e.cmd_opcode,
-                            e.status,
-                            e.num_hci_cmd_pkts as usize,
-                            &[],
-                        );
-                    }
-                    return DispatchAction::CmdComplete { is_le };
+                    // Signal both — only the set with a matching pending slot reacts
+                    self.res.le_slots.complete(
+                        e.cmd_opcode,
+                        e.status,
+                        e.num_hci_cmd_pkts as usize,
+                        &[],
+                    );
+                    self.res.classic_slots.complete(
+                        e.cmd_opcode,
+                        e.status,
+                        e.num_hci_cmd_pkts as usize,
+                        &[],
+                    );
+                    return DispatchAction::CmdComplete {
+                        is_le: is_le_opcode(e.cmd_opcode.to_raw()),
+                    };
                 }
                 DispatchAction::Both(total_len)
             }
