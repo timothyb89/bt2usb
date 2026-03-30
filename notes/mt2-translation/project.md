@@ -210,7 +210,10 @@ commands for basic click feedback.
     input. Multiple fixes: clicks byte masking, byte 7 mode flag (0x03),
     report padding. Critical fixes: command routing to both slot sets,
     event mask with Classic events, mux try_send to prevent deadlock.
-    STATUS: USB output path appears stuck — HID_REPORT_CHANNEL not being
-    consumed by Core 1 USB handler. Needs investigation against master
-    branch baseline to identify regression.
+    RESOLVED: USB output path IS working. The apparent failure was caused
+    by the Dial being in Generic profile, which has a pre-existing MT2
+    emulation bug (also broken on master). With profile=3 (FullScrollDial16Bit),
+    Dial scroll works correctly on macOS via mt2-translation branch.
+    Remaining issue: MT2 BT→USB passthrough format produces random clicks
+    on macOS instead of proper trackpad input. Translation format needs work.
 
