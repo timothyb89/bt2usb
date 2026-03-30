@@ -531,7 +531,14 @@ where
                                     event.report_id = 0x02; // USB Report ID
                                     event.len = usb_len.min(MAX_HID_REPORT_SIZE);
                                     event.data[..event.len].copy_from_slice(&usb_buf[..event.len]);
-                                    HID_REPORT_CHANNEL.send(event).await;
+                                    // Use try_send to avoid blocking — drop reports if channel full
+                                    // (USB backpressure shouldn't stall the BT receive loop)
+                                    match HID_REPORT_CHANNEL.try_send(event) {
+                                        Ok(()) => {}
+                                        Err(_) => {
+                                            debug!("[classic] HID channel full, dropping report");
+                                        }
+                                    }
                                 }
                             } else {
                                 // Log non-touch reports for debugging
