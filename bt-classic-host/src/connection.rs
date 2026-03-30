@@ -105,7 +105,11 @@ impl ClassicConnection {
     }
 
     /// Handle EncryptionChange event.
-    pub fn on_encryption_change(&mut self, status: Status, encryption_enabled: u8) -> Result<(), Status> {
+    pub fn on_encryption_change(
+        &mut self,
+        status: Status,
+        encryption_enabled: u8,
+    ) -> Result<(), Status> {
         if status != Status::SUCCESS {
             return Err(status);
         }

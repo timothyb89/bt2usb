@@ -66,14 +66,17 @@ impl<const N: usize> CommandSlots<N> {
     /// Complete a pending command with the given response.
     ///
     /// Called by the mux runner when a CommandComplete or CommandStatus event arrives.
-    pub fn complete(&self, opcode: cmd::Opcode, status: Status, num_hci_cmd_pkts: usize, data: &[u8]) {
+    pub fn complete(
+        &self,
+        opcode: cmd::Opcode,
+        status: Status,
+        num_hci_cmd_pkts: usize,
+        data: &[u8],
+    ) {
         let mut slots = self.slots.borrow_mut();
         for (idx, slot) in slots.iter_mut().enumerate() {
             match slot {
-                Slot::Pending {
-                    opcode: op,
-                    event,
-                } if *op == opcode.to_raw() => {
+                Slot::Pending { opcode: op, event } if *op == opcode.to_raw() => {
                     if !data.is_empty() {
                         assert!(!event.is_null());
                         // Safety: the slot is pending, so the caller's stack frame is still valid.

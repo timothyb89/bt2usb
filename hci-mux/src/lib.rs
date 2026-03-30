@@ -96,6 +96,14 @@ pub struct MuxResources<const LE_SLOTS: usize = 10, const CLASSIC_SLOTS: usize =
     handles: RefCell<HandleRegistry<8>>,
 }
 
+impl<const LE_SLOTS: usize, const CLASSIC_SLOTS: usize> Default
+    for MuxResources<LE_SLOTS, CLASSIC_SLOTS>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const LE_SLOTS: usize, const CLASSIC_SLOTS: usize> MuxResources<LE_SLOTS, CLASSIC_SLOTS> {
     /// Create new mux resources. Call once, store in a StaticCell.
     pub fn new() -> Self {
@@ -130,7 +138,13 @@ where
     /// Split into the two virtual controllers and a runner.
     ///
     /// The runner must be polled concurrently with both stacks.
-    pub fn split(self) -> (LeController<'a, T, LS, CS>, ClassicController<'a, T, LS, CS>, MuxRunner<'a, T, LS, CS>) {
+    pub fn split(
+        self,
+    ) -> (
+        LeController<'a, T, LS, CS>,
+        ClassicController<'a, T, LS, CS>,
+        MuxRunner<'a, T, LS, CS>,
+    ) {
         // Wrap transport in a mutex for shared write access
         let shared = MuxShared {
             transport: Mutex::new(self.transport),
@@ -205,9 +219,7 @@ where
 
             // Determine the dispatch action without holding a borrow on rx.
             let action = match result {
-                Ok(ControllerToHostPacket::Event(ref event)) => {
-                    self.classify_event_action(event)
-                }
+                Ok(ControllerToHostPacket::Event(ref event)) => self.classify_event_action(event),
                 Ok(ControllerToHostPacket::Acl(ref acl)) => {
                     let handle = acl.handle();
                     let total_len = 4 + acl.data().len();
@@ -252,13 +264,15 @@ where
                             let is_le = is_le_opcode(e.cmd_opcode.to_raw());
                             if is_le {
                                 self.res.le_slots.complete(
-                                    e.cmd_opcode, e.status,
+                                    e.cmd_opcode,
+                                    e.status,
                                     e.num_hci_cmd_pkts as usize,
                                     e.return_param_bytes.as_ref(),
                                 );
                             } else {
                                 self.res.classic_slots.complete(
-                                    e.cmd_opcode, e.status,
+                                    e.cmd_opcode,
+                                    e.status,
                                     e.num_hci_cmd_pkts as usize,
                                     e.return_param_bytes.as_ref(),
                                 );
@@ -273,9 +287,19 @@ where
                 if let Ok(e) = CommandStatus::from_hci_bytes_complete(event.data) {
                     let is_le = is_le_opcode(e.cmd_opcode.to_raw());
                     if is_le {
-                        self.res.le_slots.complete(e.cmd_opcode, e.status, e.num_hci_cmd_pkts as usize, &[]);
+                        self.res.le_slots.complete(
+                            e.cmd_opcode,
+                            e.status,
+                            e.num_hci_cmd_pkts as usize,
+                            &[],
+                        );
                     } else {
-                        self.res.classic_slots.complete(e.cmd_opcode, e.status, e.num_hci_cmd_pkts as usize, &[]);
+                        self.res.classic_slots.complete(
+                            e.cmd_opcode,
+                            e.status,
+                            e.num_hci_cmd_pkts as usize,
+                            &[],
+                        );
                     }
                     return DispatchAction::CmdComplete { is_le };
                 }
@@ -313,8 +337,12 @@ where
                     if sub_event == 0x01 || sub_event == 0x0A {
                         let status = event.data[1];
                         if status == 0x00 {
-                            let handle_raw = u16::from_le_bytes([event.data[2], event.data[3]]) & 0x0FFF;
-                            self.res.handles.borrow_mut().register(ConnHandle::new(handle_raw), StackId::Le);
+                            let handle_raw =
+                                u16::from_le_bytes([event.data[2], event.data[3]]) & 0x0FFF;
+                            self.res
+                                .handles
+                                .borrow_mut()
+                                .register(ConnHandle::new(handle_raw), StackId::Le);
                         }
                     }
                 }
@@ -326,8 +354,12 @@ where
                 if event.data.len() >= 3 {
                     let status = event.data[0];
                     if status == 0x00 {
-                        let handle_raw = u16::from_le_bytes([event.data[1], event.data[2]]) & 0x0FFF;
-                        self.res.handles.borrow_mut().register(ConnHandle::new(handle_raw), StackId::Classic);
+                        let handle_raw =
+                            u16::from_le_bytes([event.data[1], event.data[2]]) & 0x0FFF;
+                        self.res
+                            .handles
+                            .borrow_mut()
+                            .register(ConnHandle::new(handle_raw), StackId::Classic);
                     }
                 }
                 DispatchAction::Classic(total_len)
@@ -339,7 +371,9 @@ where
                 match target {
                     PacketTarget::Le => DispatchAction::Le(total_len),
                     PacketTarget::Classic => DispatchAction::Classic(total_len),
-                    PacketTarget::Both | PacketTarget::ByHandle(_) => DispatchAction::Both(total_len),
+                    PacketTarget::Both | PacketTarget::ByHandle(_) => {
+                        DispatchAction::Both(total_len)
+                    }
                 }
             }
         }
@@ -416,8 +450,7 @@ where
         buf[..len].copy_from_slice(&pkt.buf[..len]);
         // The channel only receives well-formed packets from the mux runner.
         // If parsing fails, return a synthetic error rather than looping.
-        ControllerToHostPacket::from_hci_bytes_complete(&buf[..len])
-            .map_err(|e| T::Error::from(e))
+        ControllerToHostPacket::from_hci_bytes_complete(&buf[..len]).map_err(T::Error::from)
     }
 }
 
@@ -444,7 +477,8 @@ where
         self.res.le_slots.release(idx);
 
         let return_param_bytes =
-            bt_hci::param::RemainingBytes::from_hci_bytes_complete(&retval.as_ref()[..resp.len]).unwrap();
+            bt_hci::param::RemainingBytes::from_hci_bytes_complete(&retval.as_ref()[..resp.len])
+                .unwrap();
         let e = CommandCompleteWithStatus {
             num_hci_cmd_pkts: 0,
             status: resp.status,
@@ -523,8 +557,7 @@ where
         let pkt = self.res.classic_channel.receive().await;
         let len = pkt.len.min(buf.len());
         buf[..len].copy_from_slice(&pkt.buf[..len]);
-        ControllerToHostPacket::from_hci_bytes_complete(&buf[..len])
-            .map_err(|e| T::Error::from(e))
+        ControllerToHostPacket::from_hci_bytes_complete(&buf[..len]).map_err(T::Error::from)
     }
 }
 
@@ -536,7 +569,11 @@ where
 {
     async fn exec(&self, cmd: &C) -> Result<C::Return, cmd::Error<Self::Error>> {
         let mut retval: C::ReturnBuf = CmdReturnBuf::new();
-        let (signal, idx) = self.res.classic_slots.acquire(C::OPCODE, retval.as_mut()).await;
+        let (signal, idx) = self
+            .res
+            .classic_slots
+            .acquire(C::OPCODE, retval.as_mut())
+            .await;
 
         let transport = self.shared.transport.lock().await;
         let write_result = transport.write(cmd).await;
@@ -551,7 +588,8 @@ where
         self.res.classic_slots.release(idx);
 
         let return_param_bytes =
-            bt_hci::param::RemainingBytes::from_hci_bytes_complete(&retval.as_ref()[..resp.len]).unwrap();
+            bt_hci::param::RemainingBytes::from_hci_bytes_complete(&retval.as_ref()[..resp.len])
+                .unwrap();
         let e = CommandCompleteWithStatus {
             num_hci_cmd_pkts: 0,
             status: resp.status,

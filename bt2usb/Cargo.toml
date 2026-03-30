@@ -33,6 +33,9 @@ cyw43-pio = { version = "0.10", features = ["defmt"] }
 # BLE host stack - from git for legacy-pairing support (not yet released to crates.io)
 trouble-host = { git = "https://github.com/embassy-rs/trouble", features = ["defmt", "scan", "security", "legacy-pairing"] }
 
+# HCI multiplexer for dual-mode BT (Classic + BLE on same controller)
+hci-mux = { path = "../hci-mux", features = ["defmt"] }
+
 # USB HID
 usbd-hid = { version = "0.9" }
 

@@ -70,7 +70,7 @@ pub fn build_configuration_request(id: u8, dest_cid: u16, mtu: u16) -> [u8; 12] 
     buf[3] = 0;
     buf[4..6].copy_from_slice(&dest_cid.to_le_bytes());
     buf[6..8].copy_from_slice(&0u16.to_le_bytes()); // flags = 0 (no continuation)
-    // MTU option TLV
+                                                    // MTU option TLV
     buf[8] = config_option::MTU;
     buf[9] = 2; // length
     buf[10..12].copy_from_slice(&mtu.to_le_bytes());

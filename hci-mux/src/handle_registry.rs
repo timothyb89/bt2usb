@@ -28,6 +28,12 @@ pub struct HandleRegistry<const N: usize> {
     entries: [Entry; N],
 }
 
+impl<const N: usize> Default for HandleRegistry<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> HandleRegistry<N> {
     /// Create a new empty registry.
     pub const fn new() -> Self {
@@ -42,7 +48,11 @@ impl<const N: usize> HandleRegistry<N> {
     pub fn register(&mut self, handle: ConnHandle, stack: StackId) -> bool {
         // Check if already registered (update stack if so)
         for entry in self.entries.iter_mut() {
-            if let Entry::Used { handle: h, stack: s } = entry {
+            if let Entry::Used {
+                handle: h,
+                stack: s,
+            } = entry
+            {
                 if h.raw() == handle.raw() {
                     *s = stack;
                     return true;

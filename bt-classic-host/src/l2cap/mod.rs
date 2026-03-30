@@ -68,7 +68,11 @@ impl<const CHANNELS: usize> L2capState<CHANNELS> {
         self.send_signaling(controller, &cmd).await?;
 
         #[cfg(feature = "defmt")]
-        defmt::info!("[l2cap] Sent ConnReq PSM=0x{:04x} SCID=0x{:04x}", psm, local_cid);
+        defmt::info!(
+            "[l2cap] Sent ConnReq PSM=0x{:04x} SCID=0x{:04x}",
+            psm,
+            local_cid
+        );
 
         Ok(idx)
     }
@@ -98,7 +102,8 @@ impl<const CHANNELS: usize> L2capState<CHANNELS> {
             let sig_len = payload.len().min(256);
             let mut sig_buf = [0u8; 256];
             sig_buf[..sig_len].copy_from_slice(&payload[..sig_len]);
-            self.handle_signaling(controller, &sig_buf[..sig_len]).await?;
+            self.handle_signaling(controller, &sig_buf[..sig_len])
+                .await?;
             return Ok(None);
         }
 
@@ -144,7 +149,8 @@ impl<const CHANNELS: usize> L2capState<CHANNELS> {
                     if let Some((dcid, _flags, options)) =
                         signal::parse_configuration_request(payload)
                     {
-                        let remote_mtu = signal::extract_mtu_from_options(options).unwrap_or(DEFAULT_MTU);
+                        let remote_mtu =
+                            signal::extract_mtu_from_options(options).unwrap_or(DEFAULT_MTU);
                         self.handle_configuration_request(controller, id, dcid, remote_mtu)
                             .await?;
                     }
@@ -357,7 +363,10 @@ impl<const CHANNELS: usize> L2capState<CHANNELS> {
 
     /// Check if a channel is open.
     pub fn is_channel_open(&self, idx: usize) -> bool {
-        self.channels.channels.get(idx).map_or(false, |ch| ch.is_open())
+        self.channels
+            .channels
+            .get(idx)
+            .map_or(false, |ch| ch.is_open())
     }
 
     /// Check if all specified channel indices are open.

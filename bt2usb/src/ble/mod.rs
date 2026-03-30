@@ -212,8 +212,14 @@ pub async fn core0_ble_main(
             active_device_pref = None;
         }
     }
-    // --- Build BLE stack ---
-    let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
+    // --- Build HCI multiplexer for dual-mode BT (Classic + BLE) ---
+    static MUX_RES: StaticCell<hci_mux::MuxResources<10, 4>> = StaticCell::new();
+    let mux_res = MUX_RES.init(hci_mux::MuxResources::new());
+    let mux = hci_mux::HciMux::new(bt_device, mux_res);
+    let (le_controller, classic_controller, mux_runner) = mux.split();
+
+    // The LE controller is passed to trouble-host (replaces ExternalController).
+    let controller = le_controller;
 
     // Static random address: MSB must have bits 11 (>= 0xC0)
     let address = Address::random([0xff, 0x8f, 0x1b, 0x05, 0xe4, 0xca]);
@@ -281,21 +287,29 @@ pub async fn core0_ble_main(
         let _ = BLE_CMD_CHANNEL.try_send(BleCommand::AutoConnect);
     }
 
-    // --- Run BLE host, connection manager, and slot tasks concurrently ---
+    // --- Run HCI mux, BLE host, Classic host, and slot tasks concurrently ---
     let _ = join(
-        runner.run_with_handler(&scanner_handler),
+        // HCI mux runner: routes packets between BLE and Classic stacks
+        mux_runner.run(),
         join(
-            connection_manager_loop(
-                &mut scanner,
-                &stack,
-                flash_mutex,
-                &mut loaded_bonds,
-                &active_device_pref,
-            ),
-            join3(
-                connection_slot_task(0, &stack, flash_mutex, &active_device_pref),
-                connection_slot_task(1, &stack, flash_mutex, &active_device_pref),
-                connection_slot_task(2, &stack, flash_mutex, &active_device_pref),
+            runner.run_with_handler(&scanner_handler),
+            join(
+                connection_manager_loop(
+                    &mut scanner,
+                    &stack,
+                    flash_mutex,
+                    &mut loaded_bonds,
+                    &active_device_pref,
+                ),
+                join(
+                    join3(
+                        connection_slot_task(0, &stack, flash_mutex, &active_device_pref),
+                        connection_slot_task(1, &stack, flash_mutex, &active_device_pref),
+                        connection_slot_task(2, &stack, flash_mutex, &active_device_pref),
+                    ),
+                    // Classic BT task (placeholder — will connect to MT2 etc.)
+                    classic_bt_task(&classic_controller),
+                ),
             ),
         ),
     )
@@ -304,6 +318,31 @@ pub async fn core0_ble_main(
     // Should never reach here
     loop {
         Timer::after_millis(1000).await;
+    }
+}
+
+// ============ Classic BT Task ============
+
+/// Classic Bluetooth task — runs alongside BLE, handles Classic HID devices.
+///
+/// Currently a placeholder that listens for commands. Will be extended to:
+/// - Connect to Classic BT HID devices (Magic Trackpad 2, etc.)
+/// - Run the HIDP session and forward reports to HID_REPORT_CHANNEL
+async fn classic_bt_task<C: bt_hci::controller::Controller>(_controller: &C) {
+    info!("[classic] Classic BT task started (idle, waiting for implementation)");
+
+    // TODO: Phase 5 integration
+    // 1. Listen for connect commands on a Classic command channel
+    // 2. Create ClassicRunner with controller + HostResources + LinkKeyStore
+    // 3. Call runner.connect(&target_addr) to establish encrypted ACL link
+    // 4. Create L2capState and HidClient
+    // 5. Open HID channels and activate multitouch
+    // 6. Forward HIDP reports to HID_REPORT_CHANNEL
+
+    // For now, just idle forever. The mux runner handles routing
+    // and the BLE stack continues to work normally.
+    loop {
+        Timer::after_secs(3600).await;
     }
 }
 
