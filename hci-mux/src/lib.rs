@@ -209,7 +209,8 @@ where
                 Ok(ControllerToHostPacket::Event(ref event)) => self.classify_event_action(event),
                 Ok(ControllerToHostPacket::Acl(ref acl)) => {
                     let handle = acl.handle();
-                    let total_len = 4 + acl.data().len();
+                    // ACL: 1 (type indicator 0x02) + 2 (handle) + 2 (data_len) + data
+                    let total_len = 5 + acl.data().len();
                     let handles = self.res.handles.borrow();
                     let target = handles.lookup(handle);
                     drop(handles);
@@ -240,7 +241,8 @@ where
     /// Classify an event and determine the dispatch action.
     /// For command responses, this also calls complete() on the appropriate slots.
     fn classify_event_action(&self, event: &bt_hci::event::EventPacket<'_>) -> DispatchAction {
-        let total_len = event.data.len() + 2; // +2 for event code + param_len
+        // Event: 1 (type indicator 0x04) + 1 (event code) + 1 (param_len) + data
+        let total_len = event.data.len() + 3;
 
         match event.kind {
             // Command responses: route by opcode, complete the slot
