@@ -34,10 +34,13 @@ pub fn bt_to_usb(bt_data: &[u8], usb_out: &mut [u8]) -> Option<usize> {
         return None;
     }
 
-    // Build USB 12-byte header
+    // Build USB 12-byte header.
+    // BT byte 1 has: bits 0-5 = click/flags, bits 6-7 = timestamp low.
+    // USB byte 1 should only have the click bit (bit 0). The real MT2 USB
+    // format has a clean clicks byte without timestamp contamination.
     usb_out[0] = 0x02; // USB Report ID
-    usb_out[1] = bt_data[1]; // clicks (lower bits) + timestamp (upper bits)
-    usb_out[2] = 0x00; // padding
+    usb_out[1] = bt_data[1] & 0x01; // Extract only the click button bit
+    usb_out[2] = 0x00;
     usb_out[3] = 0x00;
     usb_out[4] = 0x00;
     usb_out[5] = 0x00;
