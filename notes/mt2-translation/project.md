@@ -204,4 +204,13 @@ commands for basic click feedback.
     Connection → PIN pairing → Encryption → L2CAP → HIDP → multitouch reports.
     Decoded 1/2/3-finger touch (X/Y/pressure/state), clicks (click=1 with p=200),
     and the MT2 provides some haptic feedback autonomously. Logs: logs/log-2.txt
+14-21. USB translation iterations. BT→USB header translation implemented.
+    macOS loads AppleMultitouchDriver and enables MT. Data reaches macOS
+    (writes succeed) but produces random clicks instead of proper trackpad
+    input. Multiple fixes: clicks byte masking, byte 7 mode flag (0x03),
+    report padding. Critical fixes: command routing to both slot sets,
+    event mask with Classic events, mux try_send to prevent deadlock.
+    STATUS: USB output path appears stuck — HID_REPORT_CHANNEL not being
+    consumed by Core 1 USB handler. Needs investigation against master
+    branch baseline to identify regression.
 
