@@ -370,6 +370,7 @@ impl bt_classic_host::LinkKeyStore for MemoryLinkKeyStore {
 async fn classic_bt_task<C>(controller: &C)
 where
     C: bt_hci::controller::Controller
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::controller_baseband::SetEventMask>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::CreateConnection>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::AuthenticationRequested>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::SetConnectionEncryption>
@@ -393,8 +394,45 @@ where
 
     info!("[classic] Classic BT task started");
 
-    // Wait a bit for BLE stack to initialize first
+    // Wait for BLE stack to initialize first (it sends SetEventMask during init)
     Timer::after_millis(2000).await;
+
+    // --- Fix event mask: trouble-host's SetEventMask only enables LE events.
+    // We need to re-send it with Classic events also enabled so the controller
+    // generates LinkKeyRequest, PinCodeRequest, AuthenticationComplete, etc.
+    {
+        use bt_hci::cmd::controller_baseband::SetEventMask;
+        use bt_hci::param::EventMask;
+
+        // Enable both LE events (for trouble-host) and Classic events (for us).
+        // trouble-host's init only enables LE events, masking out Classic auth events.
+        let mask = EventMask::new()
+            // LE events (required by trouble-host)
+            .enable_le_meta(true)
+            .enable_disconnection_complete(true)
+            .enable_encryption_change_v1(true)
+            .enable_encryption_key_refresh_complete(true)
+            .enable_hardware_error(true)
+            // Classic events (required for Classic BT pairing/auth)
+            .enable_conn_complete(true)
+            .enable_conn_request(true)
+            .enable_authentication_complete(true)
+            .enable_link_key_request(true)
+            .enable_link_key_notification(true)
+            .enable_pin_code_request(true)
+            .enable_io_capability_request(true)
+            .enable_io_capability_response(true)
+            .enable_user_confirmation_request(true)
+            .enable_simple_pairing_complete(true);
+
+        match controller.exec(&SetEventMask::new(mask)).await {
+            Ok(_) => info!("[classic] Event mask updated with Classic events"),
+            Err(e) => warn!(
+                "[classic] Failed to set event mask: {:?}",
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
 
     // --- Magic Trackpad 2 address (hardcoded for initial testing) ---
     let mt2_addr = bt_hci::param::BdAddr::new([0x19, 0x10, 0xF1, 0x40, 0xEB, 0xE0]);
