@@ -338,6 +338,7 @@ async fn usb_hid_handler_task_mt2(
                 {
                     // Magic Trackpad passthrough: write pre-translated USB report directly
                     if event.len > 0 {
+                        debug!("MT2 passthrough: writing {} bytes", event.len);
                         if let Err(e) = mt2_writer.write(&event.data[..event.len]).await {
                             warn!("MT2 passthrough write error: {:?}", e);
                         }
