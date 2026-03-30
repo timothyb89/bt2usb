@@ -387,9 +387,9 @@ where
     use bt_classic_host::hidp::ReportType;
     use bt_classic_host::{ClassicRunner, HidClient, HostResources, L2capState};
 
-    // TODO: Re-enable when USB translation is ready
-    // use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL, MAX_HID_REPORT_SIZE};
-    // use crate::device_profile::DeviceProfile;
+    use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL, MAX_HID_REPORT_SIZE};
+    use crate::device_profile::DeviceProfile;
+    use crate::mt2_translate;
 
     info!("[classic] Classic BT task started");
 
@@ -518,33 +518,21 @@ where
                             let report_id = if report.len > 0 { report.data[0] } else { 0 };
 
                             if report_id == 0x31 && report.len >= 4 {
-                                // Touch report: [report_id(1), clicks(1), ts_lo(1), ts_hi(1), N*9 touch bytes]
-                                let clicks = report.data[1];
-                                let n_touches = (report.len - 4) / 9;
-                                // Decode first touch point for logging
-                                if n_touches > 0 && report.len >= 13 {
-                                    let tdata = &report.data[4..13]; // First touch
-                                    let x =
-                                        ((tdata[1] as i32) << 27 | (tdata[0] as i32) << 19) >> 19;
-                                    let y = -(((tdata[3] as i32) << 30
-                                        | (tdata[2] as i32) << 22
-                                        | (tdata[1] as i32) << 14)
-                                        >> 19);
-                                    let pressure = tdata[7];
-                                    let finger_id = tdata[8] & 0x0F;
-                                    let state = tdata[3] & 0xC0;
-                                    info!(
-                                        "[classic] TOUCH n={} click={} x={} y={} p={} id={} st=0x{:02x}",
-                                        n_touches, clicks, x, y, pressure, finger_id, state
-                                    );
-                                } else {
-                                    info!(
-                                        "[classic] Touch report: {} touches, clicks={}",
-                                        n_touches, clicks
-                                    );
+                                // Touch report — translate BT→USB and forward
+                                let mut usb_buf = [0u8; mt2_translate::MAX_USB_REPORT];
+                                if let Some(usb_len) = mt2_translate::bt_to_usb(
+                                    &report.data[..report.len],
+                                    &mut usb_buf,
+                                ) {
+                                    let mut event = HidReportEvent::new();
+                                    event.report_type = HidReportType::Mouse;
+                                    event.profile = DeviceProfile::MagicTrackpad;
+                                    event.slot_index = 3;
+                                    event.report_id = 0x02; // USB Report ID
+                                    event.len = usb_len.min(MAX_HID_REPORT_SIZE);
+                                    event.data[..event.len].copy_from_slice(&usb_buf[..event.len]);
+                                    HID_REPORT_CHANNEL.send(event).await;
                                 }
-                                // TODO: Forward to HID_REPORT_CHANNEL with proper MagicTrackpad
-                                // profile once USB translation is implemented.
                             } else {
                                 // Log non-touch reports for debugging
                                 debug!(
