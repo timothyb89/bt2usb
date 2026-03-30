@@ -30,6 +30,12 @@ pub struct ReassemblyBuffer<const N: usize> {
     in_progress: bool,
 }
 
+impl<const N: usize> Default for ReassemblyBuffer<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const N: usize> ReassemblyBuffer<N> {
     pub const fn new() -> Self {
         Self {
@@ -77,7 +83,7 @@ impl<const N: usize> ReassemblyBuffer<N> {
                     // Complete in a single fragment
                     self.in_progress = false;
                     let channel_id = u16::from_le_bytes([self.buf[2], self.buf[3]]);
-                    return Some((channel_id, &self.buf[4..self.expected_len]));
+                    Some((channel_id, &self.buf[4..self.expected_len]))
                 } else {
                     // Need more fragments
                     self.in_progress = true;

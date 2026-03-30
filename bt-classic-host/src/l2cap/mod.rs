@@ -366,7 +366,7 @@ impl<const CHANNELS: usize> L2capState<CHANNELS> {
         self.channels
             .channels
             .get(idx)
-            .map_or(false, |ch| ch.is_open())
+            .is_some_and(|ch| ch.is_open())
     }
 
     /// Check if all specified channel indices are open.

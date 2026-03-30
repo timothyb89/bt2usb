@@ -32,6 +32,12 @@ pub struct HidReport {
     pub len: usize,
 }
 
+impl Default for HidReport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HidReport {
     pub const fn new() -> Self {
         Self {
@@ -48,6 +54,12 @@ pub struct HidClient {
     pub control_channel: Option<usize>,
     /// L2CAP channel index for HID Interrupt (PSM 0x0013).
     pub interrupt_channel: Option<usize>,
+}
+
+impl Default for HidClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HidClient {
@@ -89,10 +101,10 @@ impl HidClient {
     pub fn is_ready<const CH: usize>(&self, l2cap: &L2capState<CH>) -> bool {
         let ctrl_open = self
             .control_channel
-            .map_or(false, |idx| l2cap.is_channel_open(idx));
+            .is_some_and(|idx| l2cap.is_channel_open(idx));
         let intr_open = self
             .interrupt_channel
-            .map_or(false, |idx| l2cap.is_channel_open(idx));
+            .is_some_and(|idx| l2cap.is_channel_open(idx));
         ctrl_open && intr_open
     }
 

@@ -36,6 +36,9 @@ trouble-host = { git = "https://github.com/embassy-rs/trouble", features = ["def
 # HCI multiplexer for dual-mode BT (Classic + BLE on same controller)
 hci-mux = { path = "../hci-mux", features = ["defmt"] }
 
+# Classic Bluetooth HID host stack
+bt-classic-host = { path = "../bt-classic-host", features = ["defmt"] }
+
 # USB HID
 usbd-hid = { version = "0.9" }
 

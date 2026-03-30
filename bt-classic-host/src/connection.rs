@@ -140,6 +140,12 @@ pub struct ConnectionStorage {
     pub active: bool,
 }
 
+impl Default for ConnectionStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnectionStorage {
     pub const fn new() -> Self {
         Self {
