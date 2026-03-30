@@ -15,23 +15,15 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! // Allocate resources statically
-//! static RESOURCES: StaticCell<HostResources<1, 3>> = StaticCell::new();
+//! static RESOURCES: StaticCell<HostResources<1>> = StaticCell::new();
 //!
-//! // Build the stack
-//! let stack = bt_classic_host::new(controller, resources);
-//! let Host { runner, central } = stack.build();
+//! let res = RESOURCES.init(HostResources::new());
+//! let link_keys = RefCell::new(MyLinkKeyStore::new());
+//! let mut runner = ClassicRunner::new(&controller, res, &link_keys);
 //!
-//! // Run the event loop concurrently with application code
-//! join(runner.run(), async {
-//!     let conn = central.connect(&addr).await?;
-//!     conn.wait_encrypted().await?;
-//!     let hid = HidClient::new(&conn).await?;
-//!     loop {
-//!         let report = hid.receive_report().await?;
-//!         // process report...
-//!     }
-//! }).await;
+//! runner.init().await?;
+//! let handle = runner.connect(&target_addr).await?;
+//! // Connection is now encrypted, ready for L2CAP/HIDP
 //! ```
 
 #![no_std]
@@ -45,8 +37,8 @@ pub mod l2cap;
 pub mod link_key;
 pub mod pairing;
 
+pub use connection::{ClassicConnection, ConnState};
 pub use error::Error;
+pub use host::{ClassicRunner, ConnEvent, HostResources};
 pub use link_key::{LinkKeyInfo, LinkKeyStore};
-
-// TODO: Public API types (HostResources, new(), ClassicStack, Host, Central, HidClient)
-// will be added as the implementation progresses through Phases 2-4.
+pub use pairing::PairingContext;
