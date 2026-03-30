@@ -72,8 +72,8 @@ pub fn bt_to_usb(bt_data: &[u8], usb_out: &mut [u8]) -> Option<usize> {
     usb_out[10] = bt_data[3]; // Timestamp high
     usb_out[11] = 0xE6; // Constant marker (from real MT2 USB captures)
 
-    // Copy touch data verbatim — encoding is identical between BT and USB
-    usb_out[12..usb_len].copy_from_slice(&bt_data[4..]);
+    // Copy actual touch data — remaining padded slots are already zeroed
+    usb_out[12..12 + n_touch_bytes].copy_from_slice(&bt_data[4..]);
 
     Some(usb_len)
 }
