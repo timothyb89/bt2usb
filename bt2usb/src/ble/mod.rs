@@ -404,18 +404,19 @@ where
         use bt_hci::cmd::controller_baseband::SetEventMask;
         use bt_hci::param::EventMask;
 
-        // Enable both LE events (for trouble-host) and Classic events (for us).
-        // trouble-host's init only enables LE events, masking out Classic auth events.
+        // trouble-host's init sends SetEventMask with only LE events.
+        // We re-send with trouble-host's events PLUS Classic auth events.
+        // Must include ALL events trouble-host needs to avoid breaking BLE.
         let mask = EventMask::new()
-            // LE events (required by trouble-host)
+            // === trouble-host's events (from host.rs:1195-1202) ===
             .enable_le_meta(true)
+            .enable_conn_request(true)
+            .enable_conn_complete(true)
+            .enable_hardware_error(true)
             .enable_disconnection_complete(true)
             .enable_encryption_change_v1(true)
             .enable_encryption_key_refresh_complete(true)
-            .enable_hardware_error(true)
-            // Classic events (required for Classic BT pairing/auth)
-            .enable_conn_complete(true)
-            .enable_conn_request(true)
+            // === Classic events (for bt-classic-host) ===
             .enable_authentication_complete(true)
             .enable_link_key_request(true)
             .enable_link_key_notification(true)
