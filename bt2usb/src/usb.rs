@@ -336,9 +336,35 @@ async fn usb_hid_handler_task_mt2(
                 HidReportType::Mouse
                     if event.profile == crate::device_profile::DeviceProfile::MagicTrackpad =>
                 {
-                    // Magic Trackpad passthrough: write pre-translated USB report directly
+                    // TEST: On first MagicTrackpad report, send a synthetic scroll gesture
+                    // using the exact same TouchSynthesizer that works for Full Scroll Dial.
+                    // This tests whether the USB output path works independently of BT data.
+                    static TEST_SENT: portable_atomic::AtomicBool =
+                        portable_atomic::AtomicBool::new(false);
+                    if !TEST_SENT.load(Ordering::Relaxed) {
+                        TEST_SENT.store(true, Ordering::Relaxed);
+                        info!("MT2 TEST: Sending synthetic scroll gesture via TouchSynthesizer");
+                        // Simulate a scroll event through the same path that works for scrolling
+                        let reports = touch_synth.process_scroll(500); // Large scroll delta
+                        for report in reports {
+                            if let Err(e) = mt2_writer.write(&report).await {
+                                warn!("MT2 TEST write error: {:?}", e);
+                            }
+                        }
+                        // Drain the synthesizer for a few ticks
+                        for _ in 0..50 {
+                            if let Some(report) = touch_synth.tick() {
+                                if let Err(e) = mt2_writer.write(&report).await {
+                                    warn!("MT2 TEST tick write error: {:?}", e);
+                                }
+                            }
+                            embassy_time::Timer::after_millis(4).await;
+                        }
+                        info!("MT2 TEST: Synthetic gesture complete");
+                    }
+
+                    // Also pass through the real BT data
                     if event.len > 0 {
-                        debug!("MT2 passthrough: writing {} bytes", event.len);
                         if let Err(e) = mt2_writer.write(&event.data[..event.len]).await {
                             warn!("MT2 passthrough write error: {:?}", e);
                         }
