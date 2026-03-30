@@ -146,17 +146,16 @@ where
     }
 
     /// Run the HCI event loop until the given slot reaches Encrypted state.
-    async fn run_until_encrypted(&mut self, target_slot: usize) -> Result<ConnHandle, Error<C::Error>> {
+    async fn run_until_encrypted(
+        &mut self,
+        target_slot: usize,
+    ) -> Result<ConnHandle, Error<C::Error>> {
         const MAX_HCI_PACKET_LEN: usize = 259;
         let mut rx = [0u8; MAX_HCI_PACKET_LEN];
 
         loop {
             let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
-            let packet = self
-                .controller
-                .read(rx_ref)
-                .await
-                .map_err(Error::Hci)?;
+            let packet = self.controller.read(rx_ref).await.map_err(Error::Hci)?;
 
             match packet {
                 ControllerToHostPacket::Event(event) => {
@@ -172,7 +171,10 @@ where
                                 let encryption = event.data[10];
 
                                 let conn = &mut self.resources.connections[target_slot];
-                                match conn.conn.on_connection_complete(status, handle, link_type, encryption) {
+                                match conn
+                                    .conn
+                                    .on_connection_complete(status, handle, link_type, encryption)
+                                {
                                     Ok(_handle) => {
                                         #[cfg(feature = "defmt")]
                                         defmt::info!("[classic] Connected, handle={}", handle_raw);
@@ -240,7 +242,9 @@ where
                                     event.data[5],
                                 ]);
                                 #[cfg(feature = "defmt")]
-                                defmt::info!("[classic] IoCapabilityRequest, replying NoInputNoOutput");
+                                defmt::info!(
+                                    "[classic] IoCapabilityRequest, replying NoInputNoOutput"
+                                );
                                 self.controller
                                     .exec(&IoCapabilityRequestReply::new(
                                         addr,
@@ -263,7 +267,8 @@ where
                                     0x02 => IoCapability::KeyboardOnly,
                                     _ => IoCapability::NoInputNoOutput,
                                 };
-                                self.resources.pairing[target_slot].on_io_capability_response(io_cap);
+                                self.resources.pairing[target_slot]
+                                    .on_io_capability_response(io_cap);
                                 #[cfg(feature = "defmt")]
                                 defmt::info!("[classic] Remote IO capability: {:?}", io_cap);
                             }
@@ -281,7 +286,9 @@ where
                                     event.data[5],
                                 ]);
                                 #[cfg(feature = "defmt")]
-                                defmt::info!("[classic] Auto-accepting user confirmation (Just Works)");
+                                defmt::info!(
+                                    "[classic] Auto-accepting user confirmation (Just Works)"
+                                );
                                 self.controller
                                     .exec(&UserConfirmationRequestReply::new(addr))
                                     .await
@@ -293,9 +300,13 @@ where
                             // [status(1), bdaddr(6)]
                             if event.data.len() >= 1 {
                                 let success = event.data[0] == 0x00;
-                                self.resources.pairing[target_slot].on_simple_pairing_complete(success);
+                                self.resources.pairing[target_slot]
+                                    .on_simple_pairing_complete(success);
                                 #[cfg(feature = "defmt")]
-                                defmt::info!("[classic] SimplePairingComplete, success={}", success);
+                                defmt::info!(
+                                    "[classic] SimplePairingComplete, success={}",
+                                    success
+                                );
                             }
                         }
 
@@ -318,10 +329,9 @@ where
                                     .on_link_key_notification(key, key_type);
 
                                 // Store the new link key
-                                self.link_keys.borrow_mut().store(
-                                    &addr,
-                                    LinkKeyInfo { key, key_type },
-                                );
+                                self.link_keys
+                                    .borrow_mut()
+                                    .store(&addr, LinkKeyInfo { key, key_type });
                                 #[cfg(feature = "defmt")]
                                 defmt::info!("[classic] New link key stored, type={}", key_type);
                             }
@@ -367,12 +377,16 @@ where
                                 match conn.conn.on_encryption_change(status, encryption_enabled) {
                                     Ok(()) if conn.conn.is_ready() => {
                                         #[cfg(feature = "defmt")]
-                                        defmt::info!("[classic] Encryption enabled! Connection ready.");
+                                        defmt::info!(
+                                            "[classic] Encryption enabled! Connection ready."
+                                        );
                                         return Ok(conn.conn.handle.unwrap());
                                     }
                                     Ok(()) => {
                                         #[cfg(feature = "defmt")]
-                                        defmt::warn!("[classic] EncryptionChange but not encrypted");
+                                        defmt::warn!(
+                                            "[classic] EncryptionChange but not encrypted"
+                                        );
                                         return Err(Error::EncryptionFailed);
                                     }
                                     Err(_status) => {

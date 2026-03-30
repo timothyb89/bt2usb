@@ -13,7 +13,9 @@
 
 use bt_hci::controller::Controller;
 
-use super::types::{self, HandshakeResult, MessageType, ReportType, PSM_HID_CONTROL, PSM_HID_INTERRUPT};
+use super::types::{
+    self, HandshakeResult, MessageType, ReportType, PSM_HID_CONTROL, PSM_HID_INTERRUPT,
+};
 use crate::error::Error;
 use crate::l2cap::L2capState;
 
@@ -98,12 +100,7 @@ impl HidClient {
     ///
     /// `channel_idx` and `data` come from L2capState::process_acl().
     /// Returns `Some(report)` if this was an input report on the interrupt channel.
-    pub fn process_data(
-        &self,
-        channel_idx: usize,
-        data: &[u8],
-        report: &mut HidReport,
-    ) -> bool {
+    pub fn process_data(&self, channel_idx: usize, data: &[u8], report: &mut HidReport) -> bool {
         if data.is_empty() {
             return false;
         }
