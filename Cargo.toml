@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bt2usb", "bt2usb-cli"]
+members = ["bt2usb", "bt2usb-cli", "hci-mux", "bt-classic-host"]
 default-members = ["bt2usb-cli"]
 
 [profile.release]
