@@ -519,6 +519,24 @@ where
 
                             if report_id == 0x31 && report.len >= 4 {
                                 // Touch report — translate BT→USB and forward
+                                let n_fingers = (report.len - 4) / 9;
+                                // Log first report of each gesture for debugging
+                                if n_fingers > 0 && report.len >= 13 {
+                                    let tdata = &report.data[4..13];
+                                    let state = tdata[3] & 0xC0;
+                                    if state == 0x00 || state == 0x40 {
+                                        // Approach/near — log BT and USB header for comparison
+                                        info!(
+                                            "[classic] BT header: {:02x} USB will be: [02,{:02x},00,00,00,00,00,{:02x},31,{:02x},{:02x},e6]",
+                                            &report.data[..4],
+                                            report.data[1] & 0x01,
+                                            n_fingers as u8,
+                                            report.data[2],
+                                            report.data[3],
+                                        );
+                                    }
+                                }
+
                                 let mut usb_buf = [0u8; mt2_translate::MAX_USB_REPORT];
                                 if let Some(usb_len) = mt2_translate::bt_to_usb(
                                     &report.data[..report.len],
