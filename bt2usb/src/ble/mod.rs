@@ -444,9 +444,10 @@ where
         let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
         match controller.read(rx_ref).await {
             Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
-                let handle_and_flags = u16::from_le_bytes([rx[0], rx[1]]);
-                let data_len = u16::from_le_bytes([rx[2], rx[3]]) as usize;
-                let acl_data = &rx[4..4 + data_len.min(rx.len() - 4)];
+                // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
+                let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
+                let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
+                let acl_data = &rx[5..5 + data_len.min(rx.len() - 5)];
 
                 if let Err(e) = l2cap
                     .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
@@ -498,9 +499,10 @@ where
         let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
         match controller.read(rx_ref).await {
             Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
-                let handle_and_flags = u16::from_le_bytes([rx[0], rx[1]]);
-                let data_len = u16::from_le_bytes([rx[2], rx[3]]) as usize;
-                let acl_data = &rx[4..4 + data_len.min(rx.len() - 4)];
+                // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
+                let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
+                let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
+                let acl_data = &rx[5..5 + data_len.min(rx.len() - 5)];
 
                 match l2cap
                     .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
