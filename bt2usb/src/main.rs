@@ -42,6 +42,7 @@ mod device_profile;
 mod framing;
 mod hid_report_map;
 mod mt2;
+mod mt2_translate;
 mod preferences;
 mod probe;
 mod protocol;
