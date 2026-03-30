@@ -28,11 +28,18 @@ pub fn bt_to_usb(bt_data: &[u8], usb_out: &mut [u8]) -> Option<usize> {
     }
 
     let n_fingers = n_touch_bytes / 9;
-    let usb_len = 12 + n_touch_bytes;
+    // macOS may expect at least 2 finger slots (30 bytes total).
+    // Pad with zero-state finger data if only 1 finger.
+    let min_touch_bytes = 18; // 2 * 9
+    let padded_touch_bytes = n_touch_bytes.max(min_touch_bytes);
+    let usb_len = 12 + padded_touch_bytes;
 
     if usb_out.len() < usb_len {
         return None;
     }
+
+    // Zero the output buffer (ensures padding fingers have state=NONE)
+    usb_out[..usb_len].fill(0);
 
     // Build USB 12-byte header.
     // BT byte 1 has: bits 0-5 = click/flags, bits 6-7 = timestamp low.
