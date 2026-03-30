@@ -90,8 +90,8 @@ impl Clone for RawPacket {
 pub struct MuxResources<const LE_SLOTS: usize = 10, const CLASSIC_SLOTS: usize = 4> {
     le_slots: CommandSlots<LE_SLOTS>,
     classic_slots: CommandSlots<CLASSIC_SLOTS>,
-    le_channel: Channel<CriticalSectionRawMutex, RawPacket, 4>,
-    classic_channel: Channel<CriticalSectionRawMutex, RawPacket, 4>,
+    le_channel: Channel<CriticalSectionRawMutex, RawPacket, 8>,
+    classic_channel: Channel<CriticalSectionRawMutex, RawPacket, 8>,
     handles: RefCell<HandleRegistry<8>>,
 }
 
@@ -374,7 +374,12 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        self.res.le_channel.send(pkt).await;
+        // Use try_send to prevent one stack from blocking the mux (and starving the other).
+        // If the channel is full, the receiving stack will miss this event.
+        if self.res.le_channel.try_send(pkt).is_err() {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("[mux] LE channel full, dropping event");
+        }
     }
 
     async fn dispatch_classic(&self, buf: &[u8], len: usize) {
@@ -382,7 +387,10 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        self.res.classic_channel.send(pkt).await;
+        if self.res.classic_channel.try_send(pkt).is_err() {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("[mux] Classic channel full, dropping event");
+        }
     }
 
     async fn dispatch_to_both(&self, buf: &[u8], len: usize) {
@@ -390,9 +398,14 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        // Send to LE first, then Classic
-        self.res.le_channel.send(pkt.clone()).await;
-        self.res.classic_channel.send(pkt).await;
+        if self.res.le_channel.try_send(pkt.clone()).is_err() {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("[mux] LE channel full, dropping event (both)");
+        }
+        if self.res.classic_channel.try_send(pkt).is_err() {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("[mux] Classic channel full, dropping event (both)");
+        }
     }
 }
 
