@@ -199,6 +199,38 @@ impl HidClient {
         Ok(())
     }
 
+    /// Send a GET_REPORT request on the control channel.
+    ///
+    /// `report_type`: Input (0x01), Output (0x02), or Feature (0x03).
+    /// `report_id`: The HID report ID to request.
+    ///
+    /// The response (DATA message) will arrive asynchronously on the control
+    /// channel and can be read via `process_data()`.
+    pub async fn get_report<C: Controller, const CH: usize>(
+        &self,
+        l2cap: &L2capState<CH>,
+        controller: &C,
+        report_type: ReportType,
+        report_id: u8,
+    ) -> Result<(), Error<C::Error>> {
+        let ctrl_idx = self.control_channel.ok_or(Error::InvalidState)?;
+
+        // HIDP GET_REPORT: [header, report_id]
+        let header = types::build_header(MessageType::GetReport as u8, report_type as u8);
+        l2cap
+            .send_data(controller, ctrl_idx, &[header, report_id])
+            .await?;
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!(
+            "[hidp] GET_REPORT type={} id=0x{:02x}",
+            report_type as u8,
+            report_id
+        );
+
+        Ok(())
+    }
+
     /// Send SET_PROTOCOL (Report Protocol) on the control channel.
     pub async fn set_protocol_report<C: Controller, const CH: usize>(
         &self,

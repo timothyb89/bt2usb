@@ -333,16 +333,6 @@ async fn usb_hid_handler_task_mt2(
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
-                HidReportType::Mouse
-                    if event.profile == crate::device_profile::DeviceProfile::MagicTrackpad =>
-                {
-                    // Magic Trackpad passthrough: write pre-translated USB report directly
-                    if event.len > 0 {
-                        if let Err(e) = mt2_writer.write(&event.data[..event.len]).await {
-                            warn!("MT2 passthrough write error: {:?}", e);
-                        }
-                    }
-                }
                 HidReportType::Mouse => {
                     if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
                         debug!("MT2: scroll event received but MT not yet enabled");
