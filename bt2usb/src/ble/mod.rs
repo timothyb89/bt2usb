@@ -384,11 +384,12 @@ where
         >,
 {
     use core::cell::RefCell;
+    use core::sync::atomic::Ordering;
 
     use bt_classic_host::hidp::ReportType;
     use bt_classic_host::{ClassicRunner, HidClient, HostResources, L2capState};
 
-    use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL, MAX_HID_REPORT_SIZE};
+    use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL};
     use crate::device_profile::DeviceProfile;
     use crate::mt2_translate;
 
@@ -397,18 +398,15 @@ where
     // Wait for BLE stack to initialize first (it sends SetEventMask during init)
     Timer::after_millis(2000).await;
 
-    // --- Fix event mask: trouble-host's SetEventMask only enables LE events.
-    // We need to re-send it with Classic events also enabled so the controller
-    // generates LinkKeyRequest, PinCodeRequest, AuthenticationComplete, etc.
+    // --- Fix event mask: trouble-host's SetEventMask disables Classic auth events
+    // (LinkKeyRequest, PinCodeRequest, AuthenticationComplete). Re-send with
+    // Classic events enabled so the controller generates them during pairing.
     {
         use bt_hci::cmd::controller_baseband::SetEventMask;
         use bt_hci::param::EventMask;
 
-        // trouble-host's init sends SetEventMask with only LE events.
-        // We re-send with trouble-host's events PLUS Classic auth events.
-        // Must include ALL events trouble-host needs to avoid breaking BLE.
         let mask = EventMask::new()
-            // === trouble-host's events (from host.rs:1195-1202) ===
+            // trouble-host's events
             .enable_le_meta(true)
             .enable_conn_request(true)
             .enable_conn_complete(true)
@@ -416,7 +414,7 @@ where
             .enable_disconnection_complete(true)
             .enable_encryption_change_v1(true)
             .enable_encryption_key_refresh_complete(true)
-            // === Classic events (for bt-classic-host) ===
+            // Classic auth events
             .enable_authentication_complete(true)
             .enable_link_key_request(true)
             .enable_link_key_notification(true)
@@ -517,6 +515,7 @@ where
 
     // --- Activate Magic Trackpad 2 multitouch ---
     // BT Classic MT enable: SET_REPORT(Feature, report_id=0xF1, data={0x02, 0x01})
+    // Matches the Linux kernel's magicmouse_bt_enable() exactly.
     if let Err(e) = hid
         .set_report(&l2cap, controller, ReportType::Feature, 0xF1, &[0x02, 0x01])
         .await
@@ -534,6 +533,7 @@ where
     info!("[classic] Listening for touch reports...");
 
     let mut report = bt_classic_host::HidReport::new();
+    let mut translator = mt2_translate::Mt2Translator::new();
     loop {
         let mut rx = [0u8; 259];
         let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
@@ -557,43 +557,38 @@ where
                             let report_id = if report.len > 0 { report.data[0] } else { 0 };
 
                             if report_id == 0x31 && report.len >= 4 {
-                                // Touch report — translate BT→USB and forward
+                                // Touch report — extract scroll delta and forward
+                                // Phase 1: interpreted mode — feed deltas to TouchSynthesizer
+                                // (Phase 2 will do reclocked passthrough for full gestures)
                                 let n_fingers = (report.len - 4) / 9;
-                                // Log first report of each gesture for debugging
-                                if n_fingers > 0 && report.len >= 13 {
-                                    let tdata = &report.data[4..13];
-                                    let state = tdata[3] & 0xC0;
-                                    if state == 0x00 || state == 0x40 {
-                                        // Approach/near — log BT and USB header for comparison
-                                        info!(
-                                            "[classic] BT header: {:02x} USB will be: [02,{:02x},00,00,00,00,00,{:02x},31,{:02x},{:02x},e6]",
-                                            &report.data[..4],
-                                            report.data[1] & 0x01,
-                                            n_fingers as u8,
-                                            report.data[2],
-                                            report.data[3],
-                                        );
-                                    }
+                                static MT2_LOG_COUNT: portable_atomic::AtomicU8 = portable_atomic::AtomicU8::new(0);
+                                let log_n = MT2_LOG_COUNT.load(Ordering::Relaxed);
+                                if log_n < 10 {
+                                    MT2_LOG_COUNT.store(log_n + 1, Ordering::Relaxed);
+                                    info!(
+                                        "[classic] MT2 report #{}: fingers={} len={}",
+                                        log_n, n_fingers, report.len
+                                    );
                                 }
 
-                                let mut usb_buf = [0u8; mt2_translate::MAX_USB_REPORT];
-                                if let Some(usb_len) = mt2_translate::bt_to_usb(
+                                if let Some(scroll_dy) = translator.extract_scroll(
                                     &report.data[..report.len],
-                                    &mut usb_buf,
                                 ) {
+                                    // Send scroll delta as a 16-bit scroll event
+                                    // Uses the same format as FullScrollDial16Bit profile
                                     let mut event = HidReportEvent::new();
                                     event.report_type = HidReportType::Mouse;
                                     event.profile = DeviceProfile::MagicTrackpad;
                                     event.slot_index = 3;
-                                    event.report_id = 0x02; // USB Report ID
-                                    event.len = usb_len.min(MAX_HID_REPORT_SIZE);
-                                    event.data[..event.len].copy_from_slice(&usb_buf[..event.len]);
-                                    // Use try_send to avoid blocking — drop reports if channel full
-                                    // (USB backpressure shouldn't stall the BT receive loop)
+                                    event.report_id = 0;
+                                    let bytes = scroll_dy.to_le_bytes();
+                                    event.data[0] = bytes[0];
+                                    event.data[1] = bytes[1];
+                                    event.len = 2;
                                     match HID_REPORT_CHANNEL.try_send(event) {
                                         Ok(()) => {}
                                         Err(_) => {
-                                            debug!("[classic] HID channel full, dropping report");
+                                            debug!("[classic] HID channel full, dropping scroll");
                                         }
                                     }
                                 }

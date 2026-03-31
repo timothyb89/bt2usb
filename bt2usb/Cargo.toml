@@ -79,6 +79,9 @@ opt-level = "s"
 # Set defmt log level to INFO to hide DEBUG spam from dependencies
 [features]
 default = []
+force-macos = []
+force-windows = []
+force-linux = []
 
 [package.metadata.defmt]
 log-level = "info"

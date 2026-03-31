@@ -125,7 +125,7 @@ impl DeviceProfile {
 
     /// Check if this profile uses 16-bit mouse reports
     pub fn uses_16bit_reports(&self) -> bool {
-        matches!(self, Self::FullScrollDial16Bit)
+        matches!(self, Self::FullScrollDial16Bit | Self::MagicTrackpad)
     }
 
     /// Translate a raw BLE HID report into a 16-bit USB MouseReport16.

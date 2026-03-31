@@ -1,63 +1,94 @@
-//! Magic Trackpad 2: BT Classic → USB report translation.
+//! Magic Trackpad 2: BT Classic touch data interpretation.
 //!
-//! The MT2 uses identical 9-byte touch point encoding over both BT and USB.
-//! Only the report headers differ:
+//! Phase 1 (interpreted mode): Extracts scroll deltas from multi-finger
+//! touch data and feeds them to the existing TouchSynthesizer pipeline.
 //!
-//! BT (Report ID 0x31):  [0x31, clicks_ts, ts_lo, ts_hi, <N*9 touch bytes>]
-//! USB (Report ID 0x02): [0x02, clicks, 0,0,0,0,0, count, 0x31, ts_lo, ts_hi, 0xE6, <N*9 touch bytes>]
-//!
-//! This module converts between the two formats, using the exact header layout
-//! that macOS's AppleMultitouchDriver expects (verified via the working scroll
-//! emulation templates in mt2.rs).
+//! Phase 2 (future, reclocked passthrough): Will buffer BT touch reports
+//! and retransmit at steady USB rate for full gesture passthrough.
 
-/// Maximum output buffer size: 12-byte USB header + 15*9 = 147 bytes max.
-pub const MAX_USB_REPORT: usize = 147;
+/// Stateful interpreter that tracks finger positions across reports
+/// to compute scroll deltas from MT2 multi-finger touch data.
+pub struct Mt2Translator {
+    /// Previous average Y for scroll delta computation.
+    scroll_prev_y: Option<i16>,
+}
 
-/// Translate a BT Classic MT2 report (Report ID 0x31) to USB format (Report ID 0x02).
-///
-/// `bt_data` is the HIDP report payload starting with Report ID 0x31.
-/// Returns the number of bytes written to `usb_out`, or None if the input is invalid.
-pub fn bt_to_usb(bt_data: &[u8], usb_out: &mut [u8]) -> Option<usize> {
-    // Minimum BT report: 4-byte header (report_id + clicks_ts + ts_lo + ts_hi)
-    if bt_data.len() < 4 || bt_data[0] != 0x31 {
-        return None;
+impl Mt2Translator {
+    pub const fn new() -> Self {
+        Self {
+            scroll_prev_y: None,
+        }
     }
 
-    let n_touch_bytes = bt_data.len() - 4;
-    if !n_touch_bytes.is_multiple_of(9) {
-        return None;
+    /// Extract X/Y from a 9-byte touch point using the kernel formula.
+    fn decode_xy(tdata: &[u8]) -> (i16, i16) {
+        // x = (tdata[1] << 27 | tdata[0] << 19) >> 19  (13-bit signed)
+        let raw_x = ((tdata[1] as u32) << 27) | ((tdata[0] as u32) << 19);
+        let x = (raw_x as i32 >> 19) as i16;
+
+        // y = -((tdata[3] << 30 | tdata[2] << 22 | tdata[1] << 14) >> 19)
+        let raw_y =
+            ((tdata[3] as u32) << 30) | ((tdata[2] as u32) << 22) | ((tdata[1] as u32) << 14);
+        let y = (-(raw_y as i32 >> 19)) as i16;
+
+        (x, y)
     }
 
-    let n_fingers = n_touch_bytes / 9;
-    let usb_len = 12 + n_touch_bytes;
+    /// Extract a scroll delta from a BT Classic MT2 report.
+    ///
+    /// For 2+ finger touch in contact state, computes the average Y delta
+    /// across all fingers. Returns the delta as an i16 suitable for feeding
+    /// to the existing TouchSynthesizer scroll pipeline.
+    ///
+    /// Returns `Some(dy)` when scrolling is detected, `None` otherwise.
+    pub fn extract_scroll(&mut self, bt_data: &[u8]) -> Option<i16> {
+        if bt_data.len() < 4 || bt_data[0] != 0x31 {
+            return None;
+        }
 
-    if usb_out.len() < usb_len {
-        return None;
+        let n_touch_bytes = bt_data.len() - 4;
+        if !n_touch_bytes.is_multiple_of(9) {
+            return None;
+        }
+
+        let n_fingers = n_touch_bytes / 9;
+
+        // Need 2+ fingers for scroll
+        if n_fingers < 2 {
+            self.scroll_prev_y = None;
+            return None;
+        }
+
+        // Compute average Y of all fingers in contact state (0x80)
+        let touch_data = &bt_data[4..];
+        let mut y_sum: i32 = 0;
+        let mut contact_count: u8 = 0;
+
+        for i in 0..n_fingers {
+            let tdata = &touch_data[i * 9..(i + 1) * 9];
+            let state = tdata[3] & 0xC0;
+            if state == 0x80 {
+                let (_, y) = Self::decode_xy(tdata);
+                y_sum += y as i32;
+                contact_count += 1;
+            }
+        }
+
+        if contact_count < 2 {
+            // Not enough fingers in contact yet (still approaching)
+            return None;
+        }
+
+        let avg_y = (y_sum / contact_count as i32) as i16;
+
+        let delta = if let Some(prev) = self.scroll_prev_y {
+            (avg_y as i32 - prev as i32) as i16
+        } else {
+            0
+        };
+
+        self.scroll_prev_y = Some(avg_y);
+
+        if delta != 0 { Some(delta) } else { None }
     }
-
-    // Build USB 12-byte header.
-    // This matches the exact format from real MT2 USB captures and the
-    // working scroll emulation templates (mt2.rs TEMPLATE_TOUCH).
-    usb_out[0] = 0x02; // USB Report ID
-    usb_out[1] = bt_data[1] & 0x01; // Click button (bit 0 only; BT has timestamp in upper bits)
-    usb_out[2] = 0x00;
-    usb_out[3] = 0x00;
-    usb_out[4] = 0x00;
-    usb_out[5] = 0x00;
-    usb_out[6] = 0x00;
-    // Byte 7: touch mode indicator.
-    // From working templates: 0x03 when fingers present, 0x00 when none.
-    // This is NOT a finger count — it's a mode flag that macOS expects.
-    usb_out[7] = if n_fingers > 0 { 0x03 } else { 0x00 };
-    usb_out[8] = 0x31; // Constant marker
-    usb_out[9] = bt_data[2]; // Timestamp low
-    usb_out[10] = bt_data[3]; // Timestamp high
-    usb_out[11] = 0xE6; // Constant marker
-
-    // Copy touch data verbatim — the 9-byte per-finger encoding
-    // (13-bit X/Y, pressure, state, touch_major/minor, orientation, finger_id)
-    // is identical between BT and USB.
-    usb_out[12..usb_len].copy_from_slice(&bt_data[4..]);
-
-    Some(usb_len)
 }

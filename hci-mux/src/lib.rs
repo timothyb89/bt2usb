@@ -374,12 +374,7 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        // Use try_send to prevent one stack from blocking the mux (and starving the other).
-        // If the channel is full, the receiving stack will miss this event.
-        if self.res.le_channel.try_send(pkt).is_err() {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("[mux] LE channel full, dropping event");
-        }
+        self.res.le_channel.send(pkt).await;
     }
 
     async fn dispatch_classic(&self, buf: &[u8], len: usize) {
@@ -387,10 +382,7 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        if self.res.classic_channel.try_send(pkt).is_err() {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("[mux] Classic channel full, dropping event");
-        }
+        self.res.classic_channel.send(pkt).await;
     }
 
     async fn dispatch_to_both(&self, buf: &[u8], len: usize) {
@@ -398,14 +390,9 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        if self.res.le_channel.try_send(pkt.clone()).is_err() {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("[mux] LE channel full, dropping event (both)");
-        }
-        if self.res.classic_channel.try_send(pkt).is_err() {
-            #[cfg(feature = "defmt")]
-            defmt::warn!("[mux] Classic channel full, dropping event (both)");
-        }
+        // try_send to avoid deadlock when one stack is blocked on exec()
+        let _ = self.res.le_channel.try_send(pkt.clone());
+        let _ = self.res.classic_channel.try_send(pkt);
     }
 }
 

@@ -216,4 +216,57 @@ commands for basic click feedback.
     Dial scroll works correctly on macOS via mt2-translation branch.
     Remaining issue: MT2 BT→USB passthrough format produces random clicks
     on macOS instead of proper trackpad input. Translation format needs work.
+22. USB header format confirmed correct via pcap analysis (real MT2 USB capture
+    matches our translated output byte-for-byte). Mouse delta bytes (2-3) added
+    for cursor movement. Stateful Mt2Translator computes deltas from touch coords.
+23. 1-finger reports were correct (user was touching with 1 finger). Multi-finger
+    confirmed working (3-finger reports with len=31). BT data pipeline is fully
+    functional.
+24. **Root cause of "spurious clicks" identified**: macOS's AppleMultitouchDriver
+    requires steady-rate report delivery with proper lifecycle timing. Raw BT→USB
+    passthrough delivers reports in bursts with jitter, which the driver interprets
+    as taps. Confirmed by diagnostic: hardcoded TEMPLATE_TOUCH (known-working bytes)
+    also produces no useful input when triggered by MT2 events — the issue is
+    delivery timing, not data format.
+25. **Mux dispatch strategy**: `dispatch_le`/`dispatch_classic` use blocking
+    `send().await` (ACL data must not be dropped). `dispatch_to_both` uses
+    `try_send` (shared events like NumberOfCompletedPackets are safe to drop,
+    and blocking here causes deadlock when BLE and Classic exec() overlap).
+    SetEventMask re-send is REQUIRED — trouble-host's mask disables Classic
+    auth events (LinkKeyRequest, PinCodeRequest, AuthenticationComplete).
+
+26. **End-to-end scroll working!** Phase 1 interpreted mode: `Mt2Translator`
+    extracts 2-finger scroll deltas → feeds to existing `TouchSynthesizer` →
+    macOS scrolls. Known issues: low-speed rounding (small deltas lost),
+    no momentum (macOS inertial scroll needs raw touch positions), jitter
+    from Dial replanting logic (not appropriate for real trackpad), added
+    latency from Dial velocity buffering. These stem from reusing the Dial's
+    `TouchSynthesizer` which was designed for discrete scroll detents, not
+    continuous touch input. A separate implementation is needed for Phase 2.
+
+### Passthrough architecture (planned)
+
+The BT→USB report format is correct (confirmed via pcap comparison). The
+blocker is that macOS's AppleMultitouchDriver expects USB-like report timing
+(steady ~91Hz) but BT Classic delivers in bursts with jitter.
+
+**Phase 1 (current, working): Interpreted mode** — Extract scroll deltas
+from MT2 2-finger touch data, feed to existing TouchSynthesizer. Proves
+end-to-end pipeline. Limited: no momentum, no cursor, no gestures beyond
+scroll. Reuses Dial infrastructure (replanting, velocity buffer) which is
+not appropriate for real trackpad input.
+
+**Phase 2 (next): Reclocked passthrough** — Buffer incoming BT touch reports
+and re-transmit at a steady USB rate (~91Hz or 250Hz). Maintain proper
+lifecycle transitions (approach→contact→release→gone) with correct byte7
+mode flag transitions. This would enable full gesture passthrough (cursor,
+scroll, pinch, rotate, 3-finger drag) without interpreting the touch data.
+
+### Reference captures
+
+- `notes/magic-mouse/mt2-capture.pcap` — Real MT2 over USB (macOS, Darwin format)
+- `notes/magic-mouse/mt2-capture-emulated-28.pcap` — Emulated MT2 scroll (macOS)
+- `notes/mt2-translation/capture.btsnoop` — MT2 over BT Classic on Linux (btmon).
+  Shows full HIDP command sequence including GET_REPORT(0x90) polling that triggers
+  multitouch activation. Includes 1/2/3-finger gesture data.
 
