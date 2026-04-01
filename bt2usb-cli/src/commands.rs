@@ -126,6 +126,19 @@ fn get_all_bonds(transport: &mut Transport) -> Vec<BondEntry> {
     }
 }
 
+pub fn cmd_classic_scan(transport: &mut Transport, _timeout: u64) -> Result<()> {
+    println!("Starting Classic BT Inquiry scan...");
+    println!("  Results will appear in the log stream (use `logs` in another terminal).");
+    println!("  Inquiry runs for ~10 seconds.");
+    println!();
+
+    let (resp, _) = transport.request_simple(CMD_CLASSIC_SCAN, Duration::from_secs(15))?;
+    check_ok(&resp)?;
+    println!("{}", "Classic scan command sent.".green());
+    println!("  Use `connect <address> --classic` to connect to a discovered device.");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Device commands
 // ---------------------------------------------------------------------------
@@ -257,14 +270,21 @@ pub fn cmd_connect(
     address: &str,
     addr_kind: u8,
     profile: Option<u8>,
+    classic: bool,
 ) -> Result<()> {
     let addr = parse_address(address)?;
+    let transport_type = if classic { 1u8 } else { 0u8 };
 
     let mut cbor_buf = [0u8; 32];
-    let len = encode_request_connect(&mut cbor_buf, &addr, addr_kind)
+    let len = encode_request_connect(&mut cbor_buf, &addr, addr_kind, transport_type)
         .map_err(|_| anyhow::anyhow!("encode failed"))?;
 
-    println!("Connecting to {}...", format_address(&addr).bold());
+    let transport_label = if classic { "Classic" } else { "BLE" };
+    println!(
+        "Connecting to {} [{}]...",
+        format_address(&addr).bold(),
+        transport_label
+    );
 
     if let Some(profile_id) = profile {
         let name = profile_name(profile_id);

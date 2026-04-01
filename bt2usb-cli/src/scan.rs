@@ -139,7 +139,7 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
         let addr = order[idx];
         let dev = &devices[&addr];
         let addr_str = format_address(&dev.address);
-        cmd_connect(transport, &addr_str, dev.addr_kind, profile)?;
+        cmd_connect(transport, &addr_str, dev.addr_kind, profile, false)?;
     } else {
         println!(
             "Scan complete. {} device(s) found.",

@@ -467,18 +467,6 @@ async fn classic_bt_task<C>(
         }
     }
 
-    // --- Resolve Classic target address from stored bonds ---
-    let mt2_addr = if let Some(bond) = loaded_classic_bonds.first() {
-        let addr = bt_hci::param::BdAddr::new(bond.addr);
-        info!("[classic] Target from bond: {:?} (profile: {:?})", addr, DeviceProfile::from_id(bond.profile_id));
-        addr
-    } else {
-        // Fallback: hardcoded MT2 address for initial pairing
-        let addr = bt_hci::param::BdAddr::new([0x19, 0x10, 0xF1, 0x40, 0xEB, 0xE0]);
-        info!("[classic] No Classic bond found, using default: {:?}", addr);
-        addr
-    };
-
     // --- Create resources with flash-backed link key store ---
     let mut link_key_store = MemoryLinkKeyStore::new();
     link_key_store.load_from_flash(loaded_classic_bonds);
@@ -490,7 +478,42 @@ async fn classic_bt_task<C>(
     let mut resources = HostResources::<1>::new();
     let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
 
-    // --- Connect to Magic Trackpad 2 (with retry) ---
+    // --- Resolve target address: auto-connect bond, or wait for command ---
+    let target_addr = {
+        use crate::ble_state::{ClassicCommand, CLASSIC_CMD_CHANNEL};
+
+        // Check for auto-connect Classic bond
+        let auto_bond = loaded_classic_bonds.iter().find(|b| b.auto_connect);
+
+        if let Some(bond) = auto_bond {
+            let addr = bt_hci::param::BdAddr::new(bond.addr);
+            info!(
+                "[classic] Auto-connecting to bonded device: {:?} (profile: {:?})",
+                addr,
+                DeviceProfile::from_id(bond.profile_id)
+            );
+            addr
+        } else {
+            // No auto-connect bond — wait for a Connect command from RPC
+            info!("[classic] No auto-connect Classic bond. Waiting for connect command...");
+            loop {
+                match CLASSIC_CMD_CHANNEL.receive().await {
+                    ClassicCommand::Connect { address } => {
+                        let addr = bt_hci::param::BdAddr::new(address);
+                        info!("[classic] Connect command received for {:?}", addr);
+                        break addr;
+                    }
+                    ClassicCommand::Scan => {
+                        info!("[classic] Inquiry scan not yet implemented");
+                        crate::rpc_log::info("Classic scan not yet implemented");
+                    }
+                    ClassicCommand::ScanStop => {}
+                }
+            }
+        }
+    };
+
+    // --- Connect with retry ---
     // The remote device may still think it's connected from a previous session
     // (link supervision timeout not yet expired). Retry a few times with delays.
     let handle = {
@@ -498,8 +521,11 @@ async fn classic_bt_task<C>(
         let mut attempt = 0u8;
         loop {
             attempt += 1;
-            info!("[classic] Connecting to MT2 (attempt {}/{})", attempt, MAX_RETRIES);
-            match runner.connect(&mt2_addr).await {
+            info!(
+                "[classic] Connecting (attempt {}/{})",
+                attempt, MAX_RETRIES
+            );
+            match runner.connect(&target_addr).await {
                 Ok(h) => {
                     info!("[classic] Connected and encrypted! Handle={}", h.raw());
                     break h;
@@ -516,7 +542,6 @@ async fn classic_bt_task<C>(
                             Timer::after_secs(3600).await;
                         }
                     }
-                    // Wait for remote device's link supervision timeout to expire
                     Timer::after_secs(5).await;
                 }
             }
@@ -525,27 +550,27 @@ async fn classic_bt_task<C>(
 
     // --- Mark Classic device as connected for status reporting ---
     let classic_profile_id = DeviceProfile::MagicTrackpad.to_id();
-    slots::set_classic_connected(mt2_addr.raw().try_into().unwrap_or(&[0u8; 6]), classic_profile_id);
+    slots::set_classic_connected(
+        target_addr.raw().try_into().unwrap_or(&[0u8; 6]),
+        classic_profile_id,
+    );
 
     // --- Persist link key to flash after successful connect ---
-    // The runner stored the key in MemoryLinkKeyStore during pairing.
-    // Read it out and persist to flash so we don't re-pair on next boot.
     {
         let key_info = {
             use bt_classic_host::LinkKeyStore;
-            link_keys.borrow().load(&mt2_addr)
+            link_keys.borrow().load(&target_addr)
         };
         if let Some(ki) = key_info {
             let mut f = flash_mutex.lock().await;
-            let profile_id = DeviceProfile::MagicTrackpad.to_id();
-            let addr_bytes: &[u8; 6] =
-                mt2_addr.raw().try_into().unwrap_or(&[0u8; 6]);
+            let addr_bytes: &[u8; 6] = target_addr.raw().try_into().unwrap_or(&[0u8; 6]);
             match bonding::store_classic_bond(
                 &mut f,
                 addr_bytes,
                 &ki.key,
                 ki.key_type,
-                profile_id,
+                classic_profile_id,
+                true, // auto_connect on first pairing
             )
             .await
             {

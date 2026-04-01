@@ -63,6 +63,8 @@ pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 pub const CMD_CLEAR_BOND: u8 = 23;
 pub const CMD_FACTORY_RESET: u8 = 24;
+pub const CMD_CLASSIC_SCAN: u8 = 25;
+pub const CMD_CLASSIC_SCAN_STOP: u8 = 26;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -73,7 +75,11 @@ pub enum Request {
         address: [u8; 6],
         addr_kind: u8,
         ignore_bond: bool,
+        /// 0=BLE (default), 1=Classic BT
+        transport_type: u8,
     },
+    ClassicScan,
+    ClassicScanStop,
     Disconnect {
         address: Option<[u8; 6]>,
     },
@@ -199,10 +205,13 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let addr_kind = d.u8().map_err(|_| ProtocolError::MissingField)?;
             // ignore_bond field is optional for backwards compatibility
             let ignore_bond = d.bool().unwrap_or(false);
+            // transport_type is optional (default 0=BLE for backward compat)
+            let transport_type = d.u8().unwrap_or(0);
             Ok(Request::Connect {
                 address,
                 addr_kind,
                 ignore_bond,
+                transport_type,
             })
         }
         CMD_DISCONNECT => {
@@ -291,6 +300,8 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
         CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
         CMD_FACTORY_RESET => Ok(Request::FactoryReset),
+        CMD_CLASSIC_SCAN => Ok(Request::ClassicScan),
+        CMD_CLASSIC_SCAN_STOP => Ok(Request::ClassicScanStop),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }

@@ -318,12 +318,22 @@ async fn dispatch_request(
             address,
             addr_kind,
             ignore_bond,
+            transport_type,
         } => {
-            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
-                address: *address,
-                addr_kind: *addr_kind,
-                ignore_bond: *ignore_bond,
-            });
+            if *transport_type == 1 {
+                // Classic BT connect
+                let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
+                    .try_send(crate::ble_state::ClassicCommand::Connect {
+                        address: *address,
+                    });
+            } else {
+                // BLE connect
+                let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
+                    address: *address,
+                    addr_kind: *addr_kind,
+                    ignore_bond: *ignore_bond,
+                });
+            }
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
@@ -497,6 +507,18 @@ async fn dispatch_request(
 
         protocol::Request::FactoryReset => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::FactoryReset);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ClassicScan => {
+            let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
+                .try_send(crate::ble_state::ClassicCommand::Scan);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ClassicScanStop => {
+            let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
+                .try_send(crate::ble_state::ClassicCommand::ScanStop);
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 

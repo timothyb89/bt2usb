@@ -97,6 +97,23 @@ pub static BLE_CMD_CHANNEL: Channel<CriticalSectionRawMutex, BleCommand, 4> = Ch
 /// Events from BLE state machine to RPC handler (capacity 8).
 pub static BLE_EVENT_CHANNEL: Channel<CriticalSectionRawMutex, BleEvent, 8> = Channel::new();
 
+// ============ Classic BT Commands ============
+
+/// Commands targeted at the Classic BT task.
+#[derive(Clone, Debug, defmt::Format)]
+pub enum ClassicCommand {
+    /// Connect to a specific Classic BT device by address.
+    Connect { address: [u8; 6] },
+    /// Start Classic Inquiry scan.
+    Scan,
+    /// Stop active Inquiry scan.
+    ScanStop,
+}
+
+/// Command channel for Classic BT task (capacity 2).
+pub static CLASSIC_CMD_CHANNEL: Channel<CriticalSectionRawMutex, ClassicCommand, 2> =
+    Channel::new();
+
 /// Bond list response for GetBonds command
 /// Bond list entry: (address, addr_kind, profile_id, name, auto_connect, transport_type)
 /// transport_type: 0=BLE, 1=Classic BT

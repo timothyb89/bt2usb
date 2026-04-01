@@ -133,7 +133,7 @@ pub fn handle_get_bonds(
             });
         }
 
-        let _ = bond_list.push((cb.addr, 0, cb.profile_id, name, false, 1)); // 1 = Classic
+        let _ = bond_list.push((cb.addr, 0, cb.profile_id, name, cb.auto_connect, 1)); // 1 = Classic
     }
 
     let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);
