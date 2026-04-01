@@ -126,18 +126,6 @@ fn get_all_bonds(transport: &mut Transport) -> Vec<BondEntry> {
     }
 }
 
-pub fn cmd_classic_scan(transport: &mut Transport, _timeout: u64) -> Result<()> {
-    println!("Starting Classic BT Inquiry scan...");
-    println!("  Results will appear in the log stream (use `logs` in another terminal).");
-    println!("  Inquiry runs for ~10 seconds.");
-    println!();
-
-    let (resp, _) = transport.request_simple(CMD_CLASSIC_SCAN, Duration::from_secs(15))?;
-    check_ok(&resp)?;
-    println!("{}", "Classic scan command sent.".green());
-    println!("  Use `connect <address> --classic` to connect to a discovered device.");
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Device commands
