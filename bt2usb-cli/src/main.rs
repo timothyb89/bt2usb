@@ -250,7 +250,7 @@ fn main() -> Result<()> {
             classic,
         } => {
             if classic {
-                cmd_classic_scan(&mut transport, timeout)
+                scan::cmd_classic_scan(&mut transport, timeout, profile)
             } else {
                 scan::cmd_scan(&mut transport, timeout, profile)
             }

@@ -109,8 +109,33 @@ fn process_message(
 /// Run a BLE scan. In a terminal, shows an interactive TUI with instant device
 /// selection. Otherwise falls back to streaming output with deduplication.
 pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8>) -> Result<()> {
+    cmd_scan_with(transport, timeout_secs, profile, CMD_START_SCAN, CMD_STOP_SCAN)
+}
+
+/// Run a Classic BT Inquiry scan using the same interactive UI as BLE.
+pub fn cmd_classic_scan(
+    transport: &mut Transport,
+    timeout_secs: u64,
+    profile: Option<u8>,
+) -> Result<()> {
+    cmd_scan_with(
+        transport,
+        timeout_secs,
+        profile,
+        CMD_CLASSIC_SCAN,
+        CMD_CLASSIC_SCAN_STOP,
+    )
+}
+
+fn cmd_scan_with(
+    transport: &mut Transport,
+    timeout_secs: u64,
+    profile: Option<u8>,
+    start_cmd: u8,
+    stop_cmd: u8,
+) -> Result<()> {
     // Start scan on firmware
-    let (resp, initial_events) = transport.request_simple(CMD_START_SCAN, DEFAULT_TIMEOUT)?;
+    let (resp, initial_events) = transport.request_simple(start_cmd, DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
 
     let mut devices: HashMap<[u8; 6], ScannedDevice> = HashMap::new();
@@ -146,7 +171,7 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
     };
 
     // Always stop scan, even on error
-    let _ = transport.request_simple(CMD_STOP_SCAN, DEFAULT_TIMEOUT);
+    let _ = transport.request_simple(stop_cmd, DEFAULT_TIMEOUT);
 
     let selected = result?;
 
