@@ -521,13 +521,37 @@ async fn classic_bt_task<C>(
                             .await
                         {
                             Ok(_) => {
-                                // Read Inquiry events until InquiryComplete
+                                // Read Inquiry events until InquiryComplete or ScanStop
                                 let mut rx = [0u8; 259];
                                 let rx_ref = unsafe {
                                     core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len())
                                 };
-                                loop {
-                                    match controller.read(rx_ref).await {
+                                let mut inquiry_done = false;
+                                while !inquiry_done {
+                                    use embassy_futures::select::{select, Either};
+                                    match select(
+                                        controller.read(rx_ref),
+                                        CLASSIC_CMD_CHANNEL.receive(),
+                                    )
+                                    .await
+                                    {
+                                        Either::Second(ClassicCommand::ScanStop) => {
+                                            info!("[classic] Inquiry cancelled by user");
+                                            let _ = controller
+                                                .exec(
+                                                    &bt_hci::cmd::link_control::InquiryCancel::new(),
+                                                )
+                                                .await;
+                                            crate::rpc_log::info("Classic Inquiry cancelled");
+                                            inquiry_done = true;
+                                        }
+                                        Either::Second(cmd) => {
+                                            // Non-stop command during inquiry — will be
+                                            // handled after inquiry completes. Re-send it.
+                                            let _ = CLASSIC_CMD_CHANNEL.try_send(cmd);
+                                        }
+                                        Either::First(read_result) => {
+                                        match read_result {
                                         Ok(bt_hci::ControllerToHostPacket::Event(evt)) => {
                                             match evt.kind {
                                                 bt_hci::event::EventKind::InquiryComplete => {
@@ -535,7 +559,7 @@ async fn classic_bt_task<C>(
                                                     crate::rpc_log::info(
                                                         "Classic Inquiry scan complete",
                                                     );
-                                                    break;
+                                                    inquiry_done = true;
                                                 }
                                                 bt_hci::event::EventKind::InquiryResult
                                                 | bt_hci::event::EventKind::InquiryResultWithRssi => {
@@ -627,8 +651,10 @@ async fn classic_bt_task<C>(
                                         Err(_) => {
                                             Timer::after_millis(10).await;
                                         }
-                                    }
-                                }
+                                        } // match read_result
+                                        } // Either::First
+                                    } // match select
+                                } // while !inquiry_done
                             }
                             Err(e) => {
                                 warn!(
@@ -657,9 +683,17 @@ async fn classic_bt_task<C>(
                 "[classic] Connecting (attempt {}/{})",
                 attempt, MAX_RETRIES
             );
+            let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                crate::ble_state::BleEvent::StateChanged(
+                    crate::protocol::ConnectionState::Connecting,
+                ),
+            );
             match runner.connect(&target_addr).await {
                 Ok(h) => {
                     info!("[classic] Connected and encrypted! Handle={}", h.raw());
+                    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                        crate::ble_state::BleEvent::PairingComplete,
+                    );
                     break h;
                 }
                 Err(e) => {
@@ -706,7 +740,15 @@ async fn classic_bt_task<C>(
             )
             .await
             {
-                Ok(slot) => info!("[classic] Bond persisted to flash slot {}", slot),
+                Ok(slot) => {
+                    info!("[classic] Bond persisted to flash slot {}", slot);
+                    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                        crate::ble_state::BleEvent::BondStored {
+                            address: *addr_bytes,
+                            profile_id: classic_profile_id,
+                        },
+                    );
+                }
                 Err(_) => warn!("[classic] Failed to persist bond to flash"),
             }
         }
@@ -821,6 +863,9 @@ async fn classic_bt_task<C>(
     // --- Main HID report loop ---
     info!("[classic] === CLASSIC HID SESSION ACTIVE ===");
     info!("[classic] Listening for touch reports...");
+    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+        crate::ble_state::BleEvent::StateChanged(crate::protocol::ConnectionState::Connected),
+    );
 
     let mut report = bt_classic_host::HidReport::new();
     loop {

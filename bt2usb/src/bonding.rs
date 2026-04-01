@@ -675,10 +675,22 @@ pub async fn clear_all_classic_bonds(
 
     for i in 0..MAX_CLASSIC_BONDS as u8 {
         let key = CLASSIC_BOND_KEY_BASE + i;
-        if remove_item::<u8, _>(flash, flash_range(), &mut NoCache::new(), &mut buffer, &key)
-            .await
-            .is_ok()
+        // Only count if the key actually existed
+        if fetch_item::<u8, StoredClassicBond, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &key,
+        )
+        .await
+        .ok()
+        .flatten()
+        .is_some()
         {
+            let _ =
+                remove_item::<u8, _>(flash, flash_range(), &mut NoCache::new(), &mut buffer, &key)
+                    .await;
             cleared += 1;
         }
     }
