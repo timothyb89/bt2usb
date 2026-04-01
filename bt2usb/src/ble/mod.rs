@@ -151,6 +151,18 @@ pub async fn core0_ble_main(
         );
     }
 
+    // Load Classic BT bonds from flash
+    let loaded_classic_bonds = bonding::load_classic_bonds(&mut flash).await;
+    if !loaded_classic_bonds.is_empty() {
+        for cb in &loaded_classic_bonds {
+            info!(
+                "  - Classic: {:02x} (profile: {:?})",
+                cb.addr,
+                DeviceProfile::from_id(cb.profile_id)
+            );
+        }
+    }
+
     let mut active_device_pref = preferences::load_active_device(&mut flash).await;
 
     // Load forced OS override from flash and cache to scratch register.
@@ -307,8 +319,12 @@ pub async fn core0_ble_main(
                         connection_slot_task(1, &stack, flash_mutex, &active_device_pref),
                         connection_slot_task(2, &stack, flash_mutex, &active_device_pref),
                     ),
-                    // Classic BT task (placeholder — will connect to MT2 etc.)
-                    classic_bt_task(&classic_controller),
+                    // Classic BT task — connects to MT2 etc.
+                    classic_bt_task(
+                        &classic_controller,
+                        flash_mutex,
+                        &loaded_classic_bonds,
+                    ),
                 ),
             ),
         ),
@@ -323,16 +339,28 @@ pub async fn core0_ble_main(
 
 // ============ Classic BT Task ============
 
-/// Simple in-memory link key store for Classic BT bonding.
-/// TODO: Persist to flash alongside BLE bonds.
+/// In-memory link key store for Classic BT, backed by flash persistence.
+/// Populated from flash at startup; new keys persisted after connect().
 struct MemoryLinkKeyStore {
-    keys: heapless::Vec<(bt_hci::param::BdAddr, bt_classic_host::LinkKeyInfo), 4>,
+    keys: heapless::Vec<(bt_hci::param::BdAddr, bt_classic_host::LinkKeyInfo), 10>,
 }
 
 impl MemoryLinkKeyStore {
     fn new() -> Self {
         Self {
             keys: heapless::Vec::new(),
+        }
+    }
+
+    /// Populate from loaded flash bonds.
+    fn load_from_flash(&mut self, bonds: &[bonding::StoredClassicBond]) {
+        for bond in bonds {
+            let addr = bt_hci::param::BdAddr::new(bond.addr);
+            let key_info = bt_classic_host::LinkKeyInfo {
+                key: bond.link_key,
+                key_type: bond.key_type,
+            };
+            let _ = self.keys.push((addr, key_info));
         }
     }
 }
@@ -367,8 +395,11 @@ impl bt_classic_host::LinkKeyStore for MemoryLinkKeyStore {
 ///
 /// Runs the full connection lifecycle: ACL → Auth → Encrypt → L2CAP → HIDP.
 /// Forwards received HID reports to HID_REPORT_CHANNEL for USB translation.
-async fn classic_bt_task<C>(controller: &C)
-where
+async fn classic_bt_task<C>(
+    controller: &C,
+    flash_mutex: &FlashMutex,
+    loaded_classic_bonds: &[bonding::StoredClassicBond],
+) where
     C: bt_hci::controller::Controller
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::controller_baseband::SetEventMask>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::CreateConnection>
@@ -439,26 +470,77 @@ where
     let mt2_addr = bt_hci::param::BdAddr::new([0x19, 0x10, 0xF1, 0x40, 0xEB, 0xE0]);
     info!("[classic] Target: Magic Trackpad 2 at {:?}", mt2_addr);
 
-    // --- Create resources ---
-    let link_keys = RefCell::new(MemoryLinkKeyStore::new());
+    // --- Create resources with flash-backed link key store ---
+    let mut link_key_store = MemoryLinkKeyStore::new();
+    link_key_store.load_from_flash(loaded_classic_bonds);
+    info!(
+        "[classic] Loaded {} link key(s) from flash",
+        link_key_store.keys.len()
+    );
+    let link_keys = RefCell::new(link_key_store);
     let mut resources = HostResources::<1>::new();
     let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
 
-    // --- Connect to Magic Trackpad 2 ---
-    info!("[classic] Connecting to Magic Trackpad 2...");
-    let handle = match runner.connect(&mt2_addr).await {
-        Ok(h) => {
-            info!("[classic] Connected and encrypted! Handle={}", h.raw());
-            h
-        }
-        Err(e) => {
-            error!("[classic] Connection failed: {:?}", defmt::Debug2Format(&e));
-            // Don't crash — just idle. User can retry via reset.
-            loop {
-                Timer::after_secs(3600).await;
+    // --- Connect to Magic Trackpad 2 (with retry) ---
+    // The remote device may still think it's connected from a previous session
+    // (link supervision timeout not yet expired). Retry a few times with delays.
+    let handle = {
+        const MAX_RETRIES: u8 = 5;
+        let mut attempt = 0u8;
+        loop {
+            attempt += 1;
+            info!("[classic] Connecting to MT2 (attempt {}/{})", attempt, MAX_RETRIES);
+            match runner.connect(&mt2_addr).await {
+                Ok(h) => {
+                    info!("[classic] Connected and encrypted! Handle={}", h.raw());
+                    break h;
+                }
+                Err(e) => {
+                    warn!(
+                        "[classic] Connection attempt {} failed: {:?}",
+                        attempt,
+                        defmt::Debug2Format(&e)
+                    );
+                    if attempt >= MAX_RETRIES {
+                        error!("[classic] All {} attempts failed, idling", MAX_RETRIES);
+                        loop {
+                            Timer::after_secs(3600).await;
+                        }
+                    }
+                    // Wait for remote device's link supervision timeout to expire
+                    Timer::after_secs(5).await;
+                }
             }
         }
     };
+
+    // --- Persist link key to flash after successful connect ---
+    // The runner stored the key in MemoryLinkKeyStore during pairing.
+    // Read it out and persist to flash so we don't re-pair on next boot.
+    {
+        let key_info = {
+            use bt_classic_host::LinkKeyStore;
+            link_keys.borrow().load(&mt2_addr)
+        };
+        if let Some(ki) = key_info {
+            let mut f = flash_mutex.lock().await;
+            let profile_id = DeviceProfile::MagicTrackpad.to_id();
+            let addr_bytes: &[u8; 6] =
+                mt2_addr.raw().try_into().unwrap_or(&[0u8; 6]);
+            match bonding::store_classic_bond(
+                &mut f,
+                addr_bytes,
+                &ki.key,
+                ki.key_type,
+                profile_id,
+            )
+            .await
+            {
+                Ok(slot) => info!("[classic] Bond persisted to flash slot {}", slot),
+                Err(_) => warn!("[classic] Failed to persist bond to flash"),
+            }
+        }
+    }
 
     // --- Configure sniff mode for steady report delivery ---
     // Without sniff, BT Classic delivers HID reports in bursts (3-5 reports
