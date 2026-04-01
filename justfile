@@ -57,6 +57,10 @@ setup: download-firmware
 dev:
     just run dev
 
+# Build and flash with forced macOS mode (bypasses OS probe, useful for VM testing)
+dev-macos:
+    cd bt2usb && cargo run --features force-macos
+
 # Full release build with UF2 generation
 release:
     just build-uf2 release

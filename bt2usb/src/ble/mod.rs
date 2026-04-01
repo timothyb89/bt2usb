@@ -391,7 +391,6 @@ where
 
     use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL};
     use crate::device_profile::DeviceProfile;
-    use crate::mt2_translate;
 
     info!("[classic] Classic BT task started");
 
@@ -533,7 +532,6 @@ where
     info!("[classic] Listening for touch reports...");
 
     let mut report = bt_classic_host::HidReport::new();
-    let mut translator = mt2_translate::Mt2Translator::new();
     loop {
         let mut rx = [0u8; 259];
         let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
@@ -557,11 +555,10 @@ where
                             let report_id = if report.len > 0 { report.data[0] } else { 0 };
 
                             if report_id == 0x31 && report.len >= 4 {
-                                // Touch report — extract scroll delta and forward
-                                // Phase 1: interpreted mode — feed deltas to TouchSynthesizer
-                                // (Phase 2 will do reclocked passthrough for full gestures)
+                                // Touch report — forward full BT report for reclocked passthrough
                                 let n_fingers = (report.len - 4) / 9;
-                                static MT2_LOG_COUNT: portable_atomic::AtomicU8 = portable_atomic::AtomicU8::new(0);
+                                static MT2_LOG_COUNT: portable_atomic::AtomicU8 =
+                                    portable_atomic::AtomicU8::new(0);
                                 let log_n = MT2_LOG_COUNT.load(Ordering::Relaxed);
                                 if log_n < 10 {
                                     MT2_LOG_COUNT.store(log_n + 1, Ordering::Relaxed);
@@ -571,25 +568,18 @@ where
                                     );
                                 }
 
-                                if let Some(scroll_dy) = translator.extract_scroll(
-                                    &report.data[..report.len],
-                                ) {
-                                    // Send scroll delta as a 16-bit scroll event
-                                    // Uses the same format as FullScrollDial16Bit profile
-                                    let mut event = HidReportEvent::new();
-                                    event.report_type = HidReportType::Mouse;
-                                    event.profile = DeviceProfile::MagicTrackpad;
-                                    event.slot_index = 3;
-                                    event.report_id = 0;
-                                    let bytes = scroll_dy.to_le_bytes();
-                                    event.data[0] = bytes[0];
-                                    event.data[1] = bytes[1];
-                                    event.len = 2;
-                                    match HID_REPORT_CHANNEL.try_send(event) {
-                                        Ok(()) => {}
-                                        Err(_) => {
-                                            debug!("[classic] HID channel full, dropping scroll");
-                                        }
+                                let mut event = HidReportEvent::new();
+                                event.report_type = HidReportType::Mouse;
+                                event.profile = DeviceProfile::MagicTrackpad;
+                                event.slot_index = 3;
+                                event.report_id = 0x31;
+                                let copy_len = report.len.min(event.data.len());
+                                event.data[..copy_len].copy_from_slice(&report.data[..copy_len]);
+                                event.len = copy_len;
+                                match HID_REPORT_CHANNEL.try_send(event) {
+                                    Ok(()) => {}
+                                    Err(_) => {
+                                        debug!("[classic] HID channel full, dropping MT2 report");
                                     }
                                 }
                             } else {
