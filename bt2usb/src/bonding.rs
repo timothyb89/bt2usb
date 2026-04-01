@@ -1,7 +1,10 @@
-//! BLE Bonding Storage
+//! Bond Storage (BLE + Classic BT)
 //!
 //! Stores bonding information to flash memory so devices stay paired
 //! across power cycles. Uses sequential-storage for wear-leveled writes.
+//!
+//! BLE bonds use keys 0-9, Classic BT bonds use keys 128-137.
+//! Both share the same 16KB flash region (sequential-storage handles it).
 
 use core::ops::Range;
 use defmt::{debug, error, info, warn};
@@ -461,5 +464,298 @@ pub async fn clear_bond_by_address(
     }
 
     warn!("Bond not found for address {:?}", address);
+    Err(())
+}
+
+// ============ Classic BT Bond Storage ============
+
+/// Key offset for Classic BT bonds (128-137), separate from BLE bonds (0-9).
+const CLASSIC_BOND_KEY_BASE: u8 = 128;
+
+/// Maximum number of Classic BT bonded devices.
+pub const MAX_CLASSIC_BONDS: usize = 10;
+
+/// Stored Classic BT bond: link key + device metadata.
+#[derive(Clone)]
+pub struct StoredClassicBond {
+    pub addr: [u8; 6],
+    pub link_key: [u8; 16],
+    pub key_type: u8,
+    pub profile_id: u8,
+    pub name: [u8; 32],
+    pub name_len: u8,
+}
+
+impl<'a> Value<'a> for StoredClassicBond {
+    fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
+        // 6 + 16 + 1 + 1 + 32 + 1 = 57 bytes
+        if buffer.len() < 57 {
+            return Err(SerializationError::BufferTooSmall);
+        }
+        buffer[0..6].copy_from_slice(&self.addr);
+        buffer[6..22].copy_from_slice(&self.link_key);
+        buffer[22] = self.key_type;
+        buffer[23] = self.profile_id;
+        buffer[24..56].copy_from_slice(&self.name);
+        buffer[56] = self.name_len;
+        Ok(57)
+    }
+
+    fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
+    where
+        Self: Sized,
+    {
+        if buffer.len() < 24 {
+            return Err(SerializationError::BufferTooSmall);
+        }
+        let mut addr = [0u8; 6];
+        let mut link_key = [0u8; 16];
+        addr.copy_from_slice(&buffer[0..6]);
+        link_key.copy_from_slice(&buffer[6..22]);
+        let key_type = buffer[22];
+        let profile_id = buffer[23];
+        let mut name = [0u8; 32];
+        let name_len = if buffer.len() >= 57 {
+            name.copy_from_slice(&buffer[24..56]);
+            buffer[56]
+        } else {
+            0
+        };
+        Ok(StoredClassicBond {
+            addr,
+            link_key,
+            key_type,
+            profile_id,
+            name,
+            name_len,
+        })
+    }
+}
+
+/// Load all stored Classic BT bonds from flash.
+pub async fn load_classic_bonds(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+) -> Vec<StoredClassicBond, MAX_CLASSIC_BONDS> {
+    let mut bonds = Vec::new();
+    let mut buffer = [0u8; 128];
+
+    for i in 0..MAX_CLASSIC_BONDS as u8 {
+        let key = CLASSIC_BOND_KEY_BASE + i;
+        match fetch_item::<u8, StoredClassicBond, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &key,
+        )
+        .await
+        {
+            Ok(Some(stored)) => {
+                debug!(
+                    "Loaded Classic bond from slot {} (profile {}): {:02x}",
+                    i, stored.profile_id, stored.addr
+                );
+                let _ = bonds.push(stored);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(
+                    "Error reading Classic bond slot {}: {:?}",
+                    i,
+                    defmt::Debug2Format(&e)
+                );
+            }
+        }
+    }
+
+    info!("Loaded {} Classic bond(s) from flash", bonds.len());
+    bonds
+}
+
+/// Store a Classic BT bond to flash after successful pairing.
+/// Returns the slot number on success.
+pub async fn store_classic_bond(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    addr: &[u8; 6],
+    link_key: &[u8; 16],
+    key_type: u8,
+    profile_id: u8,
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 128];
+    let mut target_slot: Option<u8> = None;
+
+    for i in 0..MAX_CLASSIC_BONDS as u8 {
+        let key = CLASSIC_BOND_KEY_BASE + i;
+        match fetch_item::<u8, StoredClassicBond, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &key,
+        )
+        .await
+        {
+            Ok(Some(existing)) => {
+                if existing.addr == *addr {
+                    target_slot = Some(i);
+                    break;
+                }
+            }
+            Ok(None) => {
+                if target_slot.is_none() {
+                    target_slot = Some(i);
+                }
+            }
+            Err(_) => {
+                if target_slot.is_none() {
+                    target_slot = Some(i);
+                }
+            }
+        }
+    }
+
+    let slot = target_slot.ok_or(())?;
+    let key = CLASSIC_BOND_KEY_BASE + slot;
+
+    let stored = StoredClassicBond {
+        addr: *addr,
+        link_key: *link_key,
+        key_type,
+        profile_id,
+        name: [0u8; 32],
+        name_len: 0,
+    };
+
+    match store_item(
+        flash,
+        flash_range(),
+        &mut NoCache::new(),
+        &mut buffer,
+        &key,
+        &stored,
+    )
+    .await
+    {
+        Ok(_) => {
+            info!("Stored Classic bond in slot {}: {:02x}", slot, addr);
+            Ok(slot)
+        }
+        Err(e) => {
+            error!(
+                "Failed to store Classic bond: {:?}",
+                defmt::Debug2Format(&e)
+            );
+            Err(())
+        }
+    }
+}
+
+/// Update the profile ID for an existing Classic bond by address.
+#[allow(dead_code)]
+pub async fn update_classic_bond_profile(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+    new_profile_id: u8,
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 128];
+
+    for i in 0..MAX_CLASSIC_BONDS as u8 {
+        let key = CLASSIC_BOND_KEY_BASE + i;
+        match fetch_item::<u8, StoredClassicBond, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &key,
+        )
+        .await
+        {
+            Ok(Some(mut stored)) => {
+                if stored.addr == *address {
+                    stored.profile_id = new_profile_id;
+                    match store_item(
+                        flash,
+                        flash_range(),
+                        &mut NoCache::new(),
+                        &mut buffer,
+                        &key,
+                        &stored,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!(
+                                "Updated Classic bond profile in slot {} to {}",
+                                i, new_profile_id
+                            );
+                            return Ok(i);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to update Classic bond profile: {:?}",
+                                defmt::Debug2Format(&e)
+                            );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("Classic bond not found for address {:02x}", address);
+    Err(())
+}
+
+/// Remove a single Classic bond by address.
+#[allow(dead_code)]
+pub async fn clear_classic_bond_by_address(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 128];
+
+    for i in 0..MAX_CLASSIC_BONDS as u8 {
+        let key = CLASSIC_BOND_KEY_BASE + i;
+        match fetch_item::<u8, StoredClassicBond, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &key,
+        )
+        .await
+        {
+            Ok(Some(stored)) => {
+                if stored.addr == *address {
+                    match remove_item::<u8, _>(
+                        flash,
+                        flash_range(),
+                        &mut NoCache::new(),
+                        &mut buffer,
+                        &key,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!("Removed Classic bond in slot {} for {:02x}", i, address);
+                            return Ok(i);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to remove Classic bond: {:?}",
+                                defmt::Debug2Format(&e)
+                            );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("Classic bond not found for address {:02x}", address);
     Err(())
 }
