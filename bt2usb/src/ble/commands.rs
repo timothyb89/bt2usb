@@ -33,8 +33,9 @@ pub fn handle_get_status(
         (false, [0u8; 6])
     };
 
-    // Gather per-slot connection info
-    let mut connected_devices: [Option<ble_state::ConnectedDeviceInfo>; 3] = [None, None, None];
+    // Gather per-slot connection info (BLE slots 0-2 + Classic slot 3)
+    let mut connected_devices: [Option<ble_state::ConnectedDeviceInfo>; 4] =
+        [None, None, None, None];
     let mut connected_count = 0u8;
     for (i, dev) in connected_devices
         .iter_mut()
@@ -46,9 +47,20 @@ pub fn handle_get_status(
                 address: slots::get_slot_address(i),
                 profile_id: slots::SLOT_PROFILES[i].load(Ordering::Relaxed),
                 battery_level: ble_hid::BATTERY_LEVELS[i].load(Ordering::Relaxed),
+                transport_type: 0, // BLE
             });
             connected_count += 1;
         }
+    }
+    // Classic BT slot
+    if slots::is_classic_connected() {
+        connected_devices[3] = Some(ble_state::ConnectedDeviceInfo {
+            address: slots::get_classic_address(),
+            profile_id: slots::CLASSIC_PROFILE.load(Ordering::Relaxed),
+            battery_level: 0xFF, // Classic doesn't report battery via HID
+            transport_type: 1,   // Classic BT
+        });
+        connected_count += 1;
     }
 
     let status = ble_state::StatusInfo {
@@ -65,8 +77,14 @@ pub fn handle_get_status(
 }
 
 /// Build and send a BondList response over the BONDS_RESPONSE_CHANNEL.
-pub fn handle_get_bonds(loaded_bonds: &[LoadedBond]) {
+/// Includes both BLE and Classic BT bonds.
+pub fn handle_get_bonds(
+    loaded_bonds: &[LoadedBond],
+    loaded_classic_bonds: &[bonding::StoredClassicBond],
+) {
     let mut bond_list: ble_state::BondList = heapless::Vec::new();
+
+    // BLE bonds
     for lb in loaded_bonds {
         let addr_bytes = lb.bond.identity.bd_addr.raw();
         let mut addr = [0u8; 6];
@@ -78,7 +96,6 @@ pub fn handle_get_bonds(loaded_bonds: &[LoadedBond]) {
             0u8
         };
 
-        // Use stored BLE device name; fall back to profile name if not available
         let mut name: heapless::String<32> = heapless::String::new();
         if lb.name_len > 0 {
             if let Ok(s) = core::str::from_utf8(&lb.name[..lb.name_len as usize]) {
@@ -95,7 +112,28 @@ pub fn handle_get_bonds(loaded_bonds: &[LoadedBond]) {
             });
         }
 
-        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect));
+        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect, 0)); // 0 = BLE
+    }
+
+    // Classic BT bonds
+    for cb in loaded_classic_bonds {
+        let mut name: heapless::String<32> = heapless::String::new();
+        if cb.name_len > 0 {
+            if let Ok(s) = core::str::from_utf8(&cb.name[..cb.name_len as usize]) {
+                let _ = name.push_str(s);
+            }
+        }
+        if name.is_empty() {
+            let profile = DeviceProfile::from_id(cb.profile_id);
+            let profile_name = profile.name();
+            let _ = name.push_str(if profile_name.is_empty() {
+                "Unknown Device"
+            } else {
+                profile_name
+            });
+        }
+
+        let _ = bond_list.push((cb.addr, 0, cb.profile_id, name, false, 1)); // 1 = Classic
     }
 
     let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);
@@ -164,20 +202,18 @@ pub async fn handle_update_bond_profile(
 ///
 /// This function does not return on success (system resets).
 pub async fn handle_clear_bonds(flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>) {
-    info!("Clearing all bonds");
+    info!("Clearing all bonds (BLE + Classic)");
     rpc_log::info("Clearing all bonds...");
-    match bonding::clear_all_bonds(flash).await {
-        Ok(()) => {
-            info!("All bonds cleared successfully");
-            rpc_log::info("All bonds cleared - restarting...");
-            // Give time for log message to be sent
-            Timer::after_millis(100).await;
-            crate::system_reset();
-        }
-        Err(()) => {
-            error!("Failed to clear bonds");
-            rpc_log::error("Failed to clear bonds");
-        }
+    let ble_ok = bonding::clear_all_bonds(flash).await.is_ok();
+    let classic_ok = bonding::clear_all_classic_bonds(flash).await.is_ok();
+    if ble_ok && classic_ok {
+        info!("All bonds cleared successfully");
+        rpc_log::info("All bonds cleared - restarting...");
+        Timer::after_millis(100).await;
+        crate::system_reset();
+    } else {
+        error!("Failed to clear bonds (ble={}, classic={})", ble_ok, classic_ok);
+        rpc_log::error("Failed to clear bonds");
     }
 }
 

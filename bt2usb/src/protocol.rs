@@ -342,7 +342,7 @@ pub fn encode_response_status(
     battery_level: u8,
     detected_os: u8,
     connected_count: u8,
-    connected_devices: &[Option<crate::ble_state::ConnectedDeviceInfo>; 3],
+    connected_devices: &[Option<crate::ble_state::ConnectedDeviceInfo>; 4],
 ) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(10)
@@ -365,16 +365,18 @@ pub fn encode_response_status(
             .unwrap()
             .u8(connected_count)
             .unwrap();
-        // Connected devices array
+        // Connected devices array (each: [addr, profile, battery, transport])
         e.array(connected_count as u64).unwrap();
         for dev in connected_devices.iter().flatten() {
-            e.array(3)
+            e.array(4)
                 .unwrap()
                 .bytes(&dev.address)
                 .unwrap()
                 .u8(dev.profile_id)
                 .unwrap()
                 .u8(dev.battery_level)
+                .unwrap()
+                .u8(dev.transport_type)
                 .unwrap();
         }
     })
@@ -382,12 +384,19 @@ pub fn encode_response_status(
 
 /// Encode a bonds response.
 /// Each bond: [address(6 bytes), addr_kind, profile_id, name_str]
-pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str, bool)]) -> EncResult {
+/// Encode a bonds response.
+/// Each bond: [address, addr_kind, profile_id, name, auto_connect, transport_type]
+/// transport_type: 0=BLE, 1=Classic BT
+#[allow(clippy::type_complexity)]
+pub fn encode_response_bonds(
+    buf: &mut [u8],
+    bonds: &[([u8; 6], u8, u8, &str, bool, u8)],
+) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(2).unwrap().u8(RESP_BONDS).unwrap();
         e.array(bonds.len() as u64).unwrap();
-        for (addr, kind, profile, name, auto_connect) in bonds {
-            e.array(5)
+        for (addr, kind, profile, name, auto_connect, transport) in bonds {
+            e.array(6)
                 .unwrap()
                 .bytes(addr)
                 .unwrap()
@@ -398,6 +407,8 @@ pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str, bo
                 .str(name)
                 .unwrap()
                 .bool(*auto_connect)
+                .unwrap()
+                .u8(*transport)
                 .unwrap();
         }
     })

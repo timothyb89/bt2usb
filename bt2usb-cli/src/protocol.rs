@@ -366,6 +366,8 @@ pub struct BondEntry {
     pub profile_id: u8,
     pub name: String,
     pub auto_connect: bool,
+    /// 0 = BLE, 1 = Classic BT
+    pub transport_type: u8,
 }
 
 #[derive(Debug)]
@@ -373,6 +375,8 @@ pub struct ConnectedDeviceInfo {
     pub address: [u8; 6],
     pub profile_id: u8,
     pub battery_level: u8,
+    /// 0 = BLE, 1 = Classic BT
+    pub transport_type: u8,
 }
 
 pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
@@ -424,10 +428,12 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                         };
                         let profile_id = d.u8().unwrap_or(0);
                         let bat = d.u8().unwrap_or(0xFF);
+                        let transport = d.u8().unwrap_or(0); // 0=BLE (default for compat)
                         connected_devices.push(ConnectedDeviceInfo {
                             address: addr_bytes,
                             profile_id,
                             battery_level: bat,
+                            transport_type: transport,
                         });
                     }
                 }
@@ -461,12 +467,14 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 let profile_id = d.u8().map_err(|e| format!("profile: {e}"))?;
                 let name = d.str().map_err(|e| format!("name: {e}"))?.to_string();
                 let auto_connect = d.bool().unwrap_or(false);
+                let transport_type = d.u8().unwrap_or(0); // 0=BLE default for compat
                 bonds.push(BondEntry {
                     address,
                     addr_kind,
                     profile_id,
                     name,
                     auto_connect,
+                    transport_type,
                 });
             }
             Ok(Response::Bonds { bonds })

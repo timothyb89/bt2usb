@@ -98,8 +98,9 @@ pub static BLE_CMD_CHANNEL: Channel<CriticalSectionRawMutex, BleCommand, 4> = Ch
 pub static BLE_EVENT_CHANNEL: Channel<CriticalSectionRawMutex, BleEvent, 8> = Channel::new();
 
 /// Bond list response for GetBonds command
-/// Bond list entry: (address, addr_kind, profile_id, name, auto_connect)
-pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>, bool), 10>;
+/// Bond list entry: (address, addr_kind, profile_id, name, auto_connect, transport_type)
+/// transport_type: 0=BLE, 1=Classic BT
+pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>, bool, u8), 20>;
 
 /// Response channel for GetBonds (capacity 1, only one request at a time).
 pub static BONDS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, BondList, 1> = Channel::new();
@@ -110,6 +111,8 @@ pub struct ConnectedDeviceInfo {
     pub address: [u8; 6],
     pub profile_id: u8,
     pub battery_level: u8,
+    /// 0 = BLE, 1 = Classic BT
+    pub transport_type: u8,
 }
 
 /// Status information response
@@ -123,8 +126,8 @@ pub struct StatusInfo {
     pub battery_level: u8,
     /// Number of currently connected devices.
     pub connected_count: u8,
-    /// Per-device connection info (up to 3).
-    pub connected_devices: [Option<ConnectedDeviceInfo>; 3],
+    /// Per-device connection info (up to 3 BLE + 1 Classic).
+    pub connected_devices: [Option<ConnectedDeviceInfo>; 4],
 }
 
 /// Response channel for GetStatus (capacity 1, only one request at a time).
