@@ -244,23 +244,91 @@ commands for basic click feedback.
     `TouchSynthesizer` which was designed for discrete scroll detents, not
     continuous touch input. A separate implementation is needed for Phase 2.
 
-### Passthrough architecture (planned)
+27. **Phase 2: Reclocked passthrough implemented.** `Mt2Passthrough` replaces
+    `Mt2Translator`. Classic BT task sends full raw reports through channel.
+    USB handler stores latest, retransmits at 250Hz with BT→USB header
+    translation. Click bit latched to survive burst delivery. Results:
+    all gestures working (cursor, scroll with momentum, pinch, rotate,
+    3-finger drag). Logs: logs/log-33-pico.txt, logs/log-34-pico.txt.
+    Known issues: (1) some stutter from BT Classic burst delivery, (2) force
+    clicks don't register — macOS expects host-controlled actuator loop for
+    USB MT2, ignores the autonomous click bit from BT mode.
+
+### Passthrough architecture
 
 The BT→USB report format is correct (confirmed via pcap comparison). The
-blocker is that macOS's AppleMultitouchDriver expects USB-like report timing
+blocker was that macOS's AppleMultitouchDriver expects USB-like report timing
 (steady ~91Hz) but BT Classic delivers in bursts with jitter.
 
-**Phase 1 (current, working): Interpreted mode** — Extract scroll deltas
-from MT2 2-finger touch data, feed to existing TouchSynthesizer. Proves
-end-to-end pipeline. Limited: no momentum, no cursor, no gestures beyond
-scroll. Reuses Dial infrastructure (replanting, velocity buffer) which is
-not appropriate for real trackpad input.
+**Phase 1 (complete): Interpreted mode** — Extract scroll deltas from MT2
+2-finger touch data, feed to existing TouchSynthesizer. Proves end-to-end
+pipeline. Limited: no momentum, no cursor, no gestures beyond scroll.
 
-**Phase 2 (next): Reclocked passthrough** — Buffer incoming BT touch reports
-and re-transmit at a steady USB rate (~91Hz or 250Hz). Maintain proper
-lifecycle transitions (approach→contact→release→gone) with correct byte7
-mode flag transitions. This would enable full gesture passthrough (cursor,
-scroll, pinch, rotate, 3-finger drag) without interpreting the touch data.
+**Phase 2 (implemented): Reclocked passthrough with interpolation** —
+`Mt2Passthrough` in `mt2_translate.rs`. BT→USB header translation
+(0x31→0x02, 4-byte→12-byte), retransmits at 250Hz (4ms tick). Click bit
+latched to survive BT bursts. Linear interpolation of finger X/Y positions
+between BT reports (20.12 fixed-point, EMA interval estimate). Sniff mode
+configured at 18 slots (11.25ms ≈ 89Hz) for steady BT Classic delivery.
+Results: all gestures working with smooth input — cursor, scroll with
+momentum, pinch, rotate, 3-finger. Force clicks not working (see below).
+
+### BT Classic delivery analysis (2026-04-01)
+
+Diagnostic tooling: `cursor-diag.html` (browser-side pointer event capture
+with interval histogram) + firmware `[mt2] BT` timing logs. CSV captures
+in `logs/log-{36..42}-cursor-diag.csv`.
+
+**Delivery pattern**: BT Classic delivers HID reports in bursts of 3-5
+(dt=0-2 ticks / 0-8ms apart), with gaps of 8-11 ticks (32-44ms) between
+bursts. Effective rate ~90 reports/sec but NOT steady.
+
+**Interpolation exploration** (builds 37-42):
+- EMA + freeze after interpolation: best for slow movements (7 jumps >50px
+  vs 15 baseline). Velocity oscillation ("elasticity") at higher speeds.
+- Dead reckoning: massive overshoot (69 jumps >50px).
+- Raw interval (no smoothing): noisier, more jumps (32).
+- Snap-to-target: position discontinuities (35 jumps).
+- Current: EMA + freeze (log-37 approach). Works well for normal use.
+
+**Root cause + fix**: CYW43439 BT Classic connection used default link
+policy → unpredictable burst delivery. **FIXED**: Custom HCI link_policy
+commands (WriteLinkPolicySettings + SniffMode) defined in
+`bt-classic-host/src/link_policy.rs`. Sniff configured at 18 slots
+(11.25ms ≈ 89Hz) after connection reaches Encrypted state. Result:
+perfectly smooth input delivery, eliminating all interpolation artifacts.
+
+### Force click analysis (2026-04-01)
+
+The MT2 has **two click modes**:
+- **BT mode (autonomous)**: Internal pressure threshold, fires Taptic Engine
+  independently, sets click bit (byte[1] & 0x01) in report. BT host just
+  reads the button bit. This is how the MT2 works over BT Classic.
+- **USB mode (host-controlled)**: macOS's AppleMultitouchDriver reads pressure
+  from touch data, decides when to click, sends actuator OUTPUT report to
+  trackpad, Taptic Engine fires, trackpad confirms with button bit.
+
+Our bridge: MT2 is in BT mode (autonomous clicks, haptics fire, click bit
+set). But macOS sees a USB MT2 and expects host-controlled mode. It ignores
+the button bit because it never sent an actuator command.
+
+Evidence:
+- Click bit IS present in BT data (confirmed: 14+ consecutive reports with
+  click=1, pressure ~105). Click IS latched and forwarded in USB reports.
+- Force clicks **never** register on macOS (not intermittent — deterministic).
+- "Tap to click" works (macOS detects quick touch→release gesture from touch
+  data alone, independent of button bit).
+- MT2 fires haptic feedback autonomously over BT (user feels the click).
+
+**Fix options** (in order of likely effort):
+1. Auto-ACK actuator: intercept macOS OUTPUT reports for actuator, respond
+   immediately. MT2 is already clicking autonomously, macOS just needs to
+   think its command succeeded.
+2. Feature report tweak: 0xDB compound properties may contain a force-touch
+   mode flag. If we indicate "trackpad-controlled clicks," macOS might fall
+   back to reading the button bit.
+3. Full actuator forwarding: USB OUTPUT → BT SET_REPORT. Most correct but
+   most complex (bidirectional HIDP, new L2CAP flow).
 
 ### Reference captures
 

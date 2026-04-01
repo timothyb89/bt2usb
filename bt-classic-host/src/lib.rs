@@ -35,6 +35,7 @@ pub mod hidp;
 pub mod host;
 pub mod l2cap;
 pub mod link_key;
+pub mod link_policy;
 pub mod pairing;
 
 pub use connection::{ClassicConnection, ConnState};
