@@ -311,6 +311,7 @@ pub async fn core0_ble_main(
                     &stack,
                     flash_mutex,
                     &mut loaded_bonds,
+                    &loaded_classic_bonds,
                     &active_device_pref,
                 ),
                 join(
@@ -466,9 +467,17 @@ async fn classic_bt_task<C>(
         }
     }
 
-    // --- Magic Trackpad 2 address (hardcoded for initial testing) ---
-    let mt2_addr = bt_hci::param::BdAddr::new([0x19, 0x10, 0xF1, 0x40, 0xEB, 0xE0]);
-    info!("[classic] Target: Magic Trackpad 2 at {:?}", mt2_addr);
+    // --- Resolve Classic target address from stored bonds ---
+    let mt2_addr = if let Some(bond) = loaded_classic_bonds.first() {
+        let addr = bt_hci::param::BdAddr::new(bond.addr);
+        info!("[classic] Target from bond: {:?} (profile: {:?})", addr, DeviceProfile::from_id(bond.profile_id));
+        addr
+    } else {
+        // Fallback: hardcoded MT2 address for initial pairing
+        let addr = bt_hci::param::BdAddr::new([0x19, 0x10, 0xF1, 0x40, 0xEB, 0xE0]);
+        info!("[classic] No Classic bond found, using default: {:?}", addr);
+        addr
+    };
 
     // --- Create resources with flash-backed link key store ---
     let mut link_key_store = MemoryLinkKeyStore::new();
@@ -513,6 +522,10 @@ async fn classic_bt_task<C>(
             }
         }
     };
+
+    // --- Mark Classic device as connected for status reporting ---
+    let classic_profile_id = DeviceProfile::MagicTrackpad.to_id();
+    slots::set_classic_connected(mt2_addr.raw().try_into().unwrap_or(&[0u8; 6]), classic_profile_id);
 
     // --- Persist link key to flash after successful connect ---
     // The runner stored the key in MemoryLinkKeyStore during pairing.
@@ -753,6 +766,7 @@ async fn connection_manager_loop<
     _stack: &'a Stack<'a, C, DefaultPacketPool>,
     flash: &'a FlashMutex,
     loaded_bonds: &mut heapless::Vec<bonding::LoadedBond, { bonding::MAX_BONDS }>,
+    loaded_classic_bonds: &[bonding::StoredClassicBond],
     active_device_pref: &Option<preferences::ActiveDevice>,
 ) {
     let mut manager_profile = determine_initial_profile(active_device_pref, loaded_bonds);
@@ -940,7 +954,7 @@ async fn connection_manager_loop<
 
             BleCommand::GetBonds => {
                 debug!("Getting bonds list");
-                commands::handle_get_bonds(loaded_bonds);
+                commands::handle_get_bonds(loaded_bonds, loaded_classic_bonds);
             }
 
             BleCommand::ClearBonds => {

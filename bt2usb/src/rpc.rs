@@ -286,7 +286,7 @@ async fn dispatch_request(
                 .unwrap_or(0),
                 Err(_) => {
                     // Timeout - use defaults
-                    let empty_devs = [None, None, None];
+                    let empty_devs = [None, None, None, None];
                     protocol::encode_response_status(
                         cbor_buf,
                         last_state,
@@ -345,11 +345,18 @@ async fn dispatch_request(
             {
                 Ok(bonds) => {
                     // Convert heapless types to slices for encoding
-                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str, bool), 10> =
+                    #[allow(clippy::type_complexity)]
+                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str, bool, u8), 20> =
                         heapless::Vec::new();
-                    for (addr, kind, profile, name, auto_connect) in &bonds {
-                        let _ =
-                            bond_refs.push((*addr, *kind, *profile, name.as_str(), *auto_connect));
+                    for (addr, kind, profile, name, auto_connect, transport) in &bonds {
+                        let _ = bond_refs.push((
+                            *addr,
+                            *kind,
+                            *profile,
+                            name.as_str(),
+                            *auto_connect,
+                            *transport,
+                        ));
                     }
                     protocol::encode_response_bonds(cbor_buf, bond_refs.as_slice()).unwrap_or(0)
                 }

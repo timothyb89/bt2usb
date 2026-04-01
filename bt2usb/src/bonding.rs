@@ -650,6 +650,28 @@ pub async fn store_classic_bond(
     }
 }
 
+/// Clear all Classic bonds from flash.
+pub async fn clear_all_classic_bonds(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+) -> Result<(), ()> {
+    info!("Clearing all Classic bonds from flash...");
+    let mut buffer = [0u8; 128];
+    let mut cleared = 0u8;
+
+    for i in 0..MAX_CLASSIC_BONDS as u8 {
+        let key = CLASSIC_BOND_KEY_BASE + i;
+        if remove_item::<u8, _>(flash, flash_range(), &mut NoCache::new(), &mut buffer, &key)
+            .await
+            .is_ok()
+        {
+            cleared += 1;
+        }
+    }
+
+    info!("Cleared {} Classic bond(s)", cleared);
+    Ok(())
+}
+
 /// Update the profile ID for an existing Classic bond by address.
 #[allow(dead_code)]
 pub async fn update_classic_bond_profile(
