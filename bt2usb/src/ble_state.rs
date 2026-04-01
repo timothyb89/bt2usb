@@ -60,7 +60,7 @@ pub enum BleCommand {
 
 // ============ Events (BLE -> RPC) ============
 
-/// A discovered BLE device from scanning.
+/// A discovered device from scanning (BLE or Classic).
 #[derive(Clone, Debug, defmt::Format)]
 pub struct ScanResultData {
     pub address: [u8; 6],
@@ -69,6 +69,8 @@ pub struct ScanResultData {
     pub name_len: u8,
     pub rssi: i8,
     pub is_hid: bool,
+    /// 0 = BLE, 1 = Classic BT
+    pub transport_type: u8,
 }
 
 #[derive(Clone, Debug, defmt::Format)]
@@ -358,6 +360,7 @@ impl EventHandler for RpcScannerHandler {
                     name_len,
                     rssi: report.rssi,
                     is_hid: true,
+                    transport_type: 0, // BLE
                 }));
             } else if name_len > 0 && hid_cache_contains(&addr_bytes) {
                 // Scan response with a name for a previously-seen HID device —
@@ -374,6 +377,7 @@ impl EventHandler for RpcScannerHandler {
                     name_len,
                     rssi: report.rssi,
                     is_hid: true,
+                    transport_type: 0, // BLE
                 }));
             }
         }
