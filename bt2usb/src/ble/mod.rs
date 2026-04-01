@@ -381,7 +381,9 @@ where
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::IoCapabilityRequestReply>
         + bt_hci::controller::ControllerCmdSync<
             bt_hci::cmd::link_control::UserConfirmationRequestReply,
-        >,
+        > + bt_hci::controller::ControllerCmdSync<
+            bt_classic_host::link_policy::WriteLinkPolicySettings,
+        > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>,
 {
     use core::cell::RefCell;
     use core::sync::atomic::Ordering;
@@ -421,7 +423,8 @@ where
             .enable_io_capability_request(true)
             .enable_io_capability_response(true)
             .enable_user_confirmation_request(true)
-            .enable_simple_pairing_complete(true);
+            .enable_simple_pairing_complete(true)
+            .enable_mode_change(true);
 
         match controller.exec(&SetEventMask::new(mask)).await {
             Ok(_) => info!("[classic] Event mask updated with Classic events"),
@@ -456,6 +459,42 @@ where
             }
         }
     };
+
+    // --- Configure sniff mode for steady report delivery ---
+    // Without sniff, BT Classic delivers HID reports in bursts (3-5 reports
+    // per burst, 32-44ms gaps). Sniff mode forces regular polling at ~91Hz
+    // (11.25ms interval), matching the real MT2's native USB report rate.
+    {
+        use bt_classic_host::link_policy::{
+            SniffMode, WriteLinkPolicySettings, LINK_POLICY_ENABLE_SNIFF,
+        };
+
+        // Enable sniff mode in link policy
+        match controller
+            .exec(&WriteLinkPolicySettings::new(handle, LINK_POLICY_ENABLE_SNIFF))
+            .await
+        {
+            Ok(_) => info!("[classic] Link policy: sniff enabled"),
+            Err(e) => warn!(
+                "[classic] Failed to set link policy: {:?}",
+                defmt::Debug2Format(&e)
+            ),
+        }
+
+        // Request sniff mode: ~91Hz (11.25ms = 18 slots of 0.625ms)
+        // sniff_attempt=4: listen for 4 slots per sniff interval
+        // sniff_timeout=1: minimal extra window after receiving
+        match controller
+            .exec(&SniffMode::new(handle, 18, 18, 4, 1))
+            .await
+        {
+            Ok(_) => info!("[classic] Sniff mode requested (interval=18 slots / 11.25ms)"),
+            Err(e) => warn!(
+                "[classic] Failed to request sniff mode: {:?}",
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
 
     // --- Open L2CAP HID channels ---
     let mut l2cap = L2capState::<4>::new(handle);

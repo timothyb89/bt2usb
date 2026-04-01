@@ -9,7 +9,8 @@ description = "Bluetooth Classic HID host stack for embedded systems (no_std)"
 bt-hci = { version = "0.8", default-features = false }
 embassy-sync = { version = "0.7" }
 embassy-time = { version = "0.5" }
-embedded-io = "0.6"
+embedded-io = "0.7"
+embedded-io-async = "0.7"
 heapless = "0.9"
 defmt = { version = "1", optional = true }
 
