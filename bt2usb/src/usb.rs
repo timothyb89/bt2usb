@@ -318,6 +318,7 @@ async fn usb_hid_handler_task_mt2(
     info!("USB HID handler task started (macOS/MT2 mode), waiting for BLE reports...");
 
     let mut touch_synth = crate::mt2::TouchSynthesizer::new();
+    let mut mt2_passthrough = crate::mt2_translate::Mt2Passthrough::new();
 
     loop {
         check_reprobe();
@@ -333,9 +334,19 @@ async fn usb_hid_handler_task_mt2(
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
-                HidReportType::Mouse => {
+                HidReportType::Mouse
+                    if event.profile == crate::device_profile::DeviceProfile::MagicTrackpad =>
+                {
+                    // MT2 reclocked passthrough: store raw BT report for steady-rate output
                     if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
-                        debug!("MT2: scroll event received but MT not yet enabled");
+                        debug!("MT2: report received but MT not yet enabled");
+                        continue;
+                    }
+                    mt2_passthrough.receive_bt_report(&event.data[..event.len]);
+                }
+                HidReportType::Mouse => {
+                    // Non-MT2 devices (Dial, etc.): extract scroll delta for TouchSynthesizer
+                    if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
                         continue;
                     }
 
@@ -370,10 +381,16 @@ async fn usb_hid_handler_task_mt2(
                 debug!("MT2: battery update received (not forwarded)");
             }
             Either3::Third(_) => {
-                // MT2 tick: send continuous touch reports while gesture is active
+                // MT2 passthrough tick: reclocked output at steady USB rate
+                if let Some((report, len)) = mt2_passthrough.tick() {
+                    if let Err(e) = mt2_writer.write(&report[..len]).await {
+                        warn!("MT2 passthrough tick write error: {:?}", e);
+                    }
+                }
+                // TouchSynthesizer tick: Dial scroll synthesis
                 if let Some(report) = touch_synth.tick() {
                     if let Err(e) = mt2_writer.write(&report).await {
-                        warn!("MT2 trackpad tick write error: {:?}", e);
+                        warn!("MT2 synth tick write error: {:?}", e);
                     }
                 }
             }
