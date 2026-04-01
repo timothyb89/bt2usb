@@ -49,20 +49,28 @@ enum Command {
         /// Device profile to set on connect: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit)
         #[arg(short, long)]
         profile: Option<u8>,
+
+        /// Scan for Classic BT devices (Inquiry) instead of BLE
+        #[arg(short, long)]
+        classic: bool,
     },
 
-    /// Connect to a BLE device by address
+    /// Connect to a device by address
     Connect {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
 
-        /// Address type: 0=public, 1=random
+        /// Address type: 0=public, 1=random (BLE only)
         #[arg(short = 'k', long, default_value = "1")]
         addr_kind: u8,
 
         /// Device profile: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default)
         #[arg(short, long)]
         profile: Option<u8>,
+
+        /// Connect via Classic BT instead of BLE
+        #[arg(long)]
+        classic: bool,
     },
 
     /// Disconnect a device (all devices if no address given)
@@ -236,12 +244,23 @@ fn main() -> Result<()> {
             unreachable!()
         }
         Command::Status => cmd_status(&mut transport),
-        Command::Scan { timeout, profile } => scan::cmd_scan(&mut transport, timeout, profile),
+        Command::Scan {
+            timeout,
+            profile,
+            classic,
+        } => {
+            if classic {
+                cmd_classic_scan(&mut transport, timeout)
+            } else {
+                scan::cmd_scan(&mut transport, timeout, profile)
+            }
+        }
         Command::Connect {
             address,
             addr_kind,
             profile,
-        } => cmd_connect(&mut transport, &address, addr_kind, profile),
+            classic,
+        } => cmd_connect(&mut transport, &address, addr_kind, profile, classic),
         Command::Disconnect { address } => cmd_disconnect(&mut transport, address.as_deref()),
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),

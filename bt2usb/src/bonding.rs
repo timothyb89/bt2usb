@@ -482,23 +482,25 @@ pub struct StoredClassicBond {
     pub link_key: [u8; 16],
     pub key_type: u8,
     pub profile_id: u8,
+    pub auto_connect: bool,
     pub name: [u8; 32],
     pub name_len: u8,
 }
 
 impl<'a> Value<'a> for StoredClassicBond {
     fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize, SerializationError> {
-        // 6 + 16 + 1 + 1 + 32 + 1 = 57 bytes
-        if buffer.len() < 57 {
+        // 6 + 16 + 1 + 1 + 1 + 32 + 1 = 58 bytes
+        if buffer.len() < 58 {
             return Err(SerializationError::BufferTooSmall);
         }
         buffer[0..6].copy_from_slice(&self.addr);
         buffer[6..22].copy_from_slice(&self.link_key);
         buffer[22] = self.key_type;
         buffer[23] = self.profile_id;
-        buffer[24..56].copy_from_slice(&self.name);
-        buffer[56] = self.name_len;
-        Ok(57)
+        buffer[24] = if self.auto_connect { 1 } else { 0 };
+        buffer[25..57].copy_from_slice(&self.name);
+        buffer[57] = self.name_len;
+        Ok(58)
     }
 
     fn deserialize_from(buffer: &'a [u8]) -> Result<Self, SerializationError>
@@ -514,8 +516,18 @@ impl<'a> Value<'a> for StoredClassicBond {
         link_key.copy_from_slice(&buffer[6..22]);
         let key_type = buffer[22];
         let profile_id = buffer[23];
+        // Backward compat: old 57-byte records lack auto_connect
+        let auto_connect = if buffer.len() >= 25 {
+            buffer[24] != 0
+        } else {
+            false
+        };
         let mut name = [0u8; 32];
-        let name_len = if buffer.len() >= 57 {
+        let name_len = if buffer.len() >= 58 {
+            name.copy_from_slice(&buffer[25..57]);
+            buffer[57]
+        } else if buffer.len() >= 57 {
+            // Old format: name at offset 24, no auto_connect byte
             name.copy_from_slice(&buffer[24..56]);
             buffer[56]
         } else {
@@ -526,6 +538,7 @@ impl<'a> Value<'a> for StoredClassicBond {
             link_key,
             key_type,
             profile_id,
+            auto_connect,
             name,
             name_len,
         })
@@ -580,6 +593,7 @@ pub async fn store_classic_bond(
     link_key: &[u8; 16],
     key_type: u8,
     profile_id: u8,
+    auto_connect: bool,
 ) -> Result<u8, ()> {
     let mut buffer = [0u8; 128];
     let mut target_slot: Option<u8> = None;
@@ -622,6 +636,7 @@ pub async fn store_classic_bond(
         link_key: *link_key,
         key_type,
         profile_id,
+        auto_connect,
         name: [0u8; 32],
         name_len: 0,
     };

@@ -183,9 +183,14 @@ pub fn encode_request_simple(buf: &mut [u8], cmd_id: u8) -> EncResult {
     })
 }
 
-pub fn encode_request_connect(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) -> EncResult {
+pub fn encode_request_connect(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    addr_kind: u8,
+    transport_type: u8,
+) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(4)
+        e.array(5)
             .unwrap()
             .u8(CMD_CONNECT)
             .unwrap()
@@ -194,9 +199,15 @@ pub fn encode_request_connect(buf: &mut [u8], address: &[u8; 6], addr_kind: u8) 
             .u8(addr_kind)
             .unwrap()
             .bool(false) // ignore_bond = false
+            .unwrap()
+            .u8(transport_type)
             .unwrap();
     })
 }
+
+pub const CMD_CLASSIC_SCAN: u8 = 25;
+#[allow(dead_code)]
+pub const CMD_CLASSIC_SCAN_STOP: u8 = 26;
 
 pub fn encode_request_subscribe_logs(buf: &mut [u8], level: u8) -> EncResult {
     cbor_encode(buf, |e| {
