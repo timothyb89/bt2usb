@@ -67,6 +67,19 @@ impl<const CONNS: usize> HostResources<CONNS> {
             conn_signals: [const { Signal::new() }; CONNS],
         }
     }
+
+    /// Reset all connection slots to idle. Call after disconnect before reconnecting.
+    pub fn reset(&mut self) {
+        for slot in &mut self.connections {
+            slot.active = false;
+            slot.conn = ClassicConnection::new(unsafe { core::mem::zeroed() });
+        }
+        for ctx in &mut self.pairing {
+            ctx.state = PairingState::Idle;
+            ctx.success = false;
+            ctx.new_link_key = None;
+        }
+    }
 }
 
 /// The Classic Bluetooth host runner.

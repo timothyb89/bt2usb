@@ -480,6 +480,10 @@ async fn classic_bt_task<C>(
     );
     let link_keys = RefCell::new(link_key_store);
     let mut resources = HostResources::<1>::new();
+
+    // --- Main Classic connection loop (reconnects on disconnect) ---
+    loop {
+    resources.reset();
     let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
 
     // --- Resolve target address: auto-connect bond, or wait for command ---
@@ -949,11 +953,16 @@ async fn classic_bt_task<C>(
         }
     }
 
-    // Disconnected — idle until reset
-    warn!("[classic] Classic HID session ended");
-    loop {
-        Timer::after_secs(3600).await;
-    }
+    // Disconnected — clean up and reconnect
+    warn!("[classic] Classic HID session ended, will reconnect...");
+    slots::set_classic_disconnected();
+    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+        crate::ble_state::BleEvent::StateChanged(crate::protocol::ConnectionState::Disconnected),
+    );
+    // Brief delay before reconnect attempt
+    Timer::after_secs(2).await;
+
+    } // end of main Classic connection loop
 }
 
 // ============ Connection Manager ============

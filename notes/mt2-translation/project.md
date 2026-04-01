@@ -254,6 +254,29 @@ commands for basic click feedback.
     clicks don't register — macOS expects host-controlled actuator loop for
     USB MT2, ignores the autonomous click bit from BT mode.
 
+28. **Sniff mode + interpolation tuning.** Sniff at 18 slots (11.25ms ≈ 89Hz)
+    regularizes BT delivery, eliminating burst-induced stutter. Linear XY
+    interpolation with EMA interval estimate and freeze-after-completion.
+    Diagnostic tooling (cursor-diag.html + firmware timing logs) used to
+    identify BT delivery as root cause. Logs: logs/log-36 through log-42.
+
+29. **Classic bond storage.** `StoredClassicBond` with auto_connect flag,
+    flash persistence (keys 128-137 in shared bonding flash range). Load
+    at startup, persist after pairing, clear via RPC.
+
+30. **Full RPC/CLI/status integration.** Transport type (BLE/Classic) added
+    to status, bonds, scan results, and connect commands. CLI shows [BLE]
+    and [Classic] labels. Classic connection state tracked via slots atomics.
+
+31. **Classic Inquiry scanning.** HCI Inquiry with interactive CLI UI
+    (same TUI as BLE scan). ExtendedInquiryResult name parsing. ScanStop
+    via select-based cancellation. Command-driven classic_bt_task: no
+    hardcoded address, auto-connects from stored bond or waits for RPC.
+
+32. **Reconnect on disconnect.** Classic task wraps connect→session in a
+    loop. On disconnect, resets HostResources, emits StateChanged(Disconnected),
+    waits 2s, then reconnects from stored bond or waits for command.
+
 ### Passthrough architecture
 
 The BT→USB report format is correct (confirmed via pcap comparison). The
@@ -330,6 +353,28 @@ Evidence:
 3. Full actuator forwarding: USB OUTPUT → BT SET_REPORT. Most correct but
    most complex (bidirectional HIDP, new L2CAP flow).
 
+### Remaining TODOs
+
+**Force click / actuator** (high priority for UX):
+1. Auto-ACK actuator: intercept macOS OUTPUT reports for actuator, respond
+   immediately. MT2 is already clicking autonomously, macOS just needs to
+   think its command succeeded.
+2. Feature report tweak: 0xDB compound properties may contain a force-touch
+   mode flag. If we indicate "trackpad-controlled clicks," macOS might fall
+   back to reading the button bit.
+3. Full actuator forwarding: USB OUTPUT → BT SET_REPORT. Most correct but
+   most complex (bidirectional HIDP, new L2CAP flow).
+
+**Windows PTP output**: Present as Precision Touchpad on Windows hosts.
+Separate USB descriptor + report format. Ploopy trackpad captures in
+`notes/magic-mouse/` for reference.
+
+**RPC integration gaps**:
+- Wire `UpdateBondProfile` to also check Classic bonds (currently BLE-only)
+- Wire `SetAutoConnect` to also check Classic bonds
+- Classic Inquiry: add RemoteNameRequest for discovered devices (names only
+  show for ExtendedInquiryResult currently, not standard InquiryResult)
+
 ### Reference captures
 
 - `notes/magic-mouse/mt2-capture.pcap` — Real MT2 over USB (macOS, Darwin format)
@@ -337,4 +382,6 @@ Evidence:
 - `notes/mt2-translation/capture.btsnoop` — MT2 over BT Classic on Linux (btmon).
   Shows full HIDP command sequence including GET_REPORT(0x90) polling that triggers
   multitouch activation. Includes 1/2/3-finger gesture data.
+- `notes/mt2-translation/cursor-diag.html` — Browser diagnostic for pointer
+  event timing analysis.
 
