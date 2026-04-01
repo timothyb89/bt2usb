@@ -478,9 +478,10 @@ pub fn encode_event_scan_result(
     name: &str,
     rssi: i8,
     is_hid: bool,
+    transport_type: u8,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(6)
+        e.array(7)
             .unwrap()
             .u8(EVT_SCAN_RESULT)
             .unwrap()
@@ -493,6 +494,8 @@ pub fn encode_event_scan_result(
             .i8(rssi)
             .unwrap()
             .bool(is_hid)
+            .unwrap()
+            .u8(transport_type)
             .unwrap();
     })
 }

@@ -535,6 +535,8 @@ pub enum Event {
         name: String,
         rssi: i8,
         is_hid: bool,
+        /// 0 = BLE, 1 = Classic BT
+        transport_type: u8,
     },
     ConnectionState {
         state: self::ConnectionState,
@@ -576,12 +578,14 @@ pub fn decode_event(cbor: &[u8]) -> Result<Event, String> {
             let name = d.str().map_err(|e| format!("name: {e}"))?.to_string();
             let rssi = d.i8().map_err(|e| format!("rssi: {e}"))?;
             let is_hid = d.bool().map_err(|e| format!("is_hid: {e}"))?;
+            let transport_type = d.u8().unwrap_or(0); // 0=BLE default for compat
             Ok(Event::ScanResult {
                 address,
                 addr_kind,
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             })
         }
         EVT_CONNECTION_STATE => {

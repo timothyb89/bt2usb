@@ -24,6 +24,7 @@ struct ScannedDevice {
     name: String,
     rssi: i8,
     is_hid: bool,
+    transport_type: u8, // 0=BLE, 1=Classic
 }
 
 /// Insert or update a device. Returns `true` if anything changed.
@@ -35,6 +36,7 @@ fn upsert_device(
     name: String,
     rssi: i8,
     is_hid: bool,
+    transport_type: u8,
 ) -> bool {
     if let Some(dev) = devices.get_mut(&address) {
         let mut changed = false;
@@ -61,6 +63,7 @@ fn upsert_device(
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             },
         );
         true
@@ -81,9 +84,19 @@ fn process_message(
             name,
             rssi,
             is_hid,
+            transport_type,
         }) = decode_event(&cbor)
         {
-            return upsert_device(devices, order, address, addr_kind, name, rssi, is_hid);
+            return upsert_device(
+                devices,
+                order,
+                address,
+                addr_kind,
+                name,
+                rssi,
+                is_hid,
+                transport_type,
+            );
         }
     }
     false
@@ -110,6 +123,7 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
             name,
             rssi,
             is_hid,
+            transport_type,
         } = evt
         {
             upsert_device(
@@ -120,6 +134,7 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             );
         }
     }
@@ -139,7 +154,8 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
         let addr = order[idx];
         let dev = &devices[&addr];
         let addr_str = format_address(&dev.address);
-        cmd_connect(transport, &addr_str, dev.addr_kind, profile, false)?;
+        let classic = dev.transport_type == 1;
+        cmd_connect(transport, &addr_str, dev.addr_kind, profile, classic)?;
     } else {
         println!(
             "Scan complete. {} device(s) found.",
@@ -379,15 +395,21 @@ fn render(
             } else {
                 String::new()
             };
+            let transport_tag = if dev.transport_type == 1 {
+                " [Classic]".cyan().to_string()
+            } else {
+                " [BLE]".dimmed().to_string()
+            };
 
             write!(
                 stdout,
-                "{CLR}  {:>2}  {}  {}  {} dBm{}\r\n",
+                "{CLR}  {:>2}  {}  {}  {} dBm{}{}\r\n",
                 num.to_string().bold(),
                 format_address(&dev.address).bold(),
                 name_display,
                 rssi_colored,
                 hid_tag,
+                transport_tag,
             )?;
             lines += 1;
         }
@@ -481,10 +503,11 @@ fn run_streaming(
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             }) = decode_event(&cbor)
             {
                 let is_new = !devices.contains_key(&address);
-                upsert_device(devices, order, address, addr_kind, name, rssi, is_hid);
+                upsert_device(devices, order, address, addr_kind, name, rssi, is_hid, transport_type);
                 if is_new {
                     print_device_line(&devices[&address]);
                 }
@@ -505,16 +528,22 @@ fn print_device_line(dev: &ScannedDevice) {
     } else {
         "     ".to_string()
     };
+    let transport_tag = if dev.transport_type == 1 {
+        "[Classic]".cyan().to_string()
+    } else {
+        "[BLE]".dimmed().to_string()
+    };
     let name = if dev.name.is_empty() {
         "(unknown)".to_string()
     } else {
         format!("\"{}\"", dev.name)
     };
     println!(
-        "  {}  {:30}  RSSI: {:4}  {}",
+        "  {}  {:30}  RSSI: {:4}  {} {}",
         format_address(&dev.address).bold(),
         name,
         dev.rssi,
-        hid_tag
+        hid_tag,
+        transport_tag,
     );
 }

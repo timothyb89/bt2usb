@@ -223,6 +223,7 @@ fn encode_ble_event(
                 name,
                 data.rssi,
                 data.is_hid,
+                data.transport_type,
             )
             .unwrap_or(0)
         }

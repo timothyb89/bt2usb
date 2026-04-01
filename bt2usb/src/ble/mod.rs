@@ -415,7 +415,9 @@ async fn classic_bt_task<C>(
             bt_hci::cmd::link_control::UserConfirmationRequestReply,
         > + bt_hci::controller::ControllerCmdSync<
             bt_classic_host::link_policy::WriteLinkPolicySettings,
-        > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>,
+        > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::Inquiry>
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::InquiryCancel>,
 {
     use core::cell::RefCell;
     use core::sync::atomic::Ordering;
@@ -456,7 +458,9 @@ async fn classic_bt_task<C>(
             .enable_io_capability_response(true)
             .enable_user_confirmation_request(true)
             .enable_simple_pairing_complete(true)
-            .enable_mode_change(true);
+            .enable_mode_change(true)
+            .enable_inquiry_complete(true)
+            .enable_inquiry_result(true);
 
         match controller.exec(&SetEventMask::new(mask)).await {
             Ok(_) => info!("[classic] Event mask updated with Classic events"),
@@ -504,8 +508,136 @@ async fn classic_bt_task<C>(
                         break addr;
                     }
                     ClassicCommand::Scan => {
-                        info!("[classic] Inquiry scan not yet implemented");
-                        crate::rpc_log::info("Classic scan not yet implemented");
+                        info!("[classic] Starting Inquiry scan...");
+                        crate::rpc_log::info("Classic Inquiry scan starting (~10s)...");
+
+                        // GIAC LAP = 0x9E8B33, duration 8 (10.24s), unlimited responses
+                        match controller
+                            .exec(&bt_hci::cmd::link_control::Inquiry::new(
+                                [0x33, 0x8B, 0x9E],
+                                8,
+                                0,
+                            ))
+                            .await
+                        {
+                            Ok(_) => {
+                                // Read Inquiry events until InquiryComplete
+                                let mut rx = [0u8; 259];
+                                let rx_ref = unsafe {
+                                    core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len())
+                                };
+                                loop {
+                                    match controller.read(rx_ref).await {
+                                        Ok(bt_hci::ControllerToHostPacket::Event(evt)) => {
+                                            match evt.kind {
+                                                bt_hci::event::EventKind::InquiryComplete => {
+                                                    info!("[classic] Inquiry complete");
+                                                    crate::rpc_log::info(
+                                                        "Classic Inquiry scan complete",
+                                                    );
+                                                    break;
+                                                }
+                                                bt_hci::event::EventKind::InquiryResult
+                                                | bt_hci::event::EventKind::InquiryResultWithRssi => {
+                                                    // Parse addresses from raw event data
+                                                    // data[0] = num_responses, then BD_ADDRs (6 bytes each)
+                                                    let data = evt.data;
+                                                    if !data.is_empty() {
+                                                        let n = data[0] as usize;
+                                                        for i in 0..n {
+                                                            let off = 1 + i * 6;
+                                                            if off + 6 <= data.len() {
+                                                                let mut addr = [0u8; 6];
+                                                                addr.copy_from_slice(&data[off..off + 6]);
+                                                                info!("[classic] Found: {:02x}", addr);
+                                                                let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                                                                    crate::ble_state::BleEvent::ScanResult(
+                                                                        crate::ble_state::ScanResultData {
+                                                                            address: addr,
+                                                                            addr_kind: 0,
+                                                                            name: [0u8; 32],
+                                                                            name_len: 0,
+                                                                            rssi: -127,
+                                                                            is_hid: true,
+                                                                            transport_type: 1,
+                                                                        },
+                                                                    ),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                bt_hci::event::EventKind::ExtendedInquiryResult => {
+                                                    // EIR: data[0]=num, data[1..7]=addr, data[7]=psrm,
+                                                    // data[8]=reserved, data[9..12]=cod, data[12..14]=clock,
+                                                    // data[14]=rssi, data[15..]=eir_data
+                                                    let data = evt.data;
+                                                    if data.len() >= 15 {
+                                                        let mut addr = [0u8; 6];
+                                                        addr.copy_from_slice(&data[1..7]);
+                                                        let rssi = data[14] as i8;
+                                                        // Parse EIR for device name
+                                                        let mut name = [0u8; 32];
+                                                        let mut name_len = 0u8;
+                                                        if data.len() > 15 {
+                                                            let eir = &data[15..];
+                                                            let mut pos = 0;
+                                                            while pos + 1 < eir.len() {
+                                                                let len = eir[pos] as usize;
+                                                                if len == 0 { break; }
+                                                                let ad_type = eir[pos + 1];
+                                                                if (ad_type == 0x08 || ad_type == 0x09) && len > 1 {
+                                                                    let n = (len - 1).min(name.len());
+                                                                    let end = (pos + 2 + n).min(eir.len());
+                                                                    let actual = end - (pos + 2);
+                                                                    name[..actual].copy_from_slice(&eir[pos + 2..end]);
+                                                                    name_len = actual as u8;
+                                                                }
+                                                                pos += 1 + len;
+                                                            }
+                                                        }
+                                                        info!(
+                                                            "[classic] Found: {:02x} rssi={} name_len={}",
+                                                            addr, rssi, name_len
+                                                        );
+                                                        let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                                                            crate::ble_state::BleEvent::ScanResult(
+                                                                crate::ble_state::ScanResultData {
+                                                                    address: addr,
+                                                                    addr_kind: 0,
+                                                                    name,
+                                                                    name_len,
+                                                                    rssi,
+                                                                    is_hid: true,
+                                                                    transport_type: 1,
+                                                                },
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                                _ => {
+                                                    debug!(
+                                                        "[classic] Inquiry: unhandled event {:?}",
+                                                        evt.kind
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        Ok(_) => {}
+                                        Err(_) => {
+                                            Timer::after_millis(10).await;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "[classic] Inquiry failed: {:?}",
+                                    defmt::Debug2Format(&e)
+                                );
+                                crate::rpc_log::error("Classic Inquiry failed");
+                            }
+                        }
                     }
                     ClassicCommand::ScanStop => {}
                 }
