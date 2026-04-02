@@ -16,7 +16,7 @@ use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
-use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
+use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
@@ -398,6 +398,36 @@ async fn usb_hid_handler_task_mt2(
     }
 }
 
+// ============ MT2 Actuator Task ============
+
+/// Reads actuator OUTPUT reports (Report ID 0x53) from macOS and auto-ACKs them.
+///
+/// macOS sends actuator commands when it detects sufficient force pressure in
+/// touch data. The MT2 over BT Classic handles haptics autonomously, so we just
+/// need to accept the commands — macOS then reads the button bit from subsequent
+/// touch reports to confirm the click.
+#[embassy_executor::task]
+async fn mt2_actuator_task(mut reader: HidReader<'static, Driver<'static, USB>, 64>) {
+    info!("[actuator] MT2 actuator reader task started");
+    let mut buf = [0u8; 64];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(n) if n > 0 => {
+                info!(
+                    "[actuator] Received {} bytes: report_id=0x{:02X}",
+                    n, buf[0]
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("[actuator] Read error: {:?}", e);
+                // USB disconnected/reset — wait briefly and retry
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
 // ============ Core 1 USB Initialization ============
 
 /// Build and start all USB tasks on Core 1.
@@ -540,6 +570,31 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         None
     };
 
+    // MT2 Actuator interface — only for macOS.
+    // Real MT2 Interface 2: accepts actuator OUTPUT reports (Report ID 0x53)
+    // from macOS for haptic feedback. Without this, macOS ignores the click bit.
+    static STATE_ACTUATOR: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
+    static ACTUATOR_HANDLER: StaticCell<crate::mt2::Mt2ActuatorRequestHandler> = StaticCell::new();
+    let actuator_reader = if is_macos {
+        let actuator_config = embassy_usb::class::hid::Config {
+            report_descriptor: crate::mt2::ACTUATOR_REPORT_DESC,
+            request_handler: Some(
+                ACTUATOR_HANDLER.init(crate::mt2::Mt2ActuatorRequestHandler::new()),
+            ),
+            poll_ms: 1,
+            max_packet_size: 64,
+        };
+        let actuator_hid = HidReaderWriter::<_, 64, 64>::new(
+            &mut builder,
+            STATE_ACTUATOR.init(embassy_usb::class::hid::State::new()),
+            actuator_config,
+        );
+        let (actuator_r, _actuator_w) = actuator_hid.split();
+        Some(actuator_r)
+    } else {
+        None
+    };
+
     // Vendor HID interface for RPC communication
     let rpc_config = embassy_usb::class::hid::Config {
         report_descriptor: VENDOR_RPC_REPORT_DESC,
@@ -581,6 +636,11 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             (None, None) => {
                 core::unreachable!("must have either MT2 or mouse interface");
             }
+        }
+
+        // Spawn actuator reader task (macOS only)
+        if let Some(act_reader) = actuator_reader {
+            spawner.spawn(mt2_actuator_task(act_reader)).unwrap();
         }
 
         spawner

@@ -324,9 +324,7 @@ async fn dispatch_request(
             if *transport_type == 1 {
                 // Classic BT connect
                 let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
-                    .try_send(crate::ble_state::ClassicCommand::Connect {
-                        address: *address,
-                    });
+                    .try_send(crate::ble_state::ClassicCommand::Connect { address: *address });
             } else {
                 // BLE connect
                 let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
@@ -357,8 +355,10 @@ async fn dispatch_request(
                 Ok(bonds) => {
                     // Convert heapless types to slices for encoding
                     #[allow(clippy::type_complexity)]
-                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str, bool, u8), 20> =
-                        heapless::Vec::new();
+                    let mut bond_refs: heapless::Vec<
+                        ([u8; 6], u8, u8, &str, bool, u8),
+                        20,
+                    > = heapless::Vec::new();
                     for (addr, kind, profile, name, auto_connect, transport) in &bonds {
                         let _ = bond_refs.push((
                             *addr,

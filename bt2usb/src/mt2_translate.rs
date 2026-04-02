@@ -50,10 +50,8 @@ fn decode_x(t: &[u8]) -> i16 {
 /// Y is stored (negated) across byte[1] bits 7-5, byte[2], byte[3] bits 1-0.
 /// (Byte[3] bits 7-6 are the state field — must not be confused with Y.)
 fn decode_y(t: &[u8]) -> i16 {
-    let neg_y_raw = ((t[1] >> 5) as u16)
-        | ((t[2] as u16) << 3)
-        | (((t[3] & 0x03) as u16) << 11); // bits 0-1 of byte 3 → Y bits 11-12
-    // Sign-extend from 13 bits and negate
+    let neg_y_raw = ((t[1] >> 5) as u16) | ((t[2] as u16) << 3) | (((t[3] & 0x03) as u16) << 11); // bits 0-1 of byte 3 → Y bits 11-12
+                                                                                                  // Sign-extend from 13 bits and negate
     -(((neg_y_raw << 3) as i16) >> 3)
 }
 
@@ -106,7 +104,11 @@ pub struct Mt2Passthrough {
     /// Ticks since last BT report received.
     idle_ticks: u16,
     /// Latched click state (sticky set, cleared after tick sends it).
+    /// Catches brief clicks that might arrive and release between ticks.
     click_latched: bool,
+    /// Last known BT click state. Sustains held clicks between BT reports
+    /// (BT arrives ~11ms, USB ticks ~4ms — without this, held clicks flicker).
+    last_bt_click: bool,
 
     // --- Interpolation state ---
     /// Number of fingers in the current report.
@@ -144,6 +146,7 @@ impl Mt2Passthrough {
             active: false,
             idle_ticks: 0,
             click_latched: false,
+            last_bt_click: false,
             n_fingers: 0,
             finger_ids: [0; MAX_FINGERS],
             cur_x: [0; MAX_FINGERS],
@@ -173,12 +176,18 @@ impl Mt2Passthrough {
         let usb_touch_bytes = n_points * 9;
         let usb_len = 12 + usb_touch_bytes;
 
-        // Latch click bit (sticky — cleared only after tick sends it)
-        if bt_data[1] & 0x01 != 0 {
+        // Track BT click state: last_bt_click holds the sustained state,
+        // click_latched catches brief clicks that release before tick() runs.
+        let bt_click = bt_data[1] & 0x01 != 0;
+        self.last_bt_click = bt_click;
+        if bt_click {
             self.click_latched = true;
         }
 
-        // Build USB header (12 bytes)
+        // Build USB header (12 bytes).
+        // Values match real MT2 USB capture (capture_mt2_raw.txt):
+        //   r[7] = 0x01 when touch present (real MT2), not 0x03
+        //   r[11] = 0x88 (real MT2 constant), not 0xe6
         let r = &mut self.report;
         r[0] = 0x02;
         r[1] = 0x00; // Click patched in tick()
@@ -187,11 +196,11 @@ impl Mt2Passthrough {
         r[4] = 0x00;
         r[5] = 0x00;
         r[6] = 0x00;
-        r[7] = if n_points > 0 { 0x03 } else { 0x00 };
+        r[7] = if n_points > 0 { 0x01 } else { 0x00 };
         r[8] = 0x31;
         r[9] = 0x00; // Timestamp patched in tick()
         r[10] = 0x00;
-        r[11] = 0xe6;
+        r[11] = 0x88;
 
         // Copy touch data (encoding identical BT↔USB)
         r[12..12 + usb_touch_bytes].copy_from_slice(&bt_data[4..4 + usb_touch_bytes]);
@@ -203,8 +212,7 @@ impl Mt2Passthrough {
         // Smoothing prevents wild swings from variable dt values.
         if self.ticks_since_bt > 0 && self.has_prev {
             let measured = self.ticks_since_bt.clamp(MIN_BT_INTERVAL, MAX_BT_INTERVAL);
-            self.bt_interval =
-                ((3 * self.bt_interval as u32 + measured as u32) / 4).max(1) as u16;
+            self.bt_interval = ((3 * self.bt_interval as u32 + measured as u32) / 4).max(1) as u16;
         }
 
         // Check if we can interpolate (same finger count + matching IDs)
@@ -246,8 +254,16 @@ impl Mt2Passthrough {
         // Diagnostic: log BT arrival timing (first 50 per session, then every 100th)
         self.diag_bt_count += 1;
         if self.diag_bt_count <= 50 || self.diag_bt_count.is_multiple_of(100) {
-            let x0 = if n_points > 0 { decode_x(&bt_data[4..13]) } else { 0 };
-            let y0 = if n_points > 0 { decode_y(&bt_data[4..13]) } else { 0 };
+            let x0 = if n_points > 0 {
+                decode_x(&bt_data[4..13])
+            } else {
+                0
+            };
+            let y0 = if n_points > 0 {
+                decode_y(&bt_data[4..13])
+            } else {
+                0
+            };
             defmt::debug!(
                 "[mt2] BT #{} dt={} est={} n={} x={} y={} interp={}",
                 self.diag_bt_count,
@@ -309,8 +325,12 @@ impl Mt2Passthrough {
             }
         }
 
-        // Patch click bit from latch
-        self.report[1] = if self.click_latched { 0x01 } else { 0x00 };
+        // Patch click bit: latch catches brief clicks, last_bt_click sustains held ones
+        self.report[1] = if self.click_latched || self.last_bt_click {
+            0x01
+        } else {
+            0x00
+        };
         self.click_latched = false;
 
         // Patch timestamp

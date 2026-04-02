@@ -130,7 +130,11 @@ fn build_time_forced_os() -> Option<scratch::DetectedOs> {
     return Some(scratch::DetectedOs::Windows);
     #[cfg(feature = "force-linux")]
     return Some(scratch::DetectedOs::Linux);
-    #[cfg(not(any(feature = "force-macos", feature = "force-windows", feature = "force-linux")))]
+    #[cfg(not(any(
+        feature = "force-macos",
+        feature = "force-windows",
+        feature = "force-linux"
+    )))]
     None
 }
 
@@ -168,7 +172,10 @@ fn main() -> ! {
         // just like the normal probe flow. This gives the USB host (especially
         // VMs) a clean "device appeared" event that it can properly enumerate.
         if boot_state.phase == scratch::BootPhase::Probe {
-            info!("[core0] Build-time forced OS={}, writing scratch + reset", os);
+            info!(
+                "[core0] Build-time forced OS={}, writing scratch + reset",
+                os
+            );
             scratch::write_probe_result(os);
             system_reset();
         }

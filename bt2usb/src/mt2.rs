@@ -140,6 +140,9 @@ pub struct Mt2TrackpadRequestHandler {
     /// Last data written via SET Feature(0x01). The driver uses this to select
     /// which sub-report to read. GET Feature(0x01) echoes it back.
     feature_01_data: [u8; 4],
+    /// Feature 0x99 data (2 bytes). macOS reads this after querying its length
+    /// via the Feature(0x01) selector, and may SET it during initialization.
+    feature_99_data: [u8; 2],
 }
 
 impl Mt2TrackpadRequestHandler {
@@ -149,6 +152,7 @@ impl Mt2TrackpadRequestHandler {
             // Real device returns [0x01, 0x99, 0x00, 0x02, 0x00] for GET Feature(0x01)
             // where 0x99 = report count(?), 0x00 = padding, 0x02 = MT report ID, 0x00 = high
             feature_01_data: [0x99, 0x00, 0x02, 0x00],
+            feature_99_data: [0x00, 0x00],
         }
     }
 }
@@ -163,6 +167,7 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
                 write_feature(buf, 0x02, &[if enabled { 0x01 } else { 0x00 }])
             }
             ReportId::Feature(0xDB) => write_feature(buf, 0xDB, FEATURE_DB_IF1),
+            ReportId::Feature(0x99) => write_feature(buf, 0x99, &self.feature_99_data),
             _ => {
                 // Accept any unknown GET with a STALL (matching real MT2 behavior)
                 debug!("MT2 trackpad: GET {:?} -> not handled", id);
@@ -190,9 +195,11 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
                 // TopCase reads bytes 3-4 as LE uint16 and adds 1 for wLength.
                 if data.len() >= 2 && data[0] == 0x01 {
                     let sub_id = data[1];
-                    // Only 0xDB (compound properties) is ever fetched in practice
                     let data_len: u16 = match sub_id {
                         0xDB => FEATURE_DB_IF1.len() as u16,
+                        // Sub-report 0x99: 2-byte config. Real MT2 defaults to this.
+                        // macOS errors with OVERRUN if we report 0 here.
+                        0x99 => 2,
                         _ => 0,
                     };
                     self.feature_01_data = [
@@ -224,6 +231,17 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
                 }
                 OutResponse::Accepted
             }
+            ReportId::Feature(0x99) => {
+                let copy_len = data.len().min(self.feature_99_data.len());
+                self.feature_99_data[..copy_len].copy_from_slice(&data[..copy_len]);
+                info!(
+                    "MT2 trackpad: SET Feature(0x99) ({} bytes): [{:02X} {:02X}]",
+                    data.len(),
+                    if !data.is_empty() { data[0] } else { 0 },
+                    if data.len() > 1 { data[1] } else { 0 },
+                );
+                OutResponse::Accepted
+            }
             _ => {
                 info!(
                     "MT2 trackpad: SET {:?} ({} bytes) -> accepted",
@@ -233,6 +251,120 @@ impl RequestHandler for Mt2TrackpadRequestHandler {
                 OutResponse::Accepted
             }
         }
+    }
+
+    fn set_idle_ms(&mut self, _id: Option<ReportId>, _dur: u32) {}
+    fn get_idle_ms(&mut self, _id: Option<ReportId>) -> Option<u32> {
+        None
+    }
+}
+
+// ============ Actuator Interface (real MT2 Interface 2) ============
+
+/// HID report descriptor for the actuator interface — byte-for-byte match
+/// of the real MT2's Interface 2 (Usage Page 0xFF00, Usage 0x0D).
+///
+/// Contains:
+///   Input: Report ID 0x3F, 15 bytes (haptic status)
+///   Output: Report ID 0x53, 63 bytes (actuator commands from host)
+///
+/// macOS sends actuator commands (Report ID 0x53) on this interface when it
+/// detects sufficient force pressure in touch data. Without this interface,
+/// macOS cannot send actuator commands and ignores the click button bit.
+pub const ACTUATOR_REPORT_DESC: &[u8] = &[
+    0x06, 0x00, 0xFF, // Usage Page (Vendor 0xFF00)
+    0x09, 0x0D, // Usage (0x0D)
+    0xA1, 0x01, // Collection (Application)
+    0x06, 0x00, 0xFF, //   Usage Page (Vendor 0xFF00)
+    0x09, 0x0D, //   Usage (0x0D)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x26, 0xFF, 0x00, //   Logical Maximum (255)
+    0x75, 0x08, //   Report Size (8)
+    0x85, 0x3F, //   Report ID (0x3F)
+    0x96, 0x0F, 0x00, //   Report Count (15)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+    0x09, 0x0D, //   Usage (0x0D)
+    0x85, 0x53, //   Report ID (0x53)
+    0x96, 0x3F, 0x00, //   Report Count (63)
+    0x91, 0x02, //   Output (Data, Variable, Absolute)
+    0xC0, // End Collection
+];
+
+/// Request handler for the actuator interface.
+///
+/// Stores SET Feature data and echoes it back on GET, so macOS can verify
+/// its actuator configuration took effect. Logs all data for diagnostics.
+pub struct Mt2ActuatorRequestHandler {
+    /// Stored feature data: up to 4 features × 16 bytes each.
+    /// Index by (report_id - 0x21). Features 0x21, 0x22, 0x23 = indices 0, 1, 2.
+    features: [[u8; 16]; 4],
+    feature_lens: [u8; 4],
+}
+
+impl Mt2ActuatorRequestHandler {
+    pub const fn new() -> Self {
+        Self {
+            features: [[0; 16]; 4],
+            feature_lens: [0; 4],
+        }
+    }
+
+    fn feature_idx(id: u8) -> Option<usize> {
+        if (0x21..=0x24).contains(&id) {
+            Some((id - 0x21) as usize)
+        } else {
+            None
+        }
+    }
+}
+
+impl RequestHandler for Mt2ActuatorRequestHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(rid) => {
+                if let Some(idx) = Self::feature_idx(rid) {
+                    let len = self.feature_lens[idx] as usize;
+                    if len > 0 {
+                        let n = write_feature(buf, rid, &self.features[idx][..len]);
+                        info!("MT2 actuator: GET Feature(0x{:02X}) -> {} bytes", rid, n);
+                        return Some(n);
+                    }
+                }
+                debug!("MT2 actuator: GET Feature(0x{:02X}) -> not handled", rid);
+                None
+            }
+            _ => {
+                debug!("MT2 actuator: GET {:?} -> not handled", id);
+                None
+            }
+        }
+    }
+
+    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
+        match id {
+            ReportId::Feature(rid) => {
+                // Log all data bytes for diagnostics
+                info!(
+                    "MT2 actuator: SET Feature(0x{:02X}) {} bytes: [{}]",
+                    rid,
+                    data.len(),
+                    data
+                );
+                // Store for echo-back on GET
+                if let Some(idx) = Self::feature_idx(rid) {
+                    let copy_len = data.len().min(16);
+                    self.features[idx][..copy_len].copy_from_slice(&data[..copy_len]);
+                    self.feature_lens[idx] = copy_len as u8;
+                }
+            }
+            ReportId::Out(rid) => {
+                info!("MT2 actuator: SET Out(0x{:02X}) {} bytes", rid, data.len());
+            }
+            _ => {
+                info!("MT2 actuator: SET {:?} ({} bytes)", id, data.len());
+            }
+        }
+        OutResponse::Accepted
     }
 
     fn set_idle_ms(&mut self, _id: Option<ReportId>, _dur: u32) {}
@@ -301,24 +433,27 @@ const REPLANT_REPORTS: u8 = 4;
 
 // Template touch reports captured from a real MT2 scroll gesture.
 // Used as byte-exact templates — only Y coordinates and timestamps are patched.
+// Template header values corrected to match real MT2 USB capture:
+//   byte[7] = 0x01 when touches present (not 0x03)
+//   byte[11] = 0x88 (not 0xe6)
 const TEMPLATE_NONE: [u8; 30] = [
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x5c, 0x29, 0xe6, 0x9b, 0x5b, 0xb6, 0x23,
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x31, 0x5c, 0x29, 0x88, 0x9b, 0x5b, 0xb6, 0x23,
     0x53, 0x7e, 0x18, 0x0d, 0x25, 0xbe, 0xff, 0xc7, 0x23, 0x6c, 0x87, 0x12, 0x0d, 0x28,
 ];
 const TEMPLATE_APPROACH: [u8; 30] = [
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0xb4, 0x29, 0xe6, 0xa5, 0x5b, 0xbb, 0x6b,
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x31, 0xb4, 0x29, 0x88, 0xa5, 0x5b, 0xbb, 0x6b,
     0x5a, 0x83, 0x1a, 0x10, 0x85, 0xc2, 0x3f, 0xcf, 0x6f, 0x6e, 0x87, 0x15, 0x0e, 0x88,
 ];
 const TEMPLATE_TOUCH: [u8; 30] = [
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x31, 0x0c, 0x2a, 0xe6, 0xaf, 0xdb, 0xc0, 0x8b,
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x31, 0x0c, 0x2a, 0x88, 0xaf, 0xdb, 0xc0, 0x8b,
     0x62, 0x89, 0x1b, 0x15, 0x85, 0xda, 0xff, 0xd6, 0x8f, 0x75, 0x80, 0x16, 0x12, 0x08,
 ];
 // Release template: both fingers in RELEASE state (0xC0) with fading attributes,
-// then byte7=0x03 (both still present). Uses same X positions as TEMPLATE_TOUCH
+// then byte7=0x01 (touches still present). Uses same X positions as TEMPLATE_TOUCH
 // to avoid position jumps. Touch attributes are small (fading contact).
 const TEMPLATE_RELEASE: [u8; 30] = [
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, // header: byte7=0x03 (both fingers)
-    0x31, 0x00, 0x00, 0xe6, // marker, timestamp (patched), constant
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // header: byte7=0x01 (touches present)
+    0x31, 0x00, 0x00, 0x88, // marker, timestamp (patched), constant
     // Finger 0: same X as TEMPLATE_TOUCH, Y=0, state=0xC0 (releasing), small attrs
     0xaf, 0xdb, 0x00, 0xc0, 0x40, 0x50, 0x10, 0x03, 0x85,
     // Finger 1: same X as TEMPLATE_TOUCH, Y=0, state=0xC0 (releasing), small attrs
@@ -327,7 +462,7 @@ const TEMPLATE_RELEASE: [u8; 30] = [
 // Final "gone" template: both fingers NONE state, zero attributes.
 const TEMPLATE_GONE: [u8; 30] = [
     0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // header: byte7=0x00 (no fingers)
-    0x31, 0x00, 0x00, 0xe6, // Finger 0: state=0x00, zero attrs
+    0x31, 0x00, 0x00, 0x88, // Finger 0: state=0x00, zero attrs
     0xaf, 0xdb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x85,
     // Finger 1: state=0x00, zero attrs
     0xda, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
