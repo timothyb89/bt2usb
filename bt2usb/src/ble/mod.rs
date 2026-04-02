@@ -321,11 +321,7 @@ pub async fn core0_ble_main(
                         connection_slot_task(2, &stack, flash_mutex, &active_device_pref),
                     ),
                     // Classic BT task — connects to MT2 etc.
-                    classic_bt_task(
-                        &classic_controller,
-                        flash_mutex,
-                        &loaded_classic_bonds,
-                    ),
+                    classic_bt_task(&classic_controller, flash_mutex, &loaded_classic_bonds),
                 ),
             ),
         ),
@@ -413,9 +409,8 @@ async fn classic_bt_task<C>(
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::IoCapabilityRequestReply>
         + bt_hci::controller::ControllerCmdSync<
             bt_hci::cmd::link_control::UserConfirmationRequestReply,
-        > + bt_hci::controller::ControllerCmdSync<
-            bt_classic_host::link_policy::WriteLinkPolicySettings,
-        > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>
+        > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::WriteLinkPolicySettings>
+        + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::Inquiry>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::InquiryCancel>,
 {
@@ -483,81 +478,83 @@ async fn classic_bt_task<C>(
 
     // --- Main Classic connection loop (reconnects on disconnect) ---
     loop {
-    resources.reset();
-    let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
+        resources.reset();
+        let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
 
-    // --- Resolve target address: auto-connect bond, or wait for command ---
-    let target_addr = {
-        use crate::ble_state::{ClassicCommand, CLASSIC_CMD_CHANNEL};
+        // --- Resolve target address: auto-connect bond, or wait for command ---
+        let target_addr = {
+            use crate::ble_state::{ClassicCommand, CLASSIC_CMD_CHANNEL};
 
-        // Check for auto-connect Classic bond
-        let auto_bond = loaded_classic_bonds.iter().find(|b| b.auto_connect);
+            // Check for auto-connect Classic bond
+            let auto_bond = loaded_classic_bonds.iter().find(|b| b.auto_connect);
 
-        if let Some(bond) = auto_bond {
-            let addr = bt_hci::param::BdAddr::new(bond.addr);
-            info!(
-                "[classic] Auto-connecting to bonded device: {:?} (profile: {:?})",
-                addr,
-                DeviceProfile::from_id(bond.profile_id)
-            );
-            addr
-        } else {
-            // No auto-connect bond — wait for a Connect command from RPC
-            info!("[classic] No auto-connect Classic bond. Waiting for connect command...");
-            loop {
-                match CLASSIC_CMD_CHANNEL.receive().await {
-                    ClassicCommand::Connect { address } => {
-                        let addr = bt_hci::param::BdAddr::new(address);
-                        info!("[classic] Connect command received for {:?}", addr);
-                        break addr;
-                    }
-                    ClassicCommand::Scan => {
-                        info!("[classic] Starting Inquiry scan...");
-                        crate::rpc_log::info("Classic Inquiry scan starting (~10s)...");
+            if let Some(bond) = auto_bond {
+                let addr = bt_hci::param::BdAddr::new(bond.addr);
+                info!(
+                    "[classic] Auto-connecting to bonded device: {:?} (profile: {:?})",
+                    addr,
+                    DeviceProfile::from_id(bond.profile_id)
+                );
+                addr
+            } else {
+                // No auto-connect bond — wait for a Connect command from RPC
+                info!("[classic] No auto-connect Classic bond. Waiting for connect command...");
+                loop {
+                    match CLASSIC_CMD_CHANNEL.receive().await {
+                        ClassicCommand::Connect { address } => {
+                            let addr = bt_hci::param::BdAddr::new(address);
+                            info!("[classic] Connect command received for {:?}", addr);
+                            break addr;
+                        }
+                        ClassicCommand::Scan => {
+                            info!("[classic] Starting Inquiry scan...");
+                            crate::rpc_log::info("Classic Inquiry scan starting (~10s)...");
 
-                        // GIAC LAP = 0x9E8B33, duration 8 (10.24s), unlimited responses
-                        match controller
-                            .exec(&bt_hci::cmd::link_control::Inquiry::new(
-                                [0x33, 0x8B, 0x9E],
-                                8,
-                                0,
-                            ))
-                            .await
-                        {
-                            Ok(_) => {
-                                // Read Inquiry events until InquiryComplete or ScanStop
-                                let mut rx = [0u8; 259];
-                                let rx_ref = unsafe {
-                                    core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len())
-                                };
-                                let mut inquiry_done = false;
-                                while !inquiry_done {
-                                    use embassy_futures::select::{select, Either};
-                                    match select(
-                                        controller.read(rx_ref),
-                                        CLASSIC_CMD_CHANNEL.receive(),
-                                    )
-                                    .await
-                                    {
-                                        Either::Second(ClassicCommand::ScanStop) => {
-                                            info!("[classic] Inquiry cancelled by user");
-                                            let _ = controller
+                            // GIAC LAP = 0x9E8B33, duration 8 (10.24s), unlimited responses
+                            match controller
+                                .exec(&bt_hci::cmd::link_control::Inquiry::new(
+                                    [0x33, 0x8B, 0x9E],
+                                    8,
+                                    0,
+                                ))
+                                .await
+                            {
+                                Ok(_) => {
+                                    // Read Inquiry events until InquiryComplete or ScanStop
+                                    let mut rx = [0u8; 259];
+                                    let rx_ref = unsafe {
+                                        core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len())
+                                    };
+                                    let mut inquiry_done = false;
+                                    while !inquiry_done {
+                                        use embassy_futures::select::{select, Either};
+                                        match select(
+                                            controller.read(rx_ref),
+                                            CLASSIC_CMD_CHANNEL.receive(),
+                                        )
+                                        .await
+                                        {
+                                            Either::Second(ClassicCommand::ScanStop) => {
+                                                info!("[classic] Inquiry cancelled by user");
+                                                let _ = controller
                                                 .exec(
                                                     &bt_hci::cmd::link_control::InquiryCancel::new(),
                                                 )
                                                 .await;
-                                            crate::rpc_log::info("Classic Inquiry cancelled");
-                                            inquiry_done = true;
-                                        }
-                                        Either::Second(cmd) => {
-                                            // Non-stop command during inquiry — will be
-                                            // handled after inquiry completes. Re-send it.
-                                            let _ = CLASSIC_CMD_CHANNEL.try_send(cmd);
-                                        }
-                                        Either::First(read_result) => {
-                                        match read_result {
-                                        Ok(bt_hci::ControllerToHostPacket::Event(evt)) => {
-                                            match evt.kind {
+                                                crate::rpc_log::info("Classic Inquiry cancelled");
+                                                inquiry_done = true;
+                                            }
+                                            Either::Second(cmd) => {
+                                                // Non-stop command during inquiry — will be
+                                                // handled after inquiry completes. Re-send it.
+                                                let _ = CLASSIC_CMD_CHANNEL.try_send(cmd);
+                                            }
+                                            Either::First(read_result) => {
+                                                match read_result {
+                                                    Ok(bt_hci::ControllerToHostPacket::Event(
+                                                        evt,
+                                                    )) => {
+                                                        match evt.kind {
                                                 bt_hci::event::EventKind::InquiryComplete => {
                                                     info!("[classic] Inquiry complete");
                                                     crate::rpc_log::info(
@@ -650,318 +647,317 @@ async fn classic_bt_task<C>(
                                                     );
                                                 }
                                             }
-                                        }
-                                        Ok(_) => {}
-                                        Err(_) => {
-                                            Timer::after_millis(10).await;
-                                        }
-                                        } // match read_result
-                                        } // Either::First
-                                    } // match select
-                                } // while !inquiry_done
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "[classic] Inquiry failed: {:?}",
-                                    defmt::Debug2Format(&e)
-                                );
-                                crate::rpc_log::error("Classic Inquiry failed");
+                                                    }
+                                                    Ok(_) => {}
+                                                    Err(_) => {
+                                                        Timer::after_millis(10).await;
+                                                    }
+                                                } // match read_result
+                                            } // Either::First
+                                        } // match select
+                                    } // while !inquiry_done
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "[classic] Inquiry failed: {:?}",
+                                        defmt::Debug2Format(&e)
+                                    );
+                                    crate::rpc_log::error("Classic Inquiry failed");
+                                }
                             }
                         }
+                        ClassicCommand::ScanStop => {}
                     }
-                    ClassicCommand::ScanStop => {}
                 }
             }
-        }
-    };
+        };
 
-    // --- Connect with retry ---
-    // The remote device may still think it's connected from a previous session
-    // (link supervision timeout not yet expired). Retry a few times with delays.
-    let handle = {
-        const MAX_RETRIES: u8 = 5;
-        let mut attempt = 0u8;
-        loop {
-            attempt += 1;
-            info!(
-                "[classic] Connecting (attempt {}/{})",
-                attempt, MAX_RETRIES
-            );
-            let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
-                crate::ble_state::BleEvent::StateChanged(
-                    crate::protocol::ConnectionState::Connecting,
-                ),
-            );
-            match runner.connect(&target_addr).await {
-                Ok(h) => {
-                    info!("[classic] Connected and encrypted! Handle={}", h.raw());
-                    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
-                        crate::ble_state::BleEvent::PairingComplete,
-                    );
-                    break h;
-                }
-                Err(e) => {
-                    warn!(
-                        "[classic] Connection attempt {} failed: {:?}",
-                        attempt,
-                        defmt::Debug2Format(&e)
-                    );
-                    if attempt >= MAX_RETRIES {
-                        error!("[classic] All {} attempts failed, idling", MAX_RETRIES);
-                        loop {
-                            Timer::after_secs(3600).await;
+        // --- Connect with retry ---
+        // The remote device may still think it's connected from a previous session
+        // (link supervision timeout not yet expired). Retry a few times with delays.
+        let handle = {
+            const MAX_RETRIES: u8 = 5;
+            let mut attempt = 0u8;
+            loop {
+                attempt += 1;
+                info!("[classic] Connecting (attempt {}/{})", attempt, MAX_RETRIES);
+                let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                    crate::ble_state::BleEvent::StateChanged(
+                        crate::protocol::ConnectionState::Connecting,
+                    ),
+                );
+                match runner.connect(&target_addr).await {
+                    Ok(h) => {
+                        info!("[classic] Connected and encrypted! Handle={}", h.raw());
+                        let _ = crate::ble_state::BLE_EVENT_CHANNEL
+                            .try_send(crate::ble_state::BleEvent::PairingComplete);
+                        break h;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[classic] Connection attempt {} failed: {:?}",
+                            attempt,
+                            defmt::Debug2Format(&e)
+                        );
+                        if attempt >= MAX_RETRIES {
+                            error!("[classic] All {} attempts failed, idling", MAX_RETRIES);
+                            loop {
+                                Timer::after_secs(3600).await;
+                            }
                         }
+                        Timer::after_secs(5).await;
                     }
-                    Timer::after_secs(5).await;
                 }
             }
-        }
-    };
-
-    // --- Mark Classic device as connected for status reporting ---
-    let classic_profile_id = DeviceProfile::MagicTrackpad.to_id();
-    slots::set_classic_connected(
-        target_addr.raw().try_into().unwrap_or(&[0u8; 6]),
-        classic_profile_id,
-    );
-
-    // --- Persist link key to flash after successful connect ---
-    {
-        let key_info = {
-            use bt_classic_host::LinkKeyStore;
-            link_keys.borrow().load(&target_addr)
-        };
-        if let Some(ki) = key_info {
-            let mut f = flash_mutex.lock().await;
-            let addr_bytes: &[u8; 6] = target_addr.raw().try_into().unwrap_or(&[0u8; 6]);
-            match bonding::store_classic_bond(
-                &mut f,
-                addr_bytes,
-                &ki.key,
-                ki.key_type,
-                classic_profile_id,
-                true, // auto_connect on first pairing
-            )
-            .await
-            {
-                Ok(slot) => {
-                    info!("[classic] Bond persisted to flash slot {}", slot);
-                    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
-                        crate::ble_state::BleEvent::BondStored {
-                            address: *addr_bytes,
-                            profile_id: classic_profile_id,
-                        },
-                    );
-                }
-                Err(_) => warn!("[classic] Failed to persist bond to flash"),
-            }
-        }
-    }
-
-    // --- Configure sniff mode for steady report delivery ---
-    // Without sniff, BT Classic delivers HID reports in bursts (3-5 reports
-    // per burst, 32-44ms gaps). Sniff mode forces regular polling at ~91Hz
-    // (11.25ms interval), matching the real MT2's native USB report rate.
-    {
-        use bt_classic_host::link_policy::{
-            SniffMode, WriteLinkPolicySettings, LINK_POLICY_ENABLE_SNIFF,
         };
 
-        // Enable sniff mode in link policy
-        match controller
-            .exec(&WriteLinkPolicySettings::new(handle, LINK_POLICY_ENABLE_SNIFF))
-            .await
-        {
-            Ok(_) => info!("[classic] Link policy: sniff enabled"),
-            Err(e) => warn!(
-                "[classic] Failed to set link policy: {:?}",
-                defmt::Debug2Format(&e)
-            ),
-        }
-
-        // Request sniff mode: ~91Hz (11.25ms = 18 slots of 0.625ms)
-        // sniff_attempt=4: listen for 4 slots per sniff interval
-        // sniff_timeout=1: minimal extra window after receiving
-        match controller
-            .exec(&SniffMode::new(handle, 18, 18, 4, 1))
-            .await
-        {
-            Ok(_) => info!("[classic] Sniff mode requested (interval=18 slots / 11.25ms)"),
-            Err(e) => warn!(
-                "[classic] Failed to request sniff mode: {:?}",
-                defmt::Debug2Format(&e)
-            ),
-        }
-    }
-
-    // --- Open L2CAP HID channels ---
-    let mut l2cap = L2capState::<4>::new(handle);
-    let mut hid = HidClient::new();
-
-    info!("[classic] Opening HID L2CAP channels...");
-    if let Err(e) = hid.open_channels(&mut l2cap, controller).await {
-        error!(
-            "[classic] Failed to open HID channels: {:?}",
-            defmt::Debug2Format(&e)
+        // --- Mark Classic device as connected for status reporting ---
+        let classic_profile_id = DeviceProfile::MagicTrackpad.to_id();
+        slots::set_classic_connected(
+            target_addr.raw().try_into().unwrap_or(&[0u8; 6]),
+            classic_profile_id,
         );
-        loop {
-            Timer::after_secs(3600).await;
-        }
-    }
 
-    // --- Run L2CAP event loop until HID channels are open ---
-    info!("[classic] Waiting for HID channels to open...");
-    let mut acl_buf = [0u8; 512];
-    let mut attempts = 0u16;
-    while !hid.is_ready(&l2cap) {
-        let mut rx = [0u8; 259];
-        let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
-        match controller.read(rx_ref).await {
-            Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
-                // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
-                let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
-                let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
-                let acl_data = &rx[5..5 + data_len.min(rx.len() - 5)];
-
-                if let Err(e) = l2cap
-                    .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
-                    .await
+        // --- Persist link key to flash after successful connect ---
+        {
+            let key_info = {
+                use bt_classic_host::LinkKeyStore;
+                link_keys.borrow().load(&target_addr)
+            };
+            if let Some(ki) = key_info {
+                let mut f = flash_mutex.lock().await;
+                let addr_bytes: &[u8; 6] = target_addr.raw().try_into().unwrap_or(&[0u8; 6]);
+                match bonding::store_classic_bond(
+                    &mut f,
+                    addr_bytes,
+                    &ki.key,
+                    ki.key_type,
+                    classic_profile_id,
+                    true, // auto_connect on first pairing
+                )
+                .await
                 {
-                    warn!(
-                        "[classic] L2CAP error during setup: {:?}",
-                        defmt::Debug2Format(&e)
-                    );
+                    Ok(slot) => {
+                        info!("[classic] Bond persisted to flash slot {}", slot);
+                        let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                            crate::ble_state::BleEvent::BondStored {
+                                address: *addr_bytes,
+                                profile_id: classic_profile_id,
+                            },
+                        );
+                    }
+                    Err(_) => warn!("[classic] Failed to persist bond to flash"),
                 }
             }
-            Ok(_) => {} // Ignore non-ACL during channel setup
-            Err(_) => {
-                Timer::after_millis(10).await;
+        }
+
+        // --- Configure sniff mode for steady report delivery ---
+        // Without sniff, BT Classic delivers HID reports in bursts (3-5 reports
+        // per burst, 32-44ms gaps). Sniff mode forces regular polling at ~91Hz
+        // (11.25ms interval), matching the real MT2's native USB report rate.
+        {
+            use bt_classic_host::link_policy::{
+                SniffMode, WriteLinkPolicySettings, LINK_POLICY_ENABLE_SNIFF,
+            };
+
+            // Enable sniff mode in link policy
+            match controller
+                .exec(&WriteLinkPolicySettings::new(
+                    handle,
+                    LINK_POLICY_ENABLE_SNIFF,
+                ))
+                .await
+            {
+                Ok(_) => info!("[classic] Link policy: sniff enabled"),
+                Err(e) => warn!(
+                    "[classic] Failed to set link policy: {:?}",
+                    defmt::Debug2Format(&e)
+                ),
+            }
+
+            // Request sniff mode: ~91Hz (11.25ms = 18 slots of 0.625ms)
+            // sniff_attempt=4: listen for 4 slots per sniff interval
+            // sniff_timeout=1: minimal extra window after receiving
+            match controller.exec(&SniffMode::new(handle, 18, 18, 4, 1)).await {
+                Ok(_) => info!("[classic] Sniff mode requested (interval=18 slots / 11.25ms)"),
+                Err(e) => warn!(
+                    "[classic] Failed to request sniff mode: {:?}",
+                    defmt::Debug2Format(&e)
+                ),
             }
         }
-        attempts += 1;
-        if attempts > 5000 {
-            error!("[classic] Timeout waiting for HID channels");
+
+        // --- Open L2CAP HID channels ---
+        let mut l2cap = L2capState::<4>::new(handle);
+        let mut hid = HidClient::new();
+
+        info!("[classic] Opening HID L2CAP channels...");
+        if let Err(e) = hid.open_channels(&mut l2cap, controller).await {
+            error!(
+                "[classic] Failed to open HID channels: {:?}",
+                defmt::Debug2Format(&e)
+            );
             loop {
                 Timer::after_secs(3600).await;
             }
         }
-    }
 
-    info!("[classic] HID channels open! Activating multitouch...");
+        // --- Run L2CAP event loop until HID channels are open ---
+        info!("[classic] Waiting for HID channels to open...");
+        let mut acl_buf = [0u8; 512];
+        let mut attempts = 0u16;
+        while !hid.is_ready(&l2cap) {
+            let mut rx = [0u8; 259];
+            let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
+            match controller.read(rx_ref).await {
+                Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
+                    // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
+                    let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
+                    let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
+                    let acl_data = &rx[5..5 + data_len.min(rx.len() - 5)];
 
-    // --- Activate Magic Trackpad 2 multitouch ---
-    // BT Classic MT enable: SET_REPORT(Feature, report_id=0xF1, data={0x02, 0x01})
-    // Matches the Linux kernel's magicmouse_bt_enable() exactly.
-    if let Err(e) = hid
-        .set_report(&l2cap, controller, ReportType::Feature, 0xF1, &[0x02, 0x01])
-        .await
-    {
-        warn!(
-            "[classic] Failed to enable multitouch: {:?}",
-            defmt::Debug2Format(&e)
-        );
-    } else {
-        info!("[classic] Multitouch enabled!");
-    }
-
-    // --- Main HID report loop ---
-    info!("[classic] === CLASSIC HID SESSION ACTIVE ===");
-    info!("[classic] Listening for touch reports...");
-    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
-        crate::ble_state::BleEvent::StateChanged(crate::protocol::ConnectionState::Connected),
-    );
-
-    let mut report = bt_classic_host::HidReport::new();
-    loop {
-        let mut rx = [0u8; 259];
-        let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
-        match controller.read(rx_ref).await {
-            Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
-                // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
-                let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
-                let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
-                let acl_data = &rx[5..5 + data_len.min(rx.len() - 5)];
-
-                match l2cap
-                    .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
-                    .await
-                {
-                    Ok(Some((channel_idx, data_len))) => {
-                        // L2CAP data arrived on a HID channel
-                        if hid.process_data(channel_idx, &acl_buf[..data_len], &mut report) {
-                            // Got a HID report from the MT2.
-                            // Report ID 0x31 = BT multitouch data (4-byte header + N*9 touch points)
-                            // Other report IDs are status/control — log but don't forward yet.
-                            let report_id = if report.len > 0 { report.data[0] } else { 0 };
-
-                            if report_id == 0x31 && report.len >= 4 {
-                                // Touch report — forward full BT report for reclocked passthrough
-                                let n_fingers = (report.len - 4) / 9;
-                                static MT2_LOG_COUNT: portable_atomic::AtomicU8 =
-                                    portable_atomic::AtomicU8::new(0);
-                                let log_n = MT2_LOG_COUNT.load(Ordering::Relaxed);
-                                if log_n < 10 {
-                                    MT2_LOG_COUNT.store(log_n + 1, Ordering::Relaxed);
-                                    info!(
-                                        "[classic] MT2 report #{}: fingers={} len={}",
-                                        log_n, n_fingers, report.len
-                                    );
-                                }
-
-                                let mut event = HidReportEvent::new();
-                                event.report_type = HidReportType::Mouse;
-                                event.profile = DeviceProfile::MagicTrackpad;
-                                event.slot_index = 3;
-                                event.report_id = 0x31;
-                                let copy_len = report.len.min(event.data.len());
-                                event.data[..copy_len].copy_from_slice(&report.data[..copy_len]);
-                                event.len = copy_len;
-                                match HID_REPORT_CHANNEL.try_send(event) {
-                                    Ok(()) => {}
-                                    Err(_) => {
-                                        debug!("[classic] HID channel full, dropping MT2 report");
-                                    }
-                                }
-                            } else {
-                                // Log non-touch reports for debugging
-                                debug!(
-                                    "[classic] HID report id=0x{:02x} len={} data={:02x}",
-                                    report_id,
-                                    report.len,
-                                    &report.data[..report.len.min(16)]
-                                );
-                            }
-                        }
-                    }
-                    Ok(None) => {} // Signaling or fragment, handled internally
-                    Err(e) => {
-                        warn!("[classic] L2CAP error: {:?}", defmt::Debug2Format(&e));
+                    if let Err(e) = l2cap
+                        .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
+                        .await
+                    {
+                        warn!(
+                            "[classic] L2CAP error during setup: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
                     }
                 }
-            }
-            Ok(bt_hci::ControllerToHostPacket::Event(event)) => {
-                // Handle disconnection during active session
-                if event.kind == bt_hci::event::EventKind::DisconnectionComplete {
-                    error!("[classic] Disconnected!");
-                    break;
+                Ok(_) => {} // Ignore non-ACL during channel setup
+                Err(_) => {
+                    Timer::after_millis(10).await;
                 }
             }
-            Ok(_) => {}
-            Err(_) => {
-                Timer::after_millis(1).await;
+            attempts += 1;
+            if attempts > 5000 {
+                error!("[classic] Timeout waiting for HID channels");
+                loop {
+                    Timer::after_secs(3600).await;
+                }
             }
         }
-    }
 
-    // Disconnected — clean up and reconnect
-    warn!("[classic] Classic HID session ended, will reconnect...");
-    slots::set_classic_disconnected();
-    let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
-        crate::ble_state::BleEvent::StateChanged(crate::protocol::ConnectionState::Disconnected),
-    );
-    // Brief delay before reconnect attempt
-    Timer::after_secs(2).await;
+        info!("[classic] HID channels open! Activating multitouch...");
 
+        // --- Activate Magic Trackpad 2 multitouch ---
+        // BT Classic MT enable: SET_REPORT(Feature, report_id=0xF1, data={0x02, 0x01})
+        // Matches the Linux kernel's magicmouse_bt_enable() exactly.
+        if let Err(e) = hid
+            .set_report(&l2cap, controller, ReportType::Feature, 0xF1, &[0x02, 0x01])
+            .await
+        {
+            warn!(
+                "[classic] Failed to enable multitouch: {:?}",
+                defmt::Debug2Format(&e)
+            );
+        } else {
+            info!("[classic] Multitouch enabled!");
+        }
+
+        // --- Main HID report loop ---
+        info!("[classic] === CLASSIC HID SESSION ACTIVE ===");
+        info!("[classic] Listening for touch reports...");
+        let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+            crate::ble_state::BleEvent::StateChanged(crate::protocol::ConnectionState::Connected),
+        );
+
+        let mut report = bt_classic_host::HidReport::new();
+        loop {
+            let mut rx = [0u8; 259];
+            let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
+            match controller.read(rx_ref).await {
+                Ok(bt_hci::ControllerToHostPacket::Acl(_acl)) => {
+                    // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
+                    let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
+                    let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
+                    let acl_data = &rx[5..5 + data_len.min(rx.len() - 5)];
+
+                    match l2cap
+                        .process_acl(controller, handle_and_flags, acl_data, &mut acl_buf)
+                        .await
+                    {
+                        Ok(Some((channel_idx, data_len))) => {
+                            // L2CAP data arrived on a HID channel
+                            if hid.process_data(channel_idx, &acl_buf[..data_len], &mut report) {
+                                // Got a HID report from the MT2.
+                                // Report ID 0x31 = BT multitouch data (4-byte header + N*9 touch points)
+                                // Other report IDs are status/control — log but don't forward yet.
+                                let report_id = if report.len > 0 { report.data[0] } else { 0 };
+
+                                if report_id == 0x31 && report.len >= 4 {
+                                    // Touch report — forward full BT report for reclocked passthrough
+                                    let n_fingers = (report.len - 4) / 9;
+                                    static MT2_LOG_COUNT: portable_atomic::AtomicU8 =
+                                        portable_atomic::AtomicU8::new(0);
+                                    let log_n = MT2_LOG_COUNT.load(Ordering::Relaxed);
+                                    if log_n < 10 {
+                                        MT2_LOG_COUNT.store(log_n + 1, Ordering::Relaxed);
+                                        info!(
+                                            "[classic] MT2 report #{}: fingers={} len={}",
+                                            log_n, n_fingers, report.len
+                                        );
+                                    }
+
+                                    let mut event = HidReportEvent::new();
+                                    event.report_type = HidReportType::Mouse;
+                                    event.profile = DeviceProfile::MagicTrackpad;
+                                    event.slot_index = 3;
+                                    event.report_id = 0x31;
+                                    let copy_len = report.len.min(event.data.len());
+                                    event.data[..copy_len]
+                                        .copy_from_slice(&report.data[..copy_len]);
+                                    event.len = copy_len;
+                                    match HID_REPORT_CHANNEL.try_send(event) {
+                                        Ok(()) => {}
+                                        Err(_) => {
+                                            debug!(
+                                                "[classic] HID channel full, dropping MT2 report"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Log non-touch reports for debugging
+                                    debug!(
+                                        "[classic] HID report id=0x{:02x} len={} data={:02x}",
+                                        report_id,
+                                        report.len,
+                                        &report.data[..report.len.min(16)]
+                                    );
+                                }
+                            }
+                        }
+                        Ok(None) => {} // Signaling or fragment, handled internally
+                        Err(e) => {
+                            warn!("[classic] L2CAP error: {:?}", defmt::Debug2Format(&e));
+                        }
+                    }
+                }
+                Ok(bt_hci::ControllerToHostPacket::Event(event)) => {
+                    // Handle disconnection during active session
+                    if event.kind == bt_hci::event::EventKind::DisconnectionComplete {
+                        error!("[classic] Disconnected!");
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    Timer::after_millis(1).await;
+                }
+            }
+        }
+
+        // Disconnected — clean up and reconnect
+        warn!("[classic] Classic HID session ended, will reconnect...");
+        slots::set_classic_disconnected();
+        let _ =
+            crate::ble_state::BLE_EVENT_CHANNEL.try_send(crate::ble_state::BleEvent::StateChanged(
+                crate::protocol::ConnectionState::Disconnected,
+            ));
+        // Brief delay before reconnect attempt
+        Timer::after_secs(2).await;
     } // end of main Classic connection loop
 }
 

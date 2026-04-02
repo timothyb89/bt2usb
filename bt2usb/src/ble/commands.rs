@@ -112,7 +112,8 @@ pub fn handle_get_bonds(
             });
         }
 
-        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect, 0)); // 0 = BLE
+        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect, 0));
+        // 0 = BLE
     }
 
     // Classic BT bonds
@@ -133,7 +134,8 @@ pub fn handle_get_bonds(
             });
         }
 
-        let _ = bond_list.push((cb.addr, 0, cb.profile_id, name, cb.auto_connect, 1)); // 1 = Classic
+        let _ = bond_list.push((cb.addr, 0, cb.profile_id, name, cb.auto_connect, 1));
+        // 1 = Classic
     }
 
     let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);
@@ -212,7 +214,10 @@ pub async fn handle_clear_bonds(flash: &mut Flash<'static, FLASH, Async, FLASH_S
         Timer::after_millis(100).await;
         crate::system_reset();
     } else {
-        error!("Failed to clear bonds (ble={}, classic={})", ble_ok, classic_ok);
+        error!(
+            "Failed to clear bonds (ble={}, classic={})",
+            ble_ok, classic_ok
+        );
         rpc_log::error("Failed to clear bonds");
     }
 }

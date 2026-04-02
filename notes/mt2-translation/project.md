@@ -321,49 +321,54 @@ commands (WriteLinkPolicySettings + SniffMode) defined in
 (11.25ms ≈ 89Hz) after connection reaches Encrypted state. Result:
 perfectly smooth input delivery, eliminating all interpolation artifacts.
 
-### Force click analysis (2026-04-01)
+### Force click analysis & fix (2026-04-01 → 2026-04-02)
 
 The MT2 has **two click modes**:
 - **BT mode (autonomous)**: Internal pressure threshold, fires Taptic Engine
   independently, sets click bit (byte[1] & 0x01) in report. BT host just
   reads the button bit. This is how the MT2 works over BT Classic.
 - **USB mode (host-controlled)**: macOS's AppleMultitouchDriver reads pressure
-  from touch data, decides when to click, sends actuator OUTPUT report to
-  trackpad, Taptic Engine fires, trackpad confirms with button bit.
+  from touch data, decides when to click, sends actuator command via Feature
+  reports to the actuator interface, Taptic Engine fires.
 
-Our bridge: MT2 is in BT mode (autonomous clicks, haptics fire, click bit
-set). But macOS sees a USB MT2 and expects host-controlled mode. It ignores
-the button bit because it never sent an actuator command.
+**Root cause**: Two issues combined to break force clicks:
+1. **Missing actuator interface**: The real MT2 has 4 USB interfaces. IF2 is
+   a vendor interface (Usage 0xFF00/0x0D) with OUTPUT Report ID 0x53 (63 bytes)
+   for actuator commands. Without it, macOS can't configure the actuator —
+   `AppleActuatorHIDEventDriver` needs it to load and send waveform data
+   (SET Feature 0x21/0x22/0x23).
+2. **Wrong USB report header bytes**: Our BT→USB header translation used
+   `r[7]=0x03` and `r[11]=0xe6` (from BT-mode template captures), but the
+   real MT2 over USB uses `r[7]=0x01` and `r[11]=0x88` (confirmed via
+   `capture_mt2_raw.txt`). macOS's force detection pipeline uses these header
+   bytes — incorrect values prevented force threshold detection.
 
-Evidence:
-- Click bit IS present in BT data (confirmed: 14+ consecutive reports with
-  click=1, pressure ~105). Click IS latched and forwarded in USB reports.
-- Force clicks **never** register on macOS (not intermittent — deterministic).
-- "Tap to click" works (macOS detects quick touch→release gesture from touch
-  data alone, independent of button bit).
-- MT2 fires haptic feedback autonomously over BT (user feels the click).
+**Additional fix**: Feature 0x99 sub-report length was reported as 0 via the
+Feature(0x01) selector protocol, causing macOS kernel `OVERRUN` error:
+`mtReportID 0x99 has reportLength of 0, attempting to write 2 bytes`.
+Fixed by returning `data_len=2` for sub-report 0x99 (matching real MT2).
 
-**Fix options** (in order of likely effort):
-1. Auto-ACK actuator: intercept macOS OUTPUT reports for actuator, respond
-   immediately. MT2 is already clicking autonomously, macOS just needs to
-   think its command succeeded.
-2. Feature report tweak: 0xDB compound properties may contain a force-touch
-   mode flag. If we indicate "trackpad-controlled clicks," macOS might fall
-   back to reading the button bit.
-3. Full actuator forwarding: USB OUTPUT → BT SET_REPORT. Most correct but
-   most complex (bidirectional HIDP, new L2CAP flow).
+**Implementation** (iteration 33):
+- `mt2.rs`: Added `ACTUATOR_REPORT_DESC` (36 bytes, matching real MT2 IF2),
+  `Mt2ActuatorRequestHandler` (stores/echoes SET Feature data)
+- `usb.rs`: `HidReaderWriter` for actuator interface, `mt2_actuator_task`
+  reads interrupt OUT endpoint
+- `mt2_translate.rs`: Fixed header bytes r[7]=0x01, r[11]=0x88
+- `mt2.rs`: Fixed all 5 touch templates (NONE/APPROACH/TOUCH/RELEASE/GONE)
+- `mt2.rs`: Feature 0x99 handler + sub-report length fix
+- `mt2_translate.rs`: `last_bt_click` field sustains held click state between
+  BT reports (BT ~11ms vs USB tick ~4ms)
+
+**Result**: Force clicks fully working on macOS. macOS loads
+`AppleActuatorHIDEventDriver` and `AppleActuatorDeviceUserClient`,
+configures waveforms via Feature 0x21/0x22/0x23, and fires the Taptic
+Engine on force press. The MT2 handles haptics autonomously over BT —
+the actuator interface just needs to accept the configuration for macOS
+to proceed with its force detection pipeline.
+
+Logs: log-45 through log-48 (pico + macos).
 
 ### Remaining TODOs
-
-**Force click / actuator** (high priority for UX):
-1. Auto-ACK actuator: intercept macOS OUTPUT reports for actuator, respond
-   immediately. MT2 is already clicking autonomously, macOS just needs to
-   think its command succeeded.
-2. Feature report tweak: 0xDB compound properties may contain a force-touch
-   mode flag. If we indicate "trackpad-controlled clicks," macOS might fall
-   back to reading the button bit.
-3. Full actuator forwarding: USB OUTPUT → BT SET_REPORT. Most correct but
-   most complex (bidirectional HIDP, new L2CAP flow).
 
 **Windows PTP output**: Present as Precision Touchpad on Windows hosts.
 Separate USB descriptor + report format. Ploopy trackpad captures in
