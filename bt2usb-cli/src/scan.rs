@@ -109,7 +109,14 @@ fn process_message(
 /// Run a BLE scan. In a terminal, shows an interactive TUI with instant device
 /// selection. Otherwise falls back to streaming output with deduplication.
 pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8>) -> Result<()> {
-    cmd_scan_with(transport, timeout_secs, profile, CMD_START_SCAN, CMD_STOP_SCAN)
+    cmd_scan_with(
+        transport,
+        timeout_secs,
+        profile,
+        CMD_START_SCAN,
+        CMD_STOP_SCAN,
+        false,
+    )
 }
 
 /// Run a Classic BT Inquiry scan using the same interactive UI as BLE.
@@ -124,6 +131,7 @@ pub fn cmd_classic_scan(
         profile,
         CMD_CLASSIC_SCAN,
         CMD_CLASSIC_SCAN_STOP,
+        true,
     )
 }
 
@@ -133,6 +141,7 @@ fn cmd_scan_with(
     profile: Option<u8>,
     start_cmd: u8,
     stop_cmd: u8,
+    is_classic: bool,
 ) -> Result<()> {
     // Start scan on firmware
     let (resp, initial_events) = transport.request_simple(start_cmd, DEFAULT_TIMEOUT)?;
@@ -165,7 +174,13 @@ fn cmd_scan_with(
     }
 
     let result = if io::stdin().is_terminal() {
-        run_interactive(transport, &mut devices, &mut order, timeout_secs)
+        run_interactive(
+            transport,
+            &mut devices,
+            &mut order,
+            timeout_secs,
+            is_classic,
+        )
     } else {
         run_streaming(transport, &mut devices, &mut order, timeout_secs).map(|()| None)
     };
@@ -211,6 +226,7 @@ fn run_interactive(
     devices: &mut HashMap<[u8; 6], ScannedDevice>,
     order: &mut Vec<[u8; 6]>,
     timeout_secs: u64,
+    is_classic: bool,
 ) -> Result<Option<usize>> {
     terminal::enable_raw_mode()?;
     let _guard = RawGuard;
@@ -237,6 +253,7 @@ fn run_interactive(
                 devices,
                 order,
                 in_free_form,
+                is_classic,
                 &free_form,
             )?;
             break;
@@ -256,7 +273,16 @@ fn run_interactive(
                     && matches!(key.code, KeyCode::Char('c'))
                 {
                     // Render final state then bail
-                    let _ = render(&mut stdout, displayed_lines, 0, devices, order, false, "");
+                    let _ = render(
+                        &mut stdout,
+                        displayed_lines,
+                        0,
+                        devices,
+                        order,
+                        false,
+                        is_classic,
+                        "",
+                    );
                     write!(stdout, "\r\n{}\r\n", "Scan cancelled.".yellow())?;
                     stdout.flush()?;
                     return Ok(None);
@@ -334,13 +360,23 @@ fn run_interactive(
                 devices,
                 order,
                 in_free_form,
+                is_classic,
                 &free_form,
             )?;
         }
     }
 
     // Final clean render (no countdown)
-    let _ = render(&mut stdout, displayed_lines, 0, devices, order, false, "");
+    let _ = render(
+        &mut stdout,
+        displayed_lines,
+        0,
+        devices,
+        order,
+        false,
+        is_classic,
+        "",
+    );
     // blank line to separate from subsequent output
     write!(stdout, "\r\n")?;
     stdout.flush()?;
@@ -361,6 +397,7 @@ fn render(
     devices: &HashMap<[u8; 6], ScannedDevice>,
     order: &[[u8; 6]],
     in_free_form: bool,
+    is_classic: bool,
     free_form: &str,
 ) -> io::Result<u16> {
     // Move cursor up to overwrite previous render
@@ -378,7 +415,17 @@ fn render(
         write!(
             stdout,
             "{CLR}{}\r\n",
-            format!("Scanning for BLE devices...  {}s left", remaining_secs).cyan()
+            format!(
+                "Scanning for {} devices...  {}s left{}",
+                if is_classic { "Classic BT" } else { "BLE" },
+                remaining_secs,
+                if is_classic {
+                    "  (names/RSSI unavailable)"
+                } else {
+                    ""
+                }
+            )
+            .cyan()
         )?;
     } else {
         write!(stdout, "{CLR}{}\r\n", "Scan complete.".cyan())?;
@@ -532,7 +579,16 @@ fn run_streaming(
             }) = decode_event(&cbor)
             {
                 let is_new = !devices.contains_key(&address);
-                upsert_device(devices, order, address, addr_kind, name, rssi, is_hid, transport_type);
+                upsert_device(
+                    devices,
+                    order,
+                    address,
+                    addr_kind,
+                    name,
+                    rssi,
+                    is_hid,
+                    transport_type,
+                );
                 if is_new {
                     print_device_line(&devices[&address]);
                 }

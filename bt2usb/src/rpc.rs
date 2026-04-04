@@ -468,10 +468,12 @@ async fn dispatch_request(
         protocol::Request::UpdateBondProfile {
             address,
             profile_id,
+            transport_type,
         } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::UpdateBondProfile {
                 address: *address,
                 profile_id: *profile_id,
+                transport_type: *transport_type,
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
@@ -493,15 +495,26 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::ClearBond { address } => {
-            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond { address: *address });
+        protocol::Request::ClearBond {
+            address,
+            transport_type,
+        } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond {
+                address: *address,
+                transport_type: *transport_type,
+            });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::SetAutoConnect { address, enabled } => {
+        protocol::Request::SetAutoConnect {
+            address,
+            enabled,
+            transport_type,
+        } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetAutoConnect {
                 address: *address,
                 enabled: *enabled,
+                transport_type: *transport_type,
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }

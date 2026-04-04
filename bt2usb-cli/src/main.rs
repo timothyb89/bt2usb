@@ -90,17 +90,25 @@ enum Command {
 
     /// Clear a single bond by address
     ClearBond {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// Set the profile for a bonded device
     SetProfile {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
 
-        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default)
+        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default), 4=MagicTrackpad
         profile_id: u8,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// [Deprecated] Set the active device for auto-reconnect. Use set-auto-connect instead.
@@ -121,15 +129,23 @@ enum Command {
     /// Enable auto-connect for a bonded device
     #[command(name = "set-auto-connect")]
     SetAutoConnect {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// Disable auto-connect for a bonded device
     #[command(name = "clear-auto-connect")]
     ClearAutoConnect {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// [Deprecated] Auto-connect to the active device from preferences.
@@ -265,18 +281,23 @@ fn main() -> Result<()> {
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),
         Command::FactoryReset => cmd_factory_reset(&mut transport),
-        Command::ClearBond { address } => cmd_clear_bond(&mut transport, &address),
+        Command::ClearBond { address, classic } => {
+            cmd_clear_bond(&mut transport, &address, classic)
+        }
         Command::SetProfile {
             address,
             profile_id,
-        } => cmd_set_profile(&mut transport, &address, profile_id),
+            classic,
+        } => cmd_set_profile(&mut transport, &address, profile_id, classic),
         Command::SetActiveDevice { address, addr_kind } => {
             cmd_set_active_device(&mut transport, &address, addr_kind)
         }
         Command::ClearActiveDevice => cmd_clear_active_device(&mut transport),
-        Command::SetAutoConnect { address } => cmd_set_auto_connect(&mut transport, &address, true),
-        Command::ClearAutoConnect { address } => {
-            cmd_set_auto_connect(&mut transport, &address, false)
+        Command::SetAutoConnect { address, classic } => {
+            cmd_set_auto_connect(&mut transport, &address, true, classic)
+        }
+        Command::ClearAutoConnect { address, classic } => {
+            cmd_set_auto_connect(&mut transport, &address, false, classic)
         }
         Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::GetConfig => cmd_get_config(&mut transport),

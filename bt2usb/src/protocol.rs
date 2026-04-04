@@ -106,6 +106,7 @@ pub enum Request {
     UpdateBondProfile {
         address: [u8; 6],
         profile_id: u8,
+        transport_type: u8, // 0=BLE, 1=Classic
     },
     AutoConnect,
     Restart,
@@ -120,10 +121,12 @@ pub enum Request {
     SetAutoConnect {
         address: [u8; 6],
         enabled: bool,
+        transport_type: u8, // 0=BLE, 1=Classic
     },
     /// Clear a single bond by address.
     ClearBond {
         address: [u8; 6],
+        transport_type: u8, // 0=BLE, 1=Classic
     },
     /// Factory reset: clear all bonds and preferences, then restart.
     FactoryReset,
@@ -266,9 +269,11 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
             let profile_id = d.u8().map_err(|_| ProtocolError::MissingField)?;
+            let transport_type = d.u8().unwrap_or(0); // backward-compatible
             Ok(Request::UpdateBondProfile {
                 address,
                 profile_id,
+                transport_type,
             })
         }
         CMD_AUTO_CONNECT => Ok(Request::AutoConnect),
@@ -286,7 +291,12 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
             let enabled = d.bool().map_err(|_| ProtocolError::MissingField)?;
-            Ok(Request::SetAutoConnect { address, enabled })
+            let transport_type = d.u8().unwrap_or(0); // backward-compatible
+            Ok(Request::SetAutoConnect {
+                address,
+                enabled,
+                transport_type,
+            })
         }
         CMD_CLEAR_BOND => {
             let addr_bytes = d.bytes().map_err(|_| ProtocolError::MissingField)?;
@@ -295,7 +305,11 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             }
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
-            Ok(Request::ClearBond { address })
+            let transport_type = d.u8().unwrap_or(0); // backward-compatible
+            Ok(Request::ClearBond {
+                address,
+                transport_type,
+            })
         }
         CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
         CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
