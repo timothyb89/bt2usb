@@ -404,9 +404,12 @@ Logs: log-45 through log-48 (pico + macos).
 - PTP width/height fields (currently omitted — could map from MT2 touch_major/minor)
 - PTP Latency Mode feature report (optional optimization)
 
-**RPC integration gaps**:
-- Wire `UpdateBondProfile` to also check Classic bonds (currently BLE-only)
-- Wire `SetAutoConnect` to also check Classic bonds
+**RPC integration gaps** (fixed 2026-04-04):
+- ~~Wire `UpdateBondProfile` to also check Classic bonds~~ ✓
+- ~~Wire `SetAutoConnect` to also check Classic bonds~~ ✓
+- ~~Wire `ClearBond` to also check Classic bonds~~ ✓
+- ~~Add `update_classic_auto_connect()` to bonding.rs~~ ✓
+- ~~Add `transport_type` to protocol + CLI `--classic` flags~~ ✓
 - Classic Inquiry: add RemoteNameRequest for discovered devices (names only
   show for ExtendedInquiryResult currently, not standard InquiryResult)
 

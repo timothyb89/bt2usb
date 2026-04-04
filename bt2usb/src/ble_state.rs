@@ -42,18 +42,29 @@ pub enum BleCommand {
     SetActiveDevice { address: [u8; 6], addr_kind: u8 },
     /// Clear the active device preference (disable auto-connect).
     ClearActiveDevice,
-    /// Update the profile for an existing bond.
-    UpdateBondProfile { address: [u8; 6], profile_id: u8 },
+    /// Update the profile for an existing bond (transport: 0=BLE, 1=Classic).
+    UpdateBondProfile {
+        address: [u8; 6],
+        profile_id: u8,
+        transport_type: u8,
+    },
     /// Restart the system.
     Restart,
     /// Set a configuration value and persist to flash.
     SetConfig { key: u8, value: u32 },
     /// Set forced OS override (0=Auto, 1-3=forced) and persist to flash.
     SetForcedOs { os: u8 },
-    /// Set auto-connect flag for a bonded device.
-    SetAutoConnect { address: [u8; 6], enabled: bool },
-    /// Clear a single bond by address.
-    ClearBond { address: [u8; 6] },
+    /// Set auto-connect flag for a bonded device (transport: 0=BLE, 1=Classic).
+    SetAutoConnect {
+        address: [u8; 6],
+        enabled: bool,
+        transport_type: u8,
+    },
+    /// Clear a single bond by address (transport: 0=BLE, 1=Classic).
+    ClearBond {
+        address: [u8; 6],
+        transport_type: u8,
+    },
     /// Factory reset: clear all bonds and preferences, then restart.
     FactoryReset,
 }

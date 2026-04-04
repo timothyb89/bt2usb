@@ -700,7 +700,6 @@ pub async fn clear_all_classic_bonds(
 }
 
 /// Update the profile ID for an existing Classic bond by address.
-#[allow(dead_code)]
 pub async fn update_classic_bond_profile(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
     address: &[u8; 6],
@@ -757,8 +756,64 @@ pub async fn update_classic_bond_profile(
     Err(())
 }
 
+/// Update the auto_connect flag for an existing Classic bond by address.
+pub async fn update_classic_auto_connect(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+    address: &[u8; 6],
+    enabled: bool,
+) -> Result<u8, ()> {
+    let mut buffer = [0u8; 128];
+
+    for i in 0..MAX_CLASSIC_BONDS as u8 {
+        let key = CLASSIC_BOND_KEY_BASE + i;
+        match fetch_item::<u8, StoredClassicBond, _>(
+            flash,
+            flash_range(),
+            &mut NoCache::new(),
+            &mut buffer,
+            &key,
+        )
+        .await
+        {
+            Ok(Some(mut stored)) => {
+                if stored.addr == *address {
+                    stored.auto_connect = enabled;
+                    match store_item(
+                        flash,
+                        flash_range(),
+                        &mut NoCache::new(),
+                        &mut buffer,
+                        &key,
+                        &stored,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            info!(
+                                "Updated Classic bond auto_connect in slot {} to {}",
+                                i, enabled
+                            );
+                            return Ok(i);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to update Classic bond auto_connect: {:?}",
+                                defmt::Debug2Format(&e)
+                            );
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    warn!("Classic bond not found for address {:02x}", address);
+    Err(())
+}
+
 /// Remove a single Classic bond by address.
-#[allow(dead_code)]
 pub async fn clear_classic_bond_by_address(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
     address: &[u8; 6],

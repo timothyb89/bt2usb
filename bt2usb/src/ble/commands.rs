@@ -183,13 +183,21 @@ pub async fn handle_update_bond_profile(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     address: &[u8; 6],
     profile_id: u8,
+    transport_type: u8,
 ) -> Option<heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>> {
-    info!("Updating bond profile for {:?} to {}", address, profile_id);
-    match bonding::update_bond_profile(flash, address, profile_id).await {
+    info!(
+        "Updating bond profile for {:?} (transport={}) to {}",
+        address, transport_type, profile_id
+    );
+    let result = if transport_type == 1 {
+        bonding::update_classic_bond_profile(flash, address, profile_id).await
+    } else {
+        bonding::update_bond_profile(flash, address, profile_id).await
+    };
+    match result {
         Ok(slot) => {
             info!("Bond profile updated in slot {}", slot);
             rpc_log::info("Bond profile updated");
-            // Reload bonds to update in-memory list
             Some(bonding::load_bonds(flash).await)
         }
         Err(()) => {
@@ -283,10 +291,19 @@ pub async fn handle_set_auto_connect(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     address: &[u8; 6],
     enabled: bool,
+    transport_type: u8,
     loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
 ) {
-    info!("Setting auto_connect for {:?} to {}", address, enabled);
-    match bonding::update_auto_connect(flash, address, enabled).await {
+    info!(
+        "Setting auto_connect for {:?} (transport={}) to {}",
+        address, transport_type, enabled
+    );
+    let result = if transport_type == 1 {
+        bonding::update_classic_auto_connect(flash, address, enabled).await
+    } else {
+        bonding::update_auto_connect(flash, address, enabled).await
+    };
+    match result {
         Ok(slot) => {
             info!("Auto-connect updated in slot {}", slot);
             rpc_log::info(if enabled {
@@ -294,7 +311,6 @@ pub async fn handle_set_auto_connect(
             } else {
                 "Auto-connect disabled"
             });
-            // Refresh in-memory bond list
             *loaded_bonds = bonding::load_bonds(flash).await;
         }
         Err(()) => {
@@ -308,10 +324,19 @@ pub async fn handle_set_auto_connect(
 pub async fn handle_clear_bond(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     address: &[u8; 6],
+    transport_type: u8,
     loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
 ) {
-    info!("Clearing bond for {:?}", address);
-    match bonding::clear_bond_by_address(flash, address).await {
+    info!(
+        "Clearing bond for {:?} (transport={})",
+        address, transport_type
+    );
+    let result = if transport_type == 1 {
+        bonding::clear_classic_bond_by_address(flash, address).await
+    } else {
+        bonding::clear_bond_by_address(flash, address).await
+    };
+    match result {
         Ok(slot) => {
             info!("Bond removed from slot {}", slot);
             rpc_log::info("Bond removed");

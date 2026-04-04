@@ -4,7 +4,7 @@
 //! them here using the same `cmd!` macro pattern.
 
 use bt_hci::cmd;
-use bt_hci::param::ConnHandle;
+use bt_hci::param::{BdAddr, ConnHandle};
 
 // OGF 0x02 = LINK_POLICY
 
@@ -37,6 +37,40 @@ cmd! {
             sniff_min_interval: u16,
             sniff_attempt: u16,
             sniff_timeout: u16,
+        }
+        Return = ();
+    }
+}
+
+// OGF 0x03 = HOST_CONTROLLER_BASEBAND
+
+cmd! {
+    /// Write Inquiry Mode (OGF=0x03, OCF=0x0045)
+    ///
+    /// Sets the Inquiry Result format: 0=standard (no RSSI/name),
+    /// 1=with RSSI, 2=Extended Inquiry Result (RSSI + EIR data with name).
+    /// Mode 2 is required to get device names during Classic Inquiry.
+    WriteInquiryMode(CONTROL_BASEBAND, 0x0045) {
+        WriteInquiryModeParams {
+            inquiry_mode: u8,
+        }
+        Return = ();
+    }
+}
+
+// OGF 0x01 = LINK_CONTROL
+
+cmd! {
+    /// Remote Name Request (OGF=0x01, OCF=0x0019)
+    ///
+    /// Requests the remote device's user-friendly name. Returns CommandStatus;
+    /// RemoteNameRequestComplete event follows with the name.
+    RemoteNameRequest(LINK_CONTROL, 0x0019) {
+        RemoteNameRequestParams {
+            bd_addr: BdAddr,
+            page_scan_repetition_mode: u8,
+            reserved: u8,
+            clock_offset: u16,
         }
         Return = ();
     }

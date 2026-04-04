@@ -241,15 +241,18 @@ pub fn encode_request_update_bond_profile(
     buf: &mut [u8],
     address: &[u8; 6],
     profile_id: u8,
+    transport_type: u8,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(3)
+        e.array(4)
             .unwrap()
             .u8(CMD_UPDATE_BOND_PROFILE)
             .unwrap()
             .bytes(address)
             .unwrap()
             .u8(profile_id)
+            .unwrap()
+            .u8(transport_type)
             .unwrap();
     })
 }
@@ -273,26 +276,35 @@ pub fn encode_request_set_auto_connect(
     buf: &mut [u8],
     address: &[u8; 6],
     enabled: bool,
+    transport_type: u8,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(3)
+        e.array(4)
             .unwrap()
             .u8(CMD_SET_AUTO_CONNECT)
             .unwrap()
             .bytes(address)
             .unwrap()
             .bool(enabled)
+            .unwrap()
+            .u8(transport_type)
             .unwrap();
     })
 }
 
-pub fn encode_request_clear_bond(buf: &mut [u8], address: &[u8; 6]) -> EncResult {
+pub fn encode_request_clear_bond(
+    buf: &mut [u8],
+    address: &[u8; 6],
+    transport_type: u8,
+) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(2)
+        e.array(3)
             .unwrap()
             .u8(CMD_CLEAR_BOND)
             .unwrap()
             .bytes(address)
+            .unwrap()
+            .u8(transport_type)
             .unwrap();
     })
 }

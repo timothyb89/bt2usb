@@ -510,17 +510,24 @@ async fn classic_bt_task<C>(
                             info!("[classic] Starting Inquiry scan...");
                             crate::rpc_log::info("Classic Inquiry scan starting (~10s)...");
 
-                            // GIAC LAP = 0x9E8B33, duration 8 (10.24s), unlimited responses
+                            // CYW43439 only supports inquiry mode 0 (standard results,
+                            // no RSSI/EIR). Modes 1 and 2 return zero results.
+
+                            // GIAC LAP = 0x9E8B33, duration 23 (~29.4s), unlimited responses.
+                            // Matches CLI's default 30s scan timeout.
                             match controller
                                 .exec(&bt_hci::cmd::link_control::Inquiry::new(
                                     [0x33, 0x8B, 0x9E],
-                                    8,
+                                    23,
                                     0,
                                 ))
                                 .await
                             {
                                 Ok(_) => {
-                                    // Read Inquiry events until InquiryComplete or ScanStop
+                                    // Read Inquiry events until InquiryComplete or ScanStop.
+                                    // Note: CYW43439 only supports inquiry mode 0 (no RSSI/EIR),
+                                    // and RemoteNameRequest events are not delivered by the mux.
+                                    // Names are unavailable during Classic scan.
                                     let mut rx = [0u8; 259];
                                     let rx_ref = unsafe {
                                         core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len())
@@ -562,15 +569,13 @@ async fn classic_bt_task<C>(
                                                     );
                                                     inquiry_done = true;
                                                 }
-                                                bt_hci::event::EventKind::InquiryResult
-                                                | bt_hci::event::EventKind::InquiryResultWithRssi => {
-                                                    // Parse addresses from raw event data
-                                                    // data[0] = num_responses, then BD_ADDRs (6 bytes each)
+                                                bt_hci::event::EventKind::InquiryResult => {
+                                                    // Standard: per entry = 14 bytes (addr6+psrm1+reserved2+cod3+clock2)
                                                     let data = evt.data;
                                                     if !data.is_empty() {
                                                         let n = data[0] as usize;
                                                         for i in 0..n {
-                                                            let off = 1 + i * 6;
+                                                            let off = 1 + i * 14;
                                                             if off + 6 <= data.len() {
                                                                 let mut addr = [0u8; 6];
                                                                 addr.copy_from_slice(&data[off..off + 6]);
@@ -583,6 +588,35 @@ async fn classic_bt_task<C>(
                                                                             name: [0u8; 32],
                                                                             name_len: 0,
                                                                             rssi: -127,
+                                                                            is_hid: true,
+                                                                            transport_type: 1,
+                                                                        },
+                                                                    ),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                bt_hci::event::EventKind::InquiryResultWithRssi => {
+                                                    // With RSSI: per entry = 14 bytes (addr6+psrm1+reserved1+cod3+clock2+rssi1)
+                                                    let data = evt.data;
+                                                    if !data.is_empty() {
+                                                        let n = data[0] as usize;
+                                                        for i in 0..n {
+                                                            let off = 1 + i * 14;
+                                                            if off + 14 <= data.len() {
+                                                                let mut addr = [0u8; 6];
+                                                                addr.copy_from_slice(&data[off..off + 6]);
+                                                                let rssi = data[off + 13] as i8;
+                                                                info!("[classic] Found: {:02x} RSSI={}", addr, rssi);
+                                                                let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
+                                                                    crate::ble_state::BleEvent::ScanResult(
+                                                                        crate::ble_state::ScanResultData {
+                                                                            address: addr,
+                                                                            addr_kind: 0,
+                                                                            name: [0u8; 32],
+                                                                            name_len: 0,
+                                                                            rssi,
                                                                             is_hid: true,
                                                                             transport_type: 1,
                                                                         },
@@ -1138,19 +1172,27 @@ async fn connection_manager_loop<
             BleCommand::UpdateBondProfile {
                 address,
                 profile_id,
+                transport_type,
             } => {
                 {
                     let mut f = flash.lock().await;
-                    if let Some(new_bonds) =
-                        commands::handle_update_bond_profile(&mut f, &address, profile_id).await
+                    if let Some(new_bonds) = commands::handle_update_bond_profile(
+                        &mut f,
+                        &address,
+                        profile_id,
+                        transport_type,
+                    )
+                    .await
                     {
                         *loaded_bonds = new_bonds;
                     }
                 }
-                // Also notify the slot if connected
-                if let Some(slot) = slots::find_slot_by_address(&address) {
-                    let _ =
-                        SLOT_CMD_CHANNELS[slot].try_send(SlotCommand::UpdateProfile(profile_id));
+                // Also notify the BLE slot if connected (Classic doesn't use slot commands)
+                if transport_type == 0 {
+                    if let Some(slot) = slots::find_slot_by_address(&address) {
+                        let _ = SLOT_CMD_CHANNELS[slot]
+                            .try_send(SlotCommand::UpdateProfile(profile_id));
+                    }
                 }
             }
 
@@ -1180,14 +1222,19 @@ async fn connection_manager_loop<
                 loaded_bonds.clear();
             }
 
-            BleCommand::ClearBond { address } => {
-                // Disconnect the device if connected
-                if let Some(slot) = slots::find_slot_by_address(&address) {
-                    let _ = SLOT_CMD_CHANNELS[slot].try_send(SlotCommand::Disconnect);
-                    Timer::after_millis(200).await;
+            BleCommand::ClearBond {
+                address,
+                transport_type,
+            } => {
+                // Disconnect the device if connected (BLE slots only)
+                if transport_type == 0 {
+                    if let Some(slot) = slots::find_slot_by_address(&address) {
+                        let _ = SLOT_CMD_CHANNELS[slot].try_send(SlotCommand::Disconnect);
+                        Timer::after_millis(200).await;
+                    }
                 }
                 let mut f = flash.lock().await;
-                commands::handle_clear_bond(&mut f, &address, loaded_bonds).await;
+                commands::handle_clear_bond(&mut f, &address, transport_type, loaded_bonds).await;
             }
 
             BleCommand::SetConfig { key, value } => {
@@ -1200,9 +1247,20 @@ async fn connection_manager_loop<
                 commands::handle_set_forced_os(&mut f, os).await;
             }
 
-            BleCommand::SetAutoConnect { address, enabled } => {
+            BleCommand::SetAutoConnect {
+                address,
+                enabled,
+                transport_type,
+            } => {
                 let mut f = flash.lock().await;
-                commands::handle_set_auto_connect(&mut f, &address, enabled, loaded_bonds).await;
+                commands::handle_set_auto_connect(
+                    &mut f,
+                    &address,
+                    enabled,
+                    transport_type,
+                    loaded_bonds,
+                )
+                .await;
             }
 
             BleCommand::Restart => {
