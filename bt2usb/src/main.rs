@@ -46,6 +46,8 @@ mod mt2_translate;
 mod preferences;
 mod probe;
 mod protocol;
+mod ptp;
+mod ptp_translate;
 mod rpc;
 mod rpc_log;
 pub mod scratch;
