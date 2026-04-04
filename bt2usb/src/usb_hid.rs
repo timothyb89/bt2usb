@@ -409,6 +409,7 @@ impl Handler for UsbDeviceHandler {
                 REPROBE_REQUESTED.store(true, Ordering::Relaxed);
                 HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
                 crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
+                crate::ptp::reset();
             }
         }
 
@@ -438,8 +439,9 @@ impl Handler for UsbDeviceHandler {
             // may not re-send SET_REPORT to re-enable hires. Clear the flag
             // so the host must re-negotiate — same rationale as reset()/configured().
             HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+            crate::ptp::reset();
             crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
-            debug!("USB resumed, high-res scroll reset");
+            debug!("USB resumed, high-res scroll + PTP reset");
         }
     }
 

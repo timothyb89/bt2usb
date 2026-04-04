@@ -368,11 +368,41 @@ to proceed with its force detection pipeline.
 
 Logs: log-45 through log-48 (pico + macos).
 
+### Windows/Linux PTP output (2026-04-02)
+
+34. **PTP (Precision Touchpad) output implemented** for Windows and Linux.
+    Modeled on Ploopy Pavonis Trackpad descriptor (proven working, captured
+    in `capture_ploopy_result.txt`). Single PTP path covers both OSes —
+    Windows uses `PrecisionTouchpad.sys`, Linux uses `hid-multitouch` + libinput.
+
+    New modules:
+    - `ptp.rs`: PTP HID descriptor (~565 bytes), `PtpRequestHandler` (Input Mode,
+      capabilities, certification, selective reporting), `PTP_ENABLED` atomic
+    - `ptp_translate.rs`: `PtpPassthrough` — same interpolation strategy as
+      `Mt2Passthrough` (EMA interval, 20.12 fixed-point XY, click latching)
+      but outputs PTP-format reports (34 bytes: 5×6b fingers + scan time +
+      contact count + button)
+
+    Coordinate mapping: MT2 13-bit signed → PTP 16-bit unsigned
+    - X: [-3678,+3934] → [0,7612], Physical 160.0mm → ~1209 DPI
+    - Y: [-2478,+2587] → [0,5065], Physical 114.9mm → ~1120 DPI
+
+    Touch state: MT2 0x80/0x40 → TipSwitch=1 Confidence=1,
+    MT2 0xC0 (release) → TipSwitch=0 Confidence=1, MT2 0x00 → omitted.
+    Force clicks → PTP Button 1.
+
+    USB changes: PTP `HidWriter` added for non-macOS, `CONTROL_BUF` increased
+    to 320 bytes (certification blob = 257 bytes), `CONFIG_DESC` to 768 bytes.
+    Standard task upgraded to `select3` with 4ms tick timer for reclocking.
+
 ### Remaining TODOs
 
-**Windows PTP output**: Present as Precision Touchpad on Windows hosts.
-Separate USB descriptor + report format. Ploopy trackpad captures in
-`notes/magic-mouse/` for reference.
+**Future refactoring**:
+- Extract shared `InterpolationCore` from `Mt2Passthrough` and `PtpPassthrough`
+  (identical EMA/fixed-point logic duplicated between the two)
+- PTP mouse fallback mode (Input Mode=0) for MT2 reports if needed
+- PTP width/height fields (currently omitted — could map from MT2 touch_major/minor)
+- PTP Latency Mode feature report (optional optimization)
 
 **RPC integration gaps**:
 - Wire `UpdateBondProfile` to also check Classic bonds (currently BLE-only)
