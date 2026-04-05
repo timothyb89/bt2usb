@@ -398,8 +398,8 @@ Logs: log-45 through log-48 (pico + macos).
 ### Remaining TODOs
 
 **Future refactoring**:
-- Extract shared `InterpolationCore` from `Mt2Passthrough` and `PtpPassthrough`
-  (identical EMA/fixed-point logic duplicated between the two)
+- ~~Extract shared `InterpolationCore` from `Mt2Passthrough` and `PtpPassthrough`
+  (identical EMA/fixed-point logic duplicated between the two)~~
 - PTP mouse fallback mode (Input Mode=0) for MT2 reports if needed
 - PTP width/height fields (currently omitted — could map from MT2 touch_major/minor)
 - PTP Latency Mode feature report (optional optimization)
