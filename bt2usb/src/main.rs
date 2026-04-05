@@ -41,6 +41,7 @@ mod defmt_usb;
 mod device_profile;
 mod framing;
 mod hid_report_map;
+mod interp;
 mod mt2;
 mod mt2_translate;
 mod preferences;
