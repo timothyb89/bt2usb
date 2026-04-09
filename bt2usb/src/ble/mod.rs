@@ -734,7 +734,10 @@ async fn classic_bt_task<C>(
                             defmt::Debug2Format(&e)
                         );
                         if attempt >= MAX_RETRIES {
-                            warn!("[classic] All {} attempts failed, will retry in 30s", MAX_RETRIES);
+                            warn!(
+                                "[classic] All {} attempts failed, will retry in 30s",
+                                MAX_RETRIES
+                            );
                             Timer::after_secs(30).await;
                             continue 'connect;
                         }
