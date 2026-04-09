@@ -10,3 +10,8 @@ bt2usb/cyw43-firmware/
 
 # Generated UF2 files
 *.uf2
+
+**/log-*.txt
+**/*/__pycache__
+*.log
+/logs
