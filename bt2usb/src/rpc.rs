@@ -223,6 +223,7 @@ fn encode_ble_event(
                 name,
                 data.rssi,
                 data.is_hid,
+                data.transport_type,
             )
             .unwrap_or(0)
         }
@@ -286,7 +287,7 @@ async fn dispatch_request(
                 .unwrap_or(0),
                 Err(_) => {
                     // Timeout - use defaults
-                    let empty_devs = [None, None, None];
+                    let empty_devs = [None, None, None, None];
                     protocol::encode_response_status(
                         cbor_buf,
                         last_state,
@@ -318,12 +319,20 @@ async fn dispatch_request(
             address,
             addr_kind,
             ignore_bond,
+            transport_type,
         } => {
-            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
-                address: *address,
-                addr_kind: *addr_kind,
-                ignore_bond: *ignore_bond,
-            });
+            if *transport_type == 1 {
+                // Classic BT connect
+                let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
+                    .try_send(crate::ble_state::ClassicCommand::Connect { address: *address });
+            } else {
+                // BLE connect
+                let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Connect {
+                    address: *address,
+                    addr_kind: *addr_kind,
+                    ignore_bond: *ignore_bond,
+                });
+            }
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
@@ -345,11 +354,20 @@ async fn dispatch_request(
             {
                 Ok(bonds) => {
                     // Convert heapless types to slices for encoding
-                    let mut bond_refs: heapless::Vec<([u8; 6], u8, u8, &str, bool), 10> =
-                        heapless::Vec::new();
-                    for (addr, kind, profile, name, auto_connect) in &bonds {
-                        let _ =
-                            bond_refs.push((*addr, *kind, *profile, name.as_str(), *auto_connect));
+                    #[allow(clippy::type_complexity)]
+                    let mut bond_refs: heapless::Vec<
+                        ([u8; 6], u8, u8, &str, bool, u8),
+                        20,
+                    > = heapless::Vec::new();
+                    for (addr, kind, profile, name, auto_connect, transport) in &bonds {
+                        let _ = bond_refs.push((
+                            *addr,
+                            *kind,
+                            *profile,
+                            name.as_str(),
+                            *auto_connect,
+                            *transport,
+                        ));
                     }
                     protocol::encode_response_bonds(cbor_buf, bond_refs.as_slice()).unwrap_or(0)
                 }
@@ -450,10 +468,12 @@ async fn dispatch_request(
         protocol::Request::UpdateBondProfile {
             address,
             profile_id,
+            transport_type,
         } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::UpdateBondProfile {
                 address: *address,
                 profile_id: *profile_id,
+                transport_type: *transport_type,
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
@@ -475,21 +495,44 @@ async fn dispatch_request(
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::ClearBond { address } => {
-            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond { address: *address });
+        protocol::Request::ClearBond {
+            address,
+            transport_type,
+        } => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond {
+                address: *address,
+                transport_type: *transport_type,
+            });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
-        protocol::Request::SetAutoConnect { address, enabled } => {
+        protocol::Request::SetAutoConnect {
+            address,
+            enabled,
+            transport_type,
+        } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetAutoConnect {
                 address: *address,
                 enabled: *enabled,
+                transport_type: *transport_type,
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 
         protocol::Request::FactoryReset => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::FactoryReset);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ClassicScan => {
+            let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
+                .try_send(crate::ble_state::ClassicCommand::Scan);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::ClassicScanStop => {
+            let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
+                .try_send(crate::ble_state::ClassicCommand::ScanStop);
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 

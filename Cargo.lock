@@ -319,6 +319,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bt-classic-host"
+version = "0.1.0"
+dependencies = [
+ "bt-hci",
+ "defmt 1.0.1",
+ "embassy-sync 0.7.2",
+ "embassy-time",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.2",
+]
+
+[[package]]
 name = "bt-hci"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -337,6 +350,7 @@ dependencies = [
 name = "bt2usb"
 version = "0.2.0"
 dependencies = [
+ "bt-classic-host",
  "bt-hci",
  "cobs 0.3.0",
  "cortex-m",
@@ -354,6 +368,7 @@ dependencies = [
  "embassy-usb",
  "embedded-storage",
  "embedded-storage-async",
+ "hci-mux",
  "heapless 0.9.2",
  "minicbor",
  "panic-probe",
@@ -1732,6 +1747,17 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+
+[[package]]
+name = "hci-mux"
+version = "0.1.0"
+dependencies = [
+ "bt-hci",
+ "defmt 1.0.1",
+ "embassy-sync 0.7.2",
+ "embedded-io 0.7.1",
+ "futures-intrusive",
+]
 
 [[package]]
 name = "heapless"

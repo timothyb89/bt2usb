@@ -24,6 +24,7 @@ struct ScannedDevice {
     name: String,
     rssi: i8,
     is_hid: bool,
+    transport_type: u8, // 0=BLE, 1=Classic
 }
 
 /// Insert or update a device. Returns `true` if anything changed.
@@ -35,6 +36,7 @@ fn upsert_device(
     name: String,
     rssi: i8,
     is_hid: bool,
+    transport_type: u8,
 ) -> bool {
     if let Some(dev) = devices.get_mut(&address) {
         let mut changed = false;
@@ -61,6 +63,7 @@ fn upsert_device(
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             },
         );
         true
@@ -81,9 +84,19 @@ fn process_message(
             name,
             rssi,
             is_hid,
+            transport_type,
         }) = decode_event(&cbor)
         {
-            return upsert_device(devices, order, address, addr_kind, name, rssi, is_hid);
+            return upsert_device(
+                devices,
+                order,
+                address,
+                addr_kind,
+                name,
+                rssi,
+                is_hid,
+                transport_type,
+            );
         }
     }
     false
@@ -96,8 +109,42 @@ fn process_message(
 /// Run a BLE scan. In a terminal, shows an interactive TUI with instant device
 /// selection. Otherwise falls back to streaming output with deduplication.
 pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8>) -> Result<()> {
+    cmd_scan_with(
+        transport,
+        timeout_secs,
+        profile,
+        CMD_START_SCAN,
+        CMD_STOP_SCAN,
+        false,
+    )
+}
+
+/// Run a Classic BT Inquiry scan using the same interactive UI as BLE.
+pub fn cmd_classic_scan(
+    transport: &mut Transport,
+    timeout_secs: u64,
+    profile: Option<u8>,
+) -> Result<()> {
+    cmd_scan_with(
+        transport,
+        timeout_secs,
+        profile,
+        CMD_CLASSIC_SCAN,
+        CMD_CLASSIC_SCAN_STOP,
+        true,
+    )
+}
+
+fn cmd_scan_with(
+    transport: &mut Transport,
+    timeout_secs: u64,
+    profile: Option<u8>,
+    start_cmd: u8,
+    stop_cmd: u8,
+    is_classic: bool,
+) -> Result<()> {
     // Start scan on firmware
-    let (resp, initial_events) = transport.request_simple(CMD_START_SCAN, DEFAULT_TIMEOUT)?;
+    let (resp, initial_events) = transport.request_simple(start_cmd, DEFAULT_TIMEOUT)?;
     check_ok(&resp)?;
 
     let mut devices: HashMap<[u8; 6], ScannedDevice> = HashMap::new();
@@ -110,6 +157,7 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
             name,
             rssi,
             is_hid,
+            transport_type,
         } = evt
         {
             upsert_device(
@@ -120,18 +168,25 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             );
         }
     }
 
     let result = if io::stdin().is_terminal() {
-        run_interactive(transport, &mut devices, &mut order, timeout_secs)
+        run_interactive(
+            transport,
+            &mut devices,
+            &mut order,
+            timeout_secs,
+            is_classic,
+        )
     } else {
         run_streaming(transport, &mut devices, &mut order, timeout_secs).map(|()| None)
     };
 
     // Always stop scan, even on error
-    let _ = transport.request_simple(CMD_STOP_SCAN, DEFAULT_TIMEOUT);
+    let _ = transport.request_simple(stop_cmd, DEFAULT_TIMEOUT);
 
     let selected = result?;
 
@@ -139,7 +194,8 @@ pub fn cmd_scan(transport: &mut Transport, timeout_secs: u64, profile: Option<u8
         let addr = order[idx];
         let dev = &devices[&addr];
         let addr_str = format_address(&dev.address);
-        cmd_connect(transport, &addr_str, dev.addr_kind, profile)?;
+        let classic = dev.transport_type == 1;
+        cmd_connect(transport, &addr_str, dev.addr_kind, profile, classic)?;
     } else {
         println!(
             "Scan complete. {} device(s) found.",
@@ -170,6 +226,7 @@ fn run_interactive(
     devices: &mut HashMap<[u8; 6], ScannedDevice>,
     order: &mut Vec<[u8; 6]>,
     timeout_secs: u64,
+    is_classic: bool,
 ) -> Result<Option<usize>> {
     terminal::enable_raw_mode()?;
     let _guard = RawGuard;
@@ -196,6 +253,7 @@ fn run_interactive(
                 devices,
                 order,
                 in_free_form,
+                is_classic,
                 &free_form,
             )?;
             break;
@@ -215,7 +273,16 @@ fn run_interactive(
                     && matches!(key.code, KeyCode::Char('c'))
                 {
                     // Render final state then bail
-                    let _ = render(&mut stdout, displayed_lines, 0, devices, order, false, "");
+                    let _ = render(
+                        &mut stdout,
+                        displayed_lines,
+                        0,
+                        devices,
+                        order,
+                        false,
+                        is_classic,
+                        "",
+                    );
                     write!(stdout, "\r\n{}\r\n", "Scan cancelled.".yellow())?;
                     stdout.flush()?;
                     return Ok(None);
@@ -293,13 +360,23 @@ fn run_interactive(
                 devices,
                 order,
                 in_free_form,
+                is_classic,
                 &free_form,
             )?;
         }
     }
 
     // Final clean render (no countdown)
-    let _ = render(&mut stdout, displayed_lines, 0, devices, order, false, "");
+    let _ = render(
+        &mut stdout,
+        displayed_lines,
+        0,
+        devices,
+        order,
+        false,
+        is_classic,
+        "",
+    );
     // blank line to separate from subsequent output
     write!(stdout, "\r\n")?;
     stdout.flush()?;
@@ -320,6 +397,7 @@ fn render(
     devices: &HashMap<[u8; 6], ScannedDevice>,
     order: &[[u8; 6]],
     in_free_form: bool,
+    is_classic: bool,
     free_form: &str,
 ) -> io::Result<u16> {
     // Move cursor up to overwrite previous render
@@ -337,7 +415,17 @@ fn render(
         write!(
             stdout,
             "{CLR}{}\r\n",
-            format!("Scanning for BLE devices...  {}s left", remaining_secs).cyan()
+            format!(
+                "Scanning for {} devices...  {}s left{}",
+                if is_classic { "Classic BT" } else { "BLE" },
+                remaining_secs,
+                if is_classic {
+                    "  (names/RSSI unavailable)"
+                } else {
+                    ""
+                }
+            )
+            .cyan()
         )?;
     } else {
         write!(stdout, "{CLR}{}\r\n", "Scan complete.".cyan())?;
@@ -379,15 +467,21 @@ fn render(
             } else {
                 String::new()
             };
+            let transport_tag = if dev.transport_type == 1 {
+                " [Classic]".cyan().to_string()
+            } else {
+                " [BLE]".dimmed().to_string()
+            };
 
             write!(
                 stdout,
-                "{CLR}  {:>2}  {}  {}  {} dBm{}\r\n",
+                "{CLR}  {:>2}  {}  {}  {} dBm{}{}\r\n",
                 num.to_string().bold(),
                 format_address(&dev.address).bold(),
                 name_display,
                 rssi_colored,
                 hid_tag,
+                transport_tag,
             )?;
             lines += 1;
         }
@@ -481,10 +575,20 @@ fn run_streaming(
                 name,
                 rssi,
                 is_hid,
+                transport_type,
             }) = decode_event(&cbor)
             {
                 let is_new = !devices.contains_key(&address);
-                upsert_device(devices, order, address, addr_kind, name, rssi, is_hid);
+                upsert_device(
+                    devices,
+                    order,
+                    address,
+                    addr_kind,
+                    name,
+                    rssi,
+                    is_hid,
+                    transport_type,
+                );
                 if is_new {
                     print_device_line(&devices[&address]);
                 }
@@ -505,16 +609,22 @@ fn print_device_line(dev: &ScannedDevice) {
     } else {
         "     ".to_string()
     };
+    let transport_tag = if dev.transport_type == 1 {
+        "[Classic]".cyan().to_string()
+    } else {
+        "[BLE]".dimmed().to_string()
+    };
     let name = if dev.name.is_empty() {
         "(unknown)".to_string()
     } else {
         format!("\"{}\"", dev.name)
     };
     println!(
-        "  {}  {:30}  RSSI: {:4}  {}",
+        "  {}  {:30}  RSSI: {:4}  {} {}",
         format_address(&dev.address).bold(),
         name,
         dev.rssi,
-        hid_tag
+        hid_tag,
+        transport_tag,
     );
 }

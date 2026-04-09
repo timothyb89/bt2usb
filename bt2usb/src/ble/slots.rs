@@ -148,3 +148,46 @@ pub enum SlotCommand {
 /// Per-slot command channels for targeted commands (disconnect, profile update).
 pub static SLOT_CMD_CHANNELS: [Channel<CriticalSectionRawMutex, SlotCommand, 2>; MAX_CONNECTIONS] =
     [Channel::new(), Channel::new(), Channel::new()];
+
+// ============ Classic BT Connection State ============
+
+/// Classic BT connection state (single device for now).
+static CLASSIC_STATE: AtomicU8 = AtomicU8::new(0); // 0=Idle, 2=Connected
+static CLASSIC_ADDR_BYTES: [AtomicU8; 6] = [
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+];
+pub static CLASSIC_PROFILE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_classic_connected(addr: &[u8; 6], profile_id: u8) {
+    for i in 0..6 {
+        CLASSIC_ADDR_BYTES[i].store(addr[i], Ordering::Relaxed);
+    }
+    CLASSIC_PROFILE.store(profile_id, Ordering::Relaxed);
+    CLASSIC_STATE.store(SLOT_CONNECTED, Ordering::Relaxed);
+}
+
+#[allow(dead_code)]
+pub fn set_classic_disconnected() {
+    CLASSIC_STATE.store(SLOT_IDLE, Ordering::Relaxed);
+    for byte in &CLASSIC_ADDR_BYTES {
+        byte.store(0, Ordering::Relaxed);
+    }
+    CLASSIC_PROFILE.store(0, Ordering::Relaxed);
+}
+
+pub fn is_classic_connected() -> bool {
+    CLASSIC_STATE.load(Ordering::Relaxed) == SLOT_CONNECTED
+}
+
+pub fn get_classic_address() -> [u8; 6] {
+    let mut addr = [0u8; 6];
+    for i in 0..6 {
+        addr[i] = CLASSIC_ADDR_BYTES[i].load(Ordering::Relaxed);
+    }
+    addr
+}

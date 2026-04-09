@@ -161,7 +161,7 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                 println!("  Battery:        {battery_str}");
             } else {
                 println!(
-                    "  Connected:      {}/3",
+                    "  Connected:      {}",
                     connected_devices.len().to_string().bold()
                 );
                 for (i, dev) in connected_devices.iter().enumerate() {
@@ -169,6 +169,11 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                         "?".dimmed().to_string()
                     } else {
                         format!("{}%", dev.battery_level)
+                    };
+                    let transport = if dev.transport_type == 1 {
+                        "Classic"
+                    } else {
+                        "BLE"
                     };
                     // Look up device name from bonds
                     let name = all_bonds
@@ -178,19 +183,21 @@ pub fn cmd_status(transport: &mut Transport) -> Result<()> {
                         .unwrap_or("");
                     if name.is_empty() {
                         println!(
-                            "    {}. {}  {}  battery: {}",
+                            "    {}. {}  {}  [{}]  battery: {}",
                             i + 1,
                             format_address(&dev.address).bold(),
                             profile_name(dev.profile_id),
+                            transport,
                             bat,
                         );
                     } else {
                         println!(
-                            "    {}. {}  {}  {}  battery: {}",
+                            "    {}. {}  {}  {}  [{}]  battery: {}",
                             i + 1,
                             format_address(&dev.address).bold(),
                             name,
                             profile_name(dev.profile_id).dimmed(),
+                            transport,
                             bat,
                         );
                     }
@@ -250,14 +257,21 @@ pub fn cmd_connect(
     address: &str,
     addr_kind: u8,
     profile: Option<u8>,
+    classic: bool,
 ) -> Result<()> {
     let addr = parse_address(address)?;
+    let transport_type = if classic { 1u8 } else { 0u8 };
 
     let mut cbor_buf = [0u8; 32];
-    let len = encode_request_connect(&mut cbor_buf, &addr, addr_kind)
+    let len = encode_request_connect(&mut cbor_buf, &addr, addr_kind, transport_type)
         .map_err(|_| anyhow::anyhow!("encode failed"))?;
 
-    println!("Connecting to {}...", format_address(&addr).bold());
+    let transport_label = if classic { "Classic" } else { "BLE" };
+    println!(
+        "Connecting to {} [{}]...",
+        format_address(&addr).bold(),
+        transport_label
+    );
 
     if let Some(profile_id) = profile {
         let name = profile_name(profile_id);
@@ -306,8 +320,13 @@ pub fn cmd_connect(
     if let Some(profile_id) = profile {
         if pairing_complete {
             println!("Setting profile...");
-            let len = encode_request_update_bond_profile(&mut cbor_buf, &addr, profile_id)
-                .map_err(|_| anyhow::anyhow!("encode failed"))?;
+            let len = encode_request_update_bond_profile(
+                &mut cbor_buf,
+                &addr,
+                profile_id,
+                transport_type,
+            )
+            .map_err(|_| anyhow::anyhow!("encode failed"))?;
             let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
             check_ok(&resp)?;
             println!("{}", "Profile set successfully.".green());
@@ -353,17 +372,18 @@ pub fn cmd_bonds(transport: &mut Transport) -> Result<()> {
                     } else {
                         format!("  {}", bond.name)
                     };
+                    let transport = if bond.transport_type == 1 {
+                        "Classic"
+                    } else {
+                        "BLE"
+                    };
                     println!(
-                        "  {}. {}{}  {}  kind={}{}",
+                        "  {}. {}{}  {}  [{}]{}",
                         i + 1,
                         format_address(&bond.address).bold(),
                         name_display,
                         profile_name(bond.profile_id),
-                        if bond.addr_kind == 1 {
-                            "random"
-                        } else {
-                            "public"
-                        },
+                        transport,
                         auto,
                     );
                 }
@@ -401,12 +421,17 @@ pub fn cmd_factory_reset(transport: &mut Transport) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_clear_bond(transport: &mut Transport, address: &str) -> Result<()> {
+pub fn cmd_clear_bond(transport: &mut Transport, address: &str, classic: bool) -> Result<()> {
     let addr = parse_address(address)?;
-    println!("Clearing bond for {}...", format_address(&addr).bold());
+    let transport_type = if classic { 1u8 } else { 0u8 };
+    println!(
+        "Clearing {} bond for {}...",
+        if classic { "Classic" } else { "BLE" },
+        format_address(&addr).bold()
+    );
 
     let mut cbor_buf = [0u8; 32];
-    let len = encode_request_clear_bond(&mut cbor_buf, &addr)
+    let len = encode_request_clear_bond(&mut cbor_buf, &addr, transport_type)
         .map_err(|_| anyhow::anyhow!("encode failed"))?;
 
     let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
@@ -419,18 +444,25 @@ pub fn cmd_clear_bond(transport: &mut Transport, address: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_set_profile(transport: &mut Transport, address: &str, profile_id: u8) -> Result<()> {
+pub fn cmd_set_profile(
+    transport: &mut Transport,
+    address: &str,
+    profile_id: u8,
+    classic: bool,
+) -> Result<()> {
     let addr = parse_address(address)?;
+    let transport_type = if classic { 1u8 } else { 0u8 };
     let profile = profile_name(profile_id);
 
     println!(
-        "Setting profile for {} to {}...",
+        "Setting {} profile for {} to {}...",
+        if classic { "Classic" } else { "BLE" },
         format_address(&addr).bold(),
         profile.bold()
     );
 
     let mut cbor_buf = [0u8; 32];
-    let len = encode_request_update_bond_profile(&mut cbor_buf, &addr, profile_id)
+    let len = encode_request_update_bond_profile(&mut cbor_buf, &addr, profile_id, transport_type)
         .map_err(|_| anyhow::anyhow!("encode failed"))?;
 
     let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;
@@ -470,17 +502,24 @@ pub fn cmd_clear_active_device(transport: &mut Transport) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_set_auto_connect(transport: &mut Transport, address: &str, enabled: bool) -> Result<()> {
+pub fn cmd_set_auto_connect(
+    transport: &mut Transport,
+    address: &str,
+    enabled: bool,
+    classic: bool,
+) -> Result<()> {
     let addr = parse_address(address)?;
+    let transport_type = if classic { 1u8 } else { 0u8 };
 
     println!(
-        "{} auto-connect for {}...",
+        "{} {} auto-connect for {}...",
         if enabled { "Enabling" } else { "Disabling" },
+        if classic { "Classic" } else { "BLE" },
         format_address(&addr).bold()
     );
 
     let mut cbor_buf = [0u8; 32];
-    let len = encode_request_set_auto_connect(&mut cbor_buf, &addr, enabled)
+    let len = encode_request_set_auto_connect(&mut cbor_buf, &addr, enabled, transport_type)
         .map_err(|_| anyhow::anyhow!("encode failed"))?;
 
     let (resp, _) = transport.request(&cbor_buf[..len], DEFAULT_TIMEOUT)?;

@@ -54,6 +54,8 @@ pub enum DeviceProfile {
     FullScrollDial,
     /// Full Scroll Dial — 16-bit wheel mode (unscaled, native scroll velocity)
     FullScrollDial16Bit,
+    /// Apple Magic Trackpad 2/3 — Classic BT multitouch trackpad
+    MagicTrackpad,
     /// Fallback for unknown devices — standard 3-byte mouse
     Generic,
 }
@@ -65,6 +67,7 @@ impl DeviceProfile {
             Self::MxMaster3S => "MX Master 3S",
             Self::FullScrollDial => "Full Scroll Dial",
             Self::FullScrollDial16Bit => "Full Scroll Dial", // Same BLE device
+            Self::MagicTrackpad => "Magic Trackpad",
             Self::Generic => "",
         }
     }
@@ -86,6 +89,7 @@ impl DeviceProfile {
             Self::MxMaster3S => 1,
             Self::FullScrollDial => 2,
             Self::FullScrollDial16Bit => 3,
+            Self::MagicTrackpad => 4,
         }
     }
 
@@ -95,6 +99,7 @@ impl DeviceProfile {
             1 => Self::MxMaster3S,
             2 => Self::FullScrollDial,
             3 => Self::FullScrollDial16Bit,
+            4 => Self::MagicTrackpad,
             _ => Self::Generic,
         }
     }
@@ -113,13 +118,14 @@ impl DeviceProfile {
             Self::MxMaster3S => translate_mx_master(data, len),
             Self::FullScrollDial => translate_scroll_dial(data, len, accum),
             Self::FullScrollDial16Bit => translate_scroll_dial(data, len, accum), // Fallback for 8-bit mode
+            Self::MagicTrackpad => translate_generic(data, len), // Not used — handled via passthrough
             Self::Generic => translate_generic(data, len),
         }
     }
 
     /// Check if this profile uses 16-bit mouse reports
     pub fn uses_16bit_reports(&self) -> bool {
-        matches!(self, Self::FullScrollDial16Bit)
+        matches!(self, Self::FullScrollDial16Bit | Self::MagicTrackpad)
     }
 
     /// Translate a raw BLE HID report into a 16-bit USB MouseReport16.

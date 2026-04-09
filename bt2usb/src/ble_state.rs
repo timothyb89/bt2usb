@@ -42,25 +42,36 @@ pub enum BleCommand {
     SetActiveDevice { address: [u8; 6], addr_kind: u8 },
     /// Clear the active device preference (disable auto-connect).
     ClearActiveDevice,
-    /// Update the profile for an existing bond.
-    UpdateBondProfile { address: [u8; 6], profile_id: u8 },
+    /// Update the profile for an existing bond (transport: 0=BLE, 1=Classic).
+    UpdateBondProfile {
+        address: [u8; 6],
+        profile_id: u8,
+        transport_type: u8,
+    },
     /// Restart the system.
     Restart,
     /// Set a configuration value and persist to flash.
     SetConfig { key: u8, value: u32 },
     /// Set forced OS override (0=Auto, 1-3=forced) and persist to flash.
     SetForcedOs { os: u8 },
-    /// Set auto-connect flag for a bonded device.
-    SetAutoConnect { address: [u8; 6], enabled: bool },
-    /// Clear a single bond by address.
-    ClearBond { address: [u8; 6] },
+    /// Set auto-connect flag for a bonded device (transport: 0=BLE, 1=Classic).
+    SetAutoConnect {
+        address: [u8; 6],
+        enabled: bool,
+        transport_type: u8,
+    },
+    /// Clear a single bond by address (transport: 0=BLE, 1=Classic).
+    ClearBond {
+        address: [u8; 6],
+        transport_type: u8,
+    },
     /// Factory reset: clear all bonds and preferences, then restart.
     FactoryReset,
 }
 
 // ============ Events (BLE -> RPC) ============
 
-/// A discovered BLE device from scanning.
+/// A discovered device from scanning (BLE or Classic).
 #[derive(Clone, Debug, defmt::Format)]
 pub struct ScanResultData {
     pub address: [u8; 6],
@@ -69,6 +80,8 @@ pub struct ScanResultData {
     pub name_len: u8,
     pub rssi: i8,
     pub is_hid: bool,
+    /// 0 = BLE, 1 = Classic BT
+    pub transport_type: u8,
 }
 
 #[derive(Clone, Debug, defmt::Format)]
@@ -97,9 +110,27 @@ pub static BLE_CMD_CHANNEL: Channel<CriticalSectionRawMutex, BleCommand, 4> = Ch
 /// Events from BLE state machine to RPC handler (capacity 8).
 pub static BLE_EVENT_CHANNEL: Channel<CriticalSectionRawMutex, BleEvent, 8> = Channel::new();
 
+// ============ Classic BT Commands ============
+
+/// Commands targeted at the Classic BT task.
+#[derive(Clone, Debug, defmt::Format)]
+pub enum ClassicCommand {
+    /// Connect to a specific Classic BT device by address.
+    Connect { address: [u8; 6] },
+    /// Start Classic Inquiry scan.
+    Scan,
+    /// Stop active Inquiry scan.
+    ScanStop,
+}
+
+/// Command channel for Classic BT task (capacity 2).
+pub static CLASSIC_CMD_CHANNEL: Channel<CriticalSectionRawMutex, ClassicCommand, 2> =
+    Channel::new();
+
 /// Bond list response for GetBonds command
-/// Bond list entry: (address, addr_kind, profile_id, name, auto_connect)
-pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>, bool), 10>;
+/// Bond list entry: (address, addr_kind, profile_id, name, auto_connect, transport_type)
+/// transport_type: 0=BLE, 1=Classic BT
+pub type BondList = heapless::Vec<([u8; 6], u8, u8, heapless::String<32>, bool, u8), 20>;
 
 /// Response channel for GetBonds (capacity 1, only one request at a time).
 pub static BONDS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, BondList, 1> = Channel::new();
@@ -110,6 +141,8 @@ pub struct ConnectedDeviceInfo {
     pub address: [u8; 6],
     pub profile_id: u8,
     pub battery_level: u8,
+    /// 0 = BLE, 1 = Classic BT
+    pub transport_type: u8,
 }
 
 /// Status information response
@@ -123,8 +156,8 @@ pub struct StatusInfo {
     pub battery_level: u8,
     /// Number of currently connected devices.
     pub connected_count: u8,
-    /// Per-device connection info (up to 3).
-    pub connected_devices: [Option<ConnectedDeviceInfo>; 3],
+    /// Per-device connection info (up to 3 BLE + 1 Classic).
+    pub connected_devices: [Option<ConnectedDeviceInfo>; 4],
 }
 
 /// Response channel for GetStatus (capacity 1, only one request at a time).
@@ -338,6 +371,7 @@ impl EventHandler for RpcScannerHandler {
                     name_len,
                     rssi: report.rssi,
                     is_hid: true,
+                    transport_type: 0, // BLE
                 }));
             } else if name_len > 0 && hid_cache_contains(&addr_bytes) {
                 // Scan response with a name for a previously-seen HID device —
@@ -354,6 +388,7 @@ impl EventHandler for RpcScannerHandler {
                     name_len,
                     rssi: report.rssi,
                     is_hid: true,
+                    transport_type: 0, // BLE
                 }));
             }
         }

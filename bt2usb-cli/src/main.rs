@@ -49,20 +49,28 @@ enum Command {
         /// Device profile to set on connect: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit)
         #[arg(short, long)]
         profile: Option<u8>,
+
+        /// Scan for Classic BT devices (Inquiry) instead of BLE
+        #[arg(short, long)]
+        classic: bool,
     },
 
-    /// Connect to a BLE device by address
+    /// Connect to a device by address
     Connect {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
 
-        /// Address type: 0=public, 1=random
+        /// Address type: 0=public, 1=random (BLE only)
         #[arg(short = 'k', long, default_value = "1")]
         addr_kind: u8,
 
         /// Device profile: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default)
         #[arg(short, long)]
         profile: Option<u8>,
+
+        /// Connect via Classic BT instead of BLE
+        #[arg(long)]
+        classic: bool,
     },
 
     /// Disconnect a device (all devices if no address given)
@@ -82,17 +90,25 @@ enum Command {
 
     /// Clear a single bond by address
     ClearBond {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// Set the profile for a bonded device
     SetProfile {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
 
-        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default)
+        /// Profile ID: 0=generic, 1=MxMaster3S, 2=FullScrollDial(8-bit), 3=FullScrollDial(16-bit, default), 4=MagicTrackpad
         profile_id: u8,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// [Deprecated] Set the active device for auto-reconnect. Use set-auto-connect instead.
@@ -113,15 +129,23 @@ enum Command {
     /// Enable auto-connect for a bonded device
     #[command(name = "set-auto-connect")]
     SetAutoConnect {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// Disable auto-connect for a bonded device
     #[command(name = "clear-auto-connect")]
     ClearAutoConnect {
-        /// BLE address (AA:BB:CC:DD:EE:FF)
+        /// Device address (AA:BB:CC:DD:EE:FF)
         address: String,
+
+        /// Classic BT bond (default: BLE)
+        #[arg(long)]
+        classic: bool,
     },
 
     /// [Deprecated] Auto-connect to the active device from preferences.
@@ -236,28 +260,44 @@ fn main() -> Result<()> {
             unreachable!()
         }
         Command::Status => cmd_status(&mut transport),
-        Command::Scan { timeout, profile } => scan::cmd_scan(&mut transport, timeout, profile),
+        Command::Scan {
+            timeout,
+            profile,
+            classic,
+        } => {
+            if classic {
+                scan::cmd_classic_scan(&mut transport, timeout, profile)
+            } else {
+                scan::cmd_scan(&mut transport, timeout, profile)
+            }
+        }
         Command::Connect {
             address,
             addr_kind,
             profile,
-        } => cmd_connect(&mut transport, &address, addr_kind, profile),
+            classic,
+        } => cmd_connect(&mut transport, &address, addr_kind, profile, classic),
         Command::Disconnect { address } => cmd_disconnect(&mut transport, address.as_deref()),
         Command::Bonds => cmd_bonds(&mut transport),
         Command::ClearBonds => cmd_clear_bonds(&mut transport),
         Command::FactoryReset => cmd_factory_reset(&mut transport),
-        Command::ClearBond { address } => cmd_clear_bond(&mut transport, &address),
+        Command::ClearBond { address, classic } => {
+            cmd_clear_bond(&mut transport, &address, classic)
+        }
         Command::SetProfile {
             address,
             profile_id,
-        } => cmd_set_profile(&mut transport, &address, profile_id),
+            classic,
+        } => cmd_set_profile(&mut transport, &address, profile_id, classic),
         Command::SetActiveDevice { address, addr_kind } => {
             cmd_set_active_device(&mut transport, &address, addr_kind)
         }
         Command::ClearActiveDevice => cmd_clear_active_device(&mut transport),
-        Command::SetAutoConnect { address } => cmd_set_auto_connect(&mut transport, &address, true),
-        Command::ClearAutoConnect { address } => {
-            cmd_set_auto_connect(&mut transport, &address, false)
+        Command::SetAutoConnect { address, classic } => {
+            cmd_set_auto_connect(&mut transport, &address, true, classic)
+        }
+        Command::ClearAutoConnect { address, classic } => {
+            cmd_set_auto_connect(&mut transport, &address, false, classic)
         }
         Command::AutoConnect => cmd_auto_connect(&mut transport),
         Command::GetConfig => cmd_get_config(&mut transport),

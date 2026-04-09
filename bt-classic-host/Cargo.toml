@@ -1,0 +1,19 @@
+[package]
+name = "bt-classic-host"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Bluetooth Classic HID host stack for embedded systems (no_std)"
+
+[dependencies]
+bt-hci = { version = "0.8", default-features = false }
+embassy-sync = { version = "0.7" }
+embassy-time = { version = "0.5" }
+embedded-io = "0.7"
+embedded-io-async = "0.7"
+heapless = "0.9"
+defmt = { version = "1", optional = true }
+
+[features]
+default = []
+defmt = ["dep:defmt", "bt-hci/defmt", "embassy-sync/defmt", "embassy-time/defmt"]

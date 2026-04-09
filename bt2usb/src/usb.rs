@@ -12,11 +12,11 @@
 use core::sync::atomic::Ordering;
 use defmt::*;
 use embassy_executor::Executor;
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select3, Either3};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
-use embassy_usb::class::hid::{HidReaderWriter, HidWriter};
+use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
@@ -237,16 +237,19 @@ fn check_reprobe() {
 
 // ============ Standard HID Handler Task (Windows/Linux/Unknown) ============
 
-/// USB HID handler task for standard mode (no MT2).
+/// USB HID handler task for standard mode (Windows/Linux).
 ///
-/// Handles keyboard and mouse reports from BLE + battery level updates.
-/// Uses `select` with 2 branches (no MT2 tick timer).
+/// Handles keyboard and mouse reports from BLE, battery level updates,
+/// and PTP touchpad output for MagicTrackpad via BT Classic.
 #[embassy_executor::task]
 async fn usb_hid_handler_task_standard(
     mut keyboard_writer: HidWriter<'static, Driver<'static, USB>, 8>,
     mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 8>,
+    mut ptp_writer: HidWriter<'static, Driver<'static, USB>, 64>,
 ) {
-    info!("USB HID handler task started (standard mode), waiting for BLE reports...");
+    info!("USB HID handler task started (standard+PTP mode), waiting for BLE reports...");
+
+    let mut ptp_passthrough = crate::ptp_translate::PtpPassthrough::new();
 
     // Per-slot scroll accumulators for multi-device support
     let mut scroll_accums = [
@@ -272,10 +275,25 @@ async fn usb_hid_handler_task_standard(
             }
         }
 
-        match select(HID_REPORT_CHANNEL.receive(), BATTERY_USB_SIGNAL.wait()).await {
-            Either::First(event) => match event.report_type {
+        match select3(
+            HID_REPORT_CHANNEL.receive(),
+            BATTERY_USB_SIGNAL.wait(),
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(MT2_TICK_MS)),
+        )
+        .await
+        {
+            Either3::First(event) => match event.report_type {
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
+                }
+                HidReportType::Mouse
+                    if event.profile == crate::device_profile::DeviceProfile::MagicTrackpad =>
+                {
+                    // MagicTrackpad BT Classic → PTP touchpad
+                    if !crate::ptp::PTP_ENABLED.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    ptp_passthrough.receive_bt_report(&event.data[..event.len]);
                 }
                 HidReportType::Mouse => {
                     let slot = event.slot_index as usize;
@@ -286,8 +304,18 @@ async fn usb_hid_handler_task_standard(
                     debug!("Unhandled HID report type");
                 }
             },
-            Either::Second(level) => {
+            Either3::Second(level) => {
                 send_battery_level(&mut mouse_writer, level).await;
+            }
+            Either3::Third(_) => {
+                // PTP passthrough tick: reclocked output at steady USB rate
+                if let Some(report) = ptp_passthrough.tick() {
+                    if crate::ptp::PTP_ENABLED.load(Ordering::Relaxed) {
+                        if let Err(e) = ptp_writer.write(&report).await {
+                            warn!("PTP tick write error: {:?}", e);
+                        }
+                    }
+                }
             }
         }
     }
@@ -312,6 +340,7 @@ async fn usb_hid_handler_task_mt2(
     info!("USB HID handler task started (macOS/MT2 mode), waiting for BLE reports...");
 
     let mut touch_synth = crate::mt2::TouchSynthesizer::new();
+    let mut mt2_passthrough = crate::mt2_translate::Mt2Passthrough::new();
 
     loop {
         check_reprobe();
@@ -327,9 +356,19 @@ async fn usb_hid_handler_task_mt2(
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
-                HidReportType::Mouse => {
+                HidReportType::Mouse
+                    if event.profile == crate::device_profile::DeviceProfile::MagicTrackpad =>
+                {
+                    // MT2 reclocked passthrough: store raw BT report for steady-rate output
                     if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
-                        debug!("MT2: scroll event received but MT not yet enabled");
+                        debug!("MT2: report received but MT not yet enabled");
+                        continue;
+                    }
+                    mt2_passthrough.receive_bt_report(&event.data[..event.len]);
+                }
+                HidReportType::Mouse => {
+                    // Non-MT2 devices (Dial, etc.): extract scroll delta for TouchSynthesizer
+                    if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
                         continue;
                     }
 
@@ -364,12 +403,48 @@ async fn usb_hid_handler_task_mt2(
                 debug!("MT2: battery update received (not forwarded)");
             }
             Either3::Third(_) => {
-                // MT2 tick: send continuous touch reports while gesture is active
-                if let Some(report) = touch_synth.tick() {
-                    if let Err(e) = mt2_writer.write(&report).await {
-                        warn!("MT2 trackpad tick write error: {:?}", e);
+                // MT2 passthrough tick: reclocked output at steady USB rate
+                if let Some((report, len)) = mt2_passthrough.tick() {
+                    if let Err(e) = mt2_writer.write(&report[..len]).await {
+                        warn!("MT2 passthrough tick write error: {:?}", e);
                     }
                 }
+                // TouchSynthesizer tick: Dial scroll synthesis
+                if let Some(report) = touch_synth.tick() {
+                    if let Err(e) = mt2_writer.write(&report).await {
+                        warn!("MT2 synth tick write error: {:?}", e);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============ MT2 Actuator Task ============
+
+/// Reads actuator OUTPUT reports (Report ID 0x53) from macOS and auto-ACKs them.
+///
+/// macOS sends actuator commands when it detects sufficient force pressure in
+/// touch data. The MT2 over BT Classic handles haptics autonomously, so we just
+/// need to accept the commands — macOS then reads the button bit from subsequent
+/// touch reports to confirm the click.
+#[embassy_executor::task]
+async fn mt2_actuator_task(mut reader: HidReader<'static, Driver<'static, USB>, 64>) {
+    info!("[actuator] MT2 actuator reader task started");
+    let mut buf = [0u8; 64];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(n) if n > 0 => {
+                info!(
+                    "[actuator] Received {} bytes: report_id=0x{:02X}",
+                    n, buf[0]
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("[actuator] Read error: {:?}", e);
+                // USB disconnected/reset — wait briefly and retry
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
             }
         }
     }
@@ -450,12 +525,12 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         max_packet_size: 64,
     };
 
-    // State buffers — 512 for config desc to fit up to 4 interfaces, 128 for control
-    // to accommodate Feature 0xDB (76 bytes)
-    static CONFIG_DESC: StaticCell<[u8; 512]> = StaticCell::new();
+    // State buffers — 768 for config desc (PTP descriptor ~565 bytes + interface overhead),
+    // 320 for control to accommodate PTP certification blob (257 bytes)
+    static CONFIG_DESC: StaticCell<[u8; 768]> = StaticCell::new();
     static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
     static MS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
-    static CONTROL_BUF: StaticCell<[u8; 128]> = StaticCell::new();
+    static CONTROL_BUF: StaticCell<[u8; 320]> = StaticCell::new();
 
     static STATE_KB: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
     static STATE_MOUSE: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
@@ -466,10 +541,10 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
     let mut builder = embassy_usb::Builder::new(
         driver,
         config,
-        CONFIG_DESC.init([0; 512]),
+        CONFIG_DESC.init([0; 768]),
         BOS_DESC.init([0; 256]),
         MS_DESC.init([0; 256]),
-        CONTROL_BUF.init([0; 128]),
+        CONTROL_BUF.init([0; 320]),
     );
     builder.handler(DEVICE_HANDLER.init(crate::usb_hid::UsbDeviceHandler));
 
@@ -498,6 +573,25 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         None
     };
 
+    // PTP Touchpad — only for non-macOS (Windows/Linux PTP gestures from MT2)
+    static STATE_PTP: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
+    static PTP_HANDLER: StaticCell<crate::ptp::PtpRequestHandler> = StaticCell::new();
+    let ptp_writer = if !is_macos {
+        let ptp_config = embassy_usb::class::hid::Config {
+            report_descriptor: crate::ptp::PTP_REPORT_DESC,
+            request_handler: Some(PTP_HANDLER.init(crate::ptp::PtpRequestHandler::new())),
+            poll_ms: 1,
+            max_packet_size: 64,
+        };
+        Some(HidWriter::<_, 64>::new(
+            &mut builder,
+            STATE_PTP.init(embassy_usb::class::hid::State::new()),
+            ptp_config,
+        ))
+    } else {
+        None
+    };
+
     // MT2 Trackpad — only for macOS (minimizes interface count for hub compatibility)
     static STATE_MT2: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
     static MT2_HANDLER: StaticCell<crate::mt2::Mt2TrackpadRequestHandler> = StaticCell::new();
@@ -513,6 +607,31 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             STATE_MT2.init(embassy_usb::class::hid::State::new()),
             mt2_config,
         ))
+    } else {
+        None
+    };
+
+    // MT2 Actuator interface — only for macOS.
+    // Real MT2 Interface 2: accepts actuator OUTPUT reports (Report ID 0x53)
+    // from macOS for haptic feedback. Without this, macOS ignores the click bit.
+    static STATE_ACTUATOR: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
+    static ACTUATOR_HANDLER: StaticCell<crate::mt2::Mt2ActuatorRequestHandler> = StaticCell::new();
+    let actuator_reader = if is_macos {
+        let actuator_config = embassy_usb::class::hid::Config {
+            report_descriptor: crate::mt2::ACTUATOR_REPORT_DESC,
+            request_handler: Some(
+                ACTUATOR_HANDLER.init(crate::mt2::Mt2ActuatorRequestHandler::new()),
+            ),
+            poll_ms: 1,
+            max_packet_size: 64,
+        };
+        let actuator_hid = HidReaderWriter::<_, 64, 64>::new(
+            &mut builder,
+            STATE_ACTUATOR.init(embassy_usb::class::hid::State::new()),
+            actuator_config,
+        );
+        let (actuator_r, _actuator_w) = actuator_hid.split();
+        Some(actuator_r)
     } else {
         None
     };
@@ -542,22 +661,27 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         spawner.spawn(usb_task(usb_dev)).unwrap();
 
         // Spawn the appropriate HID handler task based on OS
-        match (mt2_writer, mouse_writer) {
-            (Some(mt2_w), _) => {
+        match (mt2_writer, mouse_writer, ptp_writer) {
+            (Some(mt2_w), _, _) => {
                 // macOS: MT2 trackpad for scroll, no mouse interface
                 spawner
                     .spawn(usb_hid_handler_task_mt2(kb_writer, mt2_w))
                     .unwrap();
             }
-            (None, Some(mouse_w)) => {
-                // Windows/Linux: standard mouse interface
+            (None, Some(mouse_w), Some(ptp_w)) => {
+                // Windows/Linux: standard mouse + PTP touchpad
                 spawner
-                    .spawn(usb_hid_handler_task_standard(kb_writer, mouse_w))
+                    .spawn(usb_hid_handler_task_standard(kb_writer, mouse_w, ptp_w))
                     .unwrap();
             }
-            (None, None) => {
-                core::unreachable!("must have either MT2 or mouse interface");
+            _ => {
+                core::unreachable!("must have either MT2 or mouse+PTP interfaces");
             }
+        }
+
+        // Spawn actuator reader task (macOS only)
+        if let Some(act_reader) = actuator_reader {
+            spawner.spawn(mt2_actuator_task(act_reader)).unwrap();
         }
 
         spawner

@@ -38,6 +38,10 @@ static PROBE_CONFIGURED: AtomicBool = AtomicBool::new(false);
 /// doesn't support fetch_add on Cortex-M0+.
 static PROBE_RESET_SEEN: AtomicBool = AtomicBool::new(false);
 
+/// Whether 2+ bus resets have been seen. Windows full-speed enumeration
+/// sends 2 resets before SET_ADDRESS; macOS and Linux send 1.
+static PROBE_MULTI_RESET: AtomicBool = AtomicBool::new(false);
+
 // ============ Probe HID Descriptor ============
 
 /// Minimal vendor-usage-page HID report descriptor.
@@ -65,8 +69,13 @@ struct ProbeDeviceHandler;
 
 impl embassy_usb::Handler for ProbeDeviceHandler {
     fn reset(&mut self) {
+        if PROBE_RESET_SEEN.load(Ordering::Relaxed) {
+            PROBE_MULTI_RESET.store(true, Ordering::Relaxed);
+            debug!("[probe] bus reset (2+)");
+        } else {
+            debug!("[probe] bus reset (first)");
+        }
         PROBE_RESET_SEEN.store(true, Ordering::Relaxed);
-        debug!("[probe] bus reset");
     }
 
     fn configured(&mut self, configured: bool) {
@@ -122,13 +131,21 @@ fn evaluate_os() -> DetectedOs {
 
     let lang_id = PROBE_LANG_ID_REQUESTED.load(Ordering::Relaxed);
     let set_idle = PROBE_SET_IDLE_RECEIVED.load(Ordering::Relaxed);
+    let multi_reset = PROBE_MULTI_RESET.load(Ordering::Relaxed);
 
     // macOS skips LangID (String 0) and doesn't send SET_IDLE for vendor HID
     if !lang_id && !set_idle {
         return DetectedOs::MacOs;
     }
 
+    // Windows does 2+ bus resets before SET_ADDRESS; Linux and macOS do 1.
+    // This catches Windows even when String 0xEE is cached in the registry.
+    if multi_reset {
+        return DetectedOs::Windows;
+    }
+
     // Linux sends SET_IDLE and requests LangID, but never String 0xEE
+    // and only does a single bus reset.
     if set_idle {
         return DetectedOs::Linux;
     }
@@ -202,6 +219,15 @@ async fn probe_eval_task(_writer: HidWriter<'static, Driver<'static, USB>, 8>) {
         }
     }
 
+    // Log all collected signals for debugging
+    info!(
+        "[probe] Signals: 0xEE={} lang_id={} set_idle={} multi_reset={}",
+        PROBE_STRING_0X_EE.load(Ordering::Relaxed),
+        PROBE_LANG_ID_REQUESTED.load(Ordering::Relaxed),
+        PROBE_SET_IDLE_RECEIVED.load(Ordering::Relaxed),
+        PROBE_MULTI_RESET.load(Ordering::Relaxed),
+    );
+
     // At T+500ms: evaluate heuristic signals
     let os = evaluate_os();
     if os != DetectedOs::Unknown {
@@ -238,9 +264,13 @@ pub fn start_core1_usb_probe(usb: Peri<'static, USB>, attempt_count: u8) -> ! {
 
     let driver = Driver::new(usb, Irqs);
 
-    // Vary bcdDevice by attempt count to bust Windows 0xEE registry cache.
-    // Windows caches the MS OS String Descriptor result per VID/PID/bcdDevice.
-    let device_release = 0x0100 | (attempt_count as u16 & 0x0F);
+    // Vary bcdDevice by a persistent generation counter to bust Windows 0xEE
+    // registry cache. Windows caches the MS OS String Descriptor result per
+    // VID/PID/bcdDevice. The generation counter survives clear_for_reprobe()
+    // so each probe cycle gets a unique bcdDevice, unlike attempt_count which
+    // resets to 1 each cycle.
+    let generation = scratch::next_generation();
+    let device_release = 0x0100 | (generation & 0x0F);
 
     let mut config = embassy_usb::Config::new(0x1209, 0x0001);
     config.manufacturer = Some("bt2usb");

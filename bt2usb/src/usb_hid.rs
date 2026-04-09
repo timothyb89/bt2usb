@@ -392,27 +392,28 @@ impl Handler for UsbDeviceHandler {
     }
 
     fn reset(&mut self) {
-        // Reset high-res scroll state so the OS must re-enable it after
-        // re-enumeration. Without this, a sleep/wake or USB switch causes a
-        // mismatch: firmware thinks hires is on (passthrough) but the OS
-        // treats units as standard (1 unit = 1 detent) → 120× too fast.
-        HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-        crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
         crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
 
         // Switch detection: if the device has been configured for >2s,
         // this bus reset is likely from a USB switch changeover or physical
         // reconnection to a different host. Request reprobe to re-fingerprint.
+        // Also reset protocol state (hires scroll, MT) since the new host
+        // needs to re-negotiate. For quick re-enumerations (<2s, e.g. VM
+        // hotplug), keep protocol state — the host expects the device to
+        // remain in the same state and may not re-send Feature reports.
         let configured_at = CONFIGURED_AT_TICKS.load(Ordering::Relaxed);
         if configured_at > 0 {
             let elapsed = embassy_time::Instant::now().as_ticks() - configured_at;
             if elapsed > REPROBE_THRESHOLD_TICKS {
                 info!("USB bus reset >2s after config -> reprobe requested");
                 REPROBE_REQUESTED.store(true, Ordering::Relaxed);
+                HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+                crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
+                crate::ptp::reset();
             }
         }
 
-        info!("USB bus reset, high-res scroll/MT2 reset");
+        info!("USB bus reset");
     }
 
     fn addressed(&mut self, addr: u8) {
@@ -420,16 +421,12 @@ impl Handler for UsbDeviceHandler {
     }
 
     fn configured(&mut self, configured: bool) {
-        // Reset high-res scroll and MT2 on any re-configuration. USB switches may
-        // re-enumerate without a full bus reset, so reset() alone isn't enough.
-        HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-        crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
         CONFIGURED_AT_TICKS.store(embassy_time::Instant::now().as_ticks(), Ordering::Relaxed);
         crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
         if configured {
-            info!("USB device configured, scroll/MT2 reset");
+            info!("USB device configured");
         } else {
-            info!("USB device unconfigured, scroll/MT2 reset");
+            info!("USB device unconfigured");
         }
     }
 
@@ -442,8 +439,9 @@ impl Handler for UsbDeviceHandler {
             // may not re-send SET_REPORT to re-enable hires. Clear the flag
             // so the host must re-negotiate — same rationale as reset()/configured().
             HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+            crate::ptp::reset();
             crate::device_profile::SCROLL_ACCUM_RESET.store(true, Ordering::Relaxed);
-            debug!("USB resumed, high-res scroll reset");
+            debug!("USB resumed, high-res scroll + PTP reset");
         }
     }
 

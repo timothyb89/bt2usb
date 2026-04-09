@@ -41,10 +41,14 @@ mod defmt_usb;
 mod device_profile;
 mod framing;
 mod hid_report_map;
+mod interp;
 mod mt2;
+mod mt2_translate;
 mod preferences;
 mod probe;
 mod protocol;
+mod ptp;
+mod ptp_translate;
 mod rpc;
 mod rpc_log;
 pub mod scratch;
@@ -118,6 +122,25 @@ static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 /// otherwise both cores starting simultaneously causes a stall.
 static CORE1_EXECUTOR_READY: AtomicBool = AtomicBool::new(false);
 
+// ============ Build-time OS override ============
+
+/// Returns a compile-time forced OS if a `force-*` feature is enabled.
+/// Used to bypass Phase 0 probing (e.g. for VM testing).
+fn build_time_forced_os() -> Option<scratch::DetectedOs> {
+    #[cfg(feature = "force-macos")]
+    return Some(scratch::DetectedOs::MacOs);
+    #[cfg(feature = "force-windows")]
+    return Some(scratch::DetectedOs::Windows);
+    #[cfg(feature = "force-linux")]
+    return Some(scratch::DetectedOs::Linux);
+    #[cfg(not(any(
+        feature = "force-macos",
+        feature = "force-windows",
+        feature = "force-linux"
+    )))]
+    None
+}
+
 // ============ Entry Point ============
 
 /// Main entry point — runs on Core 0.
@@ -126,6 +149,9 @@ static CORE1_EXECUTOR_READY: AtomicBool = AtomicBool::new(false);
 /// - Phase 0 (Probe): Spawn minimal USB device on Core 1 to fingerprint host OS.
 ///   Core 0 idles. Probe writes result to scratch registers and resets.
 /// - Phase 1 (Configured): Spawn OS-appropriate USB on Core 1, then run BLE on Core 0.
+///
+/// Build-time override: `--features force-macos` (or force-windows/force-linux)
+/// skips Phase 0 entirely and goes straight to Phase 1 with the specified OS.
 #[cortex_m_rt::entry]
 fn main() -> ! {
     info!("bt2usb starting (dual-core mode)...");
@@ -141,82 +167,101 @@ fn main() -> ! {
         boot_state.phase, boot_state.detected_os, boot_state.attempt_count
     );
 
-    match boot_state.phase {
-        scratch::BootPhase::Probe => {
-            // Check for a forced OS override cached in scratch[4] by Phase 1.
-            // If set, skip the probe and go straight to Phase 1 with that OS.
-            if let Some(forced_os) = scratch::read_forced_os() {
-                info!(
-                    "[core0] Phase 0: forced OS override -> {}, skipping probe",
-                    forced_os
+    // Determine the detected OS: build-time override > runtime probe/scratch.
+    // Build-time override skips Phase 0 entirely (useful for VM testing
+    // where USB hotplugging breaks the probe).
+    let detected_os = if let Some(os) = build_time_forced_os() {
+        // On cold boot (Phase 0), write the result and do a system reset
+        // just like the normal probe flow. This gives the USB host (especially
+        // VMs) a clean "device appeared" event that it can properly enumerate.
+        if boot_state.phase == scratch::BootPhase::Probe {
+            info!(
+                "[core0] Build-time forced OS={}, writing scratch + reset",
+                os
+            );
+            scratch::write_probe_result(os);
+            system_reset();
+        }
+        info!("[core0] Build-time forced OS={}", os);
+        os
+    } else {
+        match boot_state.phase {
+            scratch::BootPhase::Probe => {
+                // Check for a forced OS override cached in scratch[4] by Phase 1.
+                // If set, skip the probe and go straight to Phase 1 with that OS.
+                if let Some(forced_os) = scratch::read_forced_os() {
+                    info!(
+                        "[core0] Phase 0: forced OS override -> {}, skipping probe",
+                        forced_os
+                    );
+                    scratch::write_probe_result(forced_os);
+                    system_reset();
+                }
+
+                // Phase 0: fingerprint the host OS via a minimal probe USB device.
+                let attempts = scratch::increment_attempts();
+                if scratch::max_attempts_exceeded(attempts) {
+                    info!("Max probe attempts exceeded, skipping probe -> safe default");
+                    scratch::write_probe_result(scratch::DetectedOs::Unknown);
+                    system_reset();
+                }
+
+                info!("[core0] Phase 0: USB probe for OS fingerprinting");
+                let usb = p.USB;
+                spawn_core1(
+                    p.CORE1,
+                    unsafe { &mut *addr_of_mut!(CORE1_STACK) },
+                    move || {
+                        probe::start_core1_usb_probe(usb, attempts);
+                    },
                 );
-                scratch::write_probe_result(forced_os);
-                system_reset();
-            }
 
-            // Phase 0: fingerprint the host OS via a minimal probe USB device.
-            let attempts = scratch::increment_attempts();
-            if scratch::max_attempts_exceeded(attempts) {
-                info!("Max probe attempts exceeded, skipping probe -> safe default");
-                scratch::write_probe_result(scratch::DetectedOs::Unknown);
-                system_reset();
+                // Wait for Core 1 executor to start, then idle.
+                // The probe task will write scratch and trigger watchdog reset.
+                while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
+                    cortex_m::asm::wfe();
+                }
+                info!("[core0] Phase 0: Core 1 probe running, waiting for reset...");
+                loop {
+                    cortex_m::asm::wfe();
+                }
             }
-
-            info!("[core0] Phase 0: USB probe for OS fingerprinting");
-            let usb = p.USB;
-            spawn_core1(
-                p.CORE1,
-                unsafe { &mut *addr_of_mut!(CORE1_STACK) },
-                move || {
-                    probe::start_core1_usb_probe(usb, attempts);
-                },
-            );
-
-            // Wait for Core 1 executor to start, then idle.
-            // The probe task will write scratch and trigger watchdog reset.
-            while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
-                cortex_m::asm::wfe();
-            }
-            info!("[core0] Phase 0: Core 1 probe running, waiting for reset...");
-            loop {
-                cortex_m::asm::wfe();
+            scratch::BootPhase::Configured => {
+                // Phase 1: forced OS override (from `set-os` command) takes precedence.
+                let os = scratch::read_forced_os().unwrap_or(boot_state.detected_os);
+                info!("[core0] Phase 1: configured mode, OS={}", os);
+                os
             }
         }
-        scratch::BootPhase::Configured => {
-            // Phase 1: present the OS-appropriate USB configuration and run BLE.
-            // Forced OS override (from `set-os` command) takes precedence over probe result.
-            let detected_os = scratch::read_forced_os().unwrap_or(boot_state.detected_os);
-            info!("[core0] Phase 1: configured mode, OS={}", detected_os);
+    };
 
-            // Flash storage (used on Core 0 for bond and preference storage)
-            let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1, Irqs);
+    // Phase 1: present the OS-appropriate USB configuration and run BLE.
+    let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1, Irqs);
 
-            let usb = p.USB;
-            spawn_core1(
-                p.CORE1,
-                unsafe { &mut *addr_of_mut!(CORE1_STACK) },
-                move || {
-                    usb::start_core1_usb(usb, detected_os);
-                },
-            );
-            info!("[core0] Core 1 spawned, waiting for executor ready...");
+    let usb = p.USB;
+    spawn_core1(
+        p.CORE1,
+        unsafe { &mut *addr_of_mut!(CORE1_STACK) },
+        move || {
+            usb::start_core1_usb(usb, detected_os);
+        },
+    );
+    info!("[core0] Core 1 spawned, waiting for executor ready...");
 
-            // Wait for Core 1's executor to be fully set up before starting Core 0's.
-            // Without this, both executors starting simultaneously causes a stall.
-            while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
-                cortex_m::asm::wfe();
-            }
-            info!("[core0] Core 1 executor ready");
-
-            // Start Core 0 executor (CYW43 + BLE + Flash)
-            let executor0 = EXECUTOR0.init(Executor::new());
-            executor0.run(|spawner| {
-                spawner
-                    .spawn(ble::core0_ble_main(
-                        spawner, p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, flash,
-                    ))
-                    .unwrap();
-            });
-        }
+    // Wait for Core 1's executor to be fully set up before starting Core 0's.
+    // Without this, both executors starting simultaneously causes a stall.
+    while !CORE1_EXECUTOR_READY.load(Ordering::Acquire) {
+        cortex_m::asm::wfe();
     }
+    info!("[core0] Core 1 executor ready");
+
+    // Start Core 0 executor (CYW43 + BLE + Flash)
+    let executor0 = EXECUTOR0.init(Executor::new());
+    executor0.run(|spawner| {
+        spawner
+            .spawn(ble::core0_ble_main(
+                spawner, p.PIO0, p.PIN_23, p.PIN_24, p.PIN_25, p.PIN_29, p.DMA_CH0, flash,
+            ))
+            .unwrap();
+    });
 }

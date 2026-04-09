@@ -63,6 +63,8 @@ pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 pub const CMD_CLEAR_BOND: u8 = 23;
 pub const CMD_FACTORY_RESET: u8 = 24;
+pub const CMD_CLASSIC_SCAN: u8 = 25;
+pub const CMD_CLASSIC_SCAN_STOP: u8 = 26;
 
 #[derive(Clone, Debug, defmt::Format)]
 pub enum Request {
@@ -73,7 +75,11 @@ pub enum Request {
         address: [u8; 6],
         addr_kind: u8,
         ignore_bond: bool,
+        /// 0=BLE (default), 1=Classic BT
+        transport_type: u8,
     },
+    ClassicScan,
+    ClassicScanStop,
     Disconnect {
         address: Option<[u8; 6]>,
     },
@@ -100,6 +106,7 @@ pub enum Request {
     UpdateBondProfile {
         address: [u8; 6],
         profile_id: u8,
+        transport_type: u8, // 0=BLE, 1=Classic
     },
     AutoConnect,
     Restart,
@@ -114,10 +121,12 @@ pub enum Request {
     SetAutoConnect {
         address: [u8; 6],
         enabled: bool,
+        transport_type: u8, // 0=BLE, 1=Classic
     },
     /// Clear a single bond by address.
     ClearBond {
         address: [u8; 6],
+        transport_type: u8, // 0=BLE, 1=Classic
     },
     /// Factory reset: clear all bonds and preferences, then restart.
     FactoryReset,
@@ -199,10 +208,13 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let addr_kind = d.u8().map_err(|_| ProtocolError::MissingField)?;
             // ignore_bond field is optional for backwards compatibility
             let ignore_bond = d.bool().unwrap_or(false);
+            // transport_type is optional (default 0=BLE for backward compat)
+            let transport_type = d.u8().unwrap_or(0);
             Ok(Request::Connect {
                 address,
                 addr_kind,
                 ignore_bond,
+                transport_type,
             })
         }
         CMD_DISCONNECT => {
@@ -257,9 +269,11 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
             let profile_id = d.u8().map_err(|_| ProtocolError::MissingField)?;
+            let transport_type = d.u8().unwrap_or(0); // backward-compatible
             Ok(Request::UpdateBondProfile {
                 address,
                 profile_id,
+                transport_type,
             })
         }
         CMD_AUTO_CONNECT => Ok(Request::AutoConnect),
@@ -277,7 +291,12 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
             let enabled = d.bool().map_err(|_| ProtocolError::MissingField)?;
-            Ok(Request::SetAutoConnect { address, enabled })
+            let transport_type = d.u8().unwrap_or(0); // backward-compatible
+            Ok(Request::SetAutoConnect {
+                address,
+                enabled,
+                transport_type,
+            })
         }
         CMD_CLEAR_BOND => {
             let addr_bytes = d.bytes().map_err(|_| ProtocolError::MissingField)?;
@@ -286,11 +305,17 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
             }
             let mut address = [0u8; 6];
             address.copy_from_slice(&addr_bytes[..6]);
-            Ok(Request::ClearBond { address })
+            let transport_type = d.u8().unwrap_or(0); // backward-compatible
+            Ok(Request::ClearBond {
+                address,
+                transport_type,
+            })
         }
         CMD_SUBSCRIBE_DEFMT => Ok(Request::SubscribeDefmt),
         CMD_UNSUBSCRIBE_DEFMT => Ok(Request::UnsubscribeDefmt),
         CMD_FACTORY_RESET => Ok(Request::FactoryReset),
+        CMD_CLASSIC_SCAN => Ok(Request::ClassicScan),
+        CMD_CLASSIC_SCAN_STOP => Ok(Request::ClassicScanStop),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }
@@ -342,7 +367,7 @@ pub fn encode_response_status(
     battery_level: u8,
     detected_os: u8,
     connected_count: u8,
-    connected_devices: &[Option<crate::ble_state::ConnectedDeviceInfo>; 3],
+    connected_devices: &[Option<crate::ble_state::ConnectedDeviceInfo>; 4],
 ) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(10)
@@ -365,16 +390,18 @@ pub fn encode_response_status(
             .unwrap()
             .u8(connected_count)
             .unwrap();
-        // Connected devices array
+        // Connected devices array (each: [addr, profile, battery, transport])
         e.array(connected_count as u64).unwrap();
         for dev in connected_devices.iter().flatten() {
-            e.array(3)
+            e.array(4)
                 .unwrap()
                 .bytes(&dev.address)
                 .unwrap()
                 .u8(dev.profile_id)
                 .unwrap()
                 .u8(dev.battery_level)
+                .unwrap()
+                .u8(dev.transport_type)
                 .unwrap();
         }
     })
@@ -382,12 +409,19 @@ pub fn encode_response_status(
 
 /// Encode a bonds response.
 /// Each bond: [address(6 bytes), addr_kind, profile_id, name_str]
-pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str, bool)]) -> EncResult {
+/// Encode a bonds response.
+/// Each bond: [address, addr_kind, profile_id, name, auto_connect, transport_type]
+/// transport_type: 0=BLE, 1=Classic BT
+#[allow(clippy::type_complexity)]
+pub fn encode_response_bonds(
+    buf: &mut [u8],
+    bonds: &[([u8; 6], u8, u8, &str, bool, u8)],
+) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(2).unwrap().u8(RESP_BONDS).unwrap();
         e.array(bonds.len() as u64).unwrap();
-        for (addr, kind, profile, name, auto_connect) in bonds {
-            e.array(5)
+        for (addr, kind, profile, name, auto_connect, transport) in bonds {
+            e.array(6)
                 .unwrap()
                 .bytes(addr)
                 .unwrap()
@@ -398,6 +432,8 @@ pub fn encode_response_bonds(buf: &mut [u8], bonds: &[([u8; 6], u8, u8, &str, bo
                 .str(name)
                 .unwrap()
                 .bool(*auto_connect)
+                .unwrap()
+                .u8(*transport)
                 .unwrap();
         }
     })
@@ -456,9 +492,10 @@ pub fn encode_event_scan_result(
     name: &str,
     rssi: i8,
     is_hid: bool,
+    transport_type: u8,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(6)
+        e.array(7)
             .unwrap()
             .u8(EVT_SCAN_RESULT)
             .unwrap()
@@ -471,6 +508,8 @@ pub fn encode_event_scan_result(
             .i8(rssi)
             .unwrap()
             .bool(is_hid)
+            .unwrap()
+            .u8(transport_type)
             .unwrap();
     })
 }

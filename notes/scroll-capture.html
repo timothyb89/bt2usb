@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scroll Event Capture</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, monospace; background: #1a1a1a; color: #e0e0e0; padding: 16px; }
+h2 { margin-bottom: 8px; }
+.controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+button { padding: 6px 14px; border: 1px solid #555; background: #2a2a2a; color: #e0e0e0; border-radius: 4px; cursor: pointer; font-size: 13px; }
+button:hover { background: #3a3a3a; }
+button.active { background: #2a5a2a; border-color: #4a8a4a; }
+button.danger { border-color: #8a4a4a; }
+button.danger:hover { background: #4a2a2a; }
+.stats { font-size: 13px; color: #aaa; }
+.stat-val { color: #7af; font-weight: bold; }
+#capture-zone {
+  width: 100%; height: 200px; background: #222; border: 2px dashed #444;
+  border-radius: 8px; display: flex; align-items: center; justify-content: center;
+  font-size: 18px; color: #666; margin-bottom: 12px; cursor: default;
+  user-select: none; overflow: hidden; position: relative;
+}
+#capture-zone.recording { border-color: #4a8a4a; border-style: solid; }
+#capture-zone .indicator {
+  position: absolute; top: 8px; right: 12px; font-size: 12px; color: #4a8a4a; display: none;
+}
+#capture-zone.recording .indicator { display: block; }
+#velocity-bar {
+  position: absolute; bottom: 0; left: 50%; width: 4px; background: #7af;
+  transform: translateX(-50%); transition: height 50ms;
+}
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { position: sticky; top: 0; background: #2a2a2a; padding: 4px 8px; text-align: right; border-bottom: 1px solid #444; }
+td { padding: 3px 8px; text-align: right; border-bottom: 1px solid #2a2a2a; }
+tr.replant { background: #3a2a1a; }
+tr.direction-change { background: #2a2a3a; }
+tr.large-delta { color: #f88; }
+#table-wrap { max-height: 400px; overflow-y: auto; border: 1px solid #333; border-radius: 4px; }
+.legend { font-size: 11px; color: #888; margin-top: 6px; }
+.legend span { margin-right: 12px; }
+.legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
+</style>
+</head>
+<body>
+<h2>Scroll Event Capture</h2>
+<div class="controls">
+  <button id="btn-toggle" class="active" onclick="toggleRecording()">Recording</button>
+  <button onclick="clearData()">Clear</button>
+  <button onclick="exportCSV()">Export CSV</button>
+  <button onclick="exportJSON()">Export JSON</button>
+  <span class="stats">
+    Events: <span class="stat-val" id="stat-count">0</span> |
+    Duration: <span class="stat-val" id="stat-duration">0.0s</span> |
+    Mean |dY|: <span class="stat-val" id="stat-mean">0.0</span> |
+    Max |dY|: <span class="stat-val" id="stat-max">0</span> |
+    Gaps (&gt;100ms): <span class="stat-val" id="stat-gaps">0</span>
+  </span>
+</div>
+
+<div id="capture-zone">
+  <span>Scroll here to capture events</span>
+  <span class="indicator">&#9679; REC</span>
+  <div id="velocity-bar"></div>
+</div>
+
+<div class="legend">
+  <span><span class="swatch" style="background:#3a2a1a"></span>Gap &gt;100ms (possible replant/stall)</span>
+  <span><span class="swatch" style="background:#2a2a3a"></span>Direction change</span>
+  <span style="color:#f88">Large |dY| &gt; 50</span>
+</div>
+
+<div id="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Time (ms)</th>
+      <th>&Delta;t (ms)</th>
+      <th>deltaY</th>
+      <th>deltaX</th>
+      <th>|dY| accel</th>
+      <th>Mode</th>
+      <th>Cumul Y</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+</div>
+
+<script>
+let events = [];
+let recording = true;
+let startTime = null;
+const tbody = document.getElementById('tbody');
+const zone = document.getElementById('capture-zone');
+const velocityBar = document.getElementById('velocity-bar');
+
+const modeNames = {0: 'pixel', 1: 'line', 2: 'page'};
+
+function toggleRecording() {
+  recording = !recording;
+  const btn = document.getElementById('btn-toggle');
+  btn.textContent = recording ? 'Recording' : 'Paused';
+  btn.classList.toggle('active', recording);
+  zone.classList.toggle('recording', recording);
+}
+
+function clearData() {
+  events = [];
+  startTime = null;
+  tbody.innerHTML = '';
+  updateStats();
+}
+
+function updateStats() {
+  document.getElementById('stat-count').textContent = events.length;
+  if (events.length < 2) {
+    document.getElementById('stat-duration').textContent = '0.0s';
+    document.getElementById('stat-mean').textContent = '0.0';
+    document.getElementById('stat-max').textContent = '0';
+    document.getElementById('stat-gaps').textContent = '0';
+    return;
+  }
+  const dur = events[events.length - 1].t - events[0].t;
+  document.getElementById('stat-duration').textContent = (dur / 1000).toFixed(1) + 's';
+
+  let sumAbs = 0, maxAbs = 0, gaps = 0;
+  for (let i = 0; i < events.length; i++) {
+    const a = Math.abs(events[i].dy);
+    sumAbs += a;
+    if (a > maxAbs) maxAbs = a;
+    if (i > 0 && events[i].t - events[i-1].t > 100) gaps++;
+  }
+  document.getElementById('stat-mean').textContent = (sumAbs / events.length).toFixed(1);
+  document.getElementById('stat-max').textContent = maxAbs.toFixed(1);
+  document.getElementById('stat-gaps').textContent = gaps;
+}
+
+zone.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  if (!recording) return;
+
+  const now = performance.now();
+  if (startTime === null) startTime = now;
+
+  const t = now - startTime;
+  const prev = events.length > 0 ? events[events.length - 1] : null;
+  const dt = prev ? (t - prev.t) : 0;
+  const cumulY = (prev ? prev.cumulY : 0) + e.deltaY;
+  const dirChange = prev && prev.dy !== 0 && e.deltaY !== 0 &&
+    Math.sign(e.deltaY) !== Math.sign(prev.dy);
+
+  const ev = {
+    i: events.length,
+    t: t,
+    dt: dt,
+    dy: e.deltaY,
+    dx: e.deltaX,
+    mode: e.deltaMode,
+    cumulY: cumulY,
+    dirChange: dirChange,
+    gap: dt > 100,
+  };
+  events.push(ev);
+
+  // Update velocity bar
+  const h = Math.min(Math.abs(e.deltaY) * 2, 200);
+  velocityBar.style.height = h + 'px';
+  velocityBar.style.background = e.deltaY > 0 ? '#7af' : '#fa7';
+
+  // Add table row
+  const tr = document.createElement('tr');
+  const notes = [];
+  if (ev.gap) { tr.classList.add('replant'); notes.push('GAP'); }
+  if (ev.dirChange) { tr.classList.add('direction-change'); notes.push('DIR'); }
+  if (Math.abs(e.deltaY) > 50) tr.classList.add('large-delta');
+
+  tr.innerHTML =
+    `<td>${ev.i}</td>` +
+    `<td>${t.toFixed(1)}</td>` +
+    `<td>${dt.toFixed(1)}</td>` +
+    `<td>${e.deltaY.toFixed(2)}</td>` +
+    `<td>${e.deltaX.toFixed(2)}</td>` +
+    `<td>${Math.abs(e.deltaY).toFixed(1)}</td>` +
+    `<td>${modeNames[e.deltaMode] || e.deltaMode}</td>` +
+    `<td>${cumulY.toFixed(1)}</td>` +
+    `<td>${notes.join(' ')}</td>`;
+  tbody.appendChild(tr);
+
+  // Auto-scroll table to bottom
+  const wrap = document.getElementById('table-wrap');
+  wrap.scrollTop = wrap.scrollHeight;
+
+  // Throttle stats updates
+  if (events.length % 10 === 0 || events.length < 5) updateStats();
+}, {passive: false});
+
+// Final stats update on scroll end
+let statsTimer = null;
+zone.addEventListener('wheel', () => {
+  clearTimeout(statsTimer);
+  statsTimer = setTimeout(updateStats, 200);
+}, {passive: true});
+
+function exportCSV() {
+  if (events.length === 0) return;
+  let csv = 'index,time_ms,dt_ms,deltaY,deltaX,abs_deltaY,deltaMode,cumul_y,direction_change,gap\n';
+  for (const ev of events) {
+    csv += `${ev.i},${ev.t.toFixed(3)},${ev.dt.toFixed(3)},${ev.dy.toFixed(4)},${ev.dx.toFixed(4)},${Math.abs(ev.dy).toFixed(4)},${ev.mode},${ev.cumulY.toFixed(4)},${ev.dirChange?1:0},${ev.gap?1:0}\n`;
+  }
+  download('scroll_capture.csv', csv, 'text/csv');
+}
+
+function exportJSON() {
+  if (events.length === 0) return;
+  const out = {
+    captured: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    events: events.map(ev => ({
+      t: +ev.t.toFixed(3),
+      dt: +ev.dt.toFixed(3),
+      dy: +ev.dy.toFixed(4),
+      dx: +ev.dx.toFixed(4),
+      mode: ev.mode,
+      cumulY: +ev.cumulY.toFixed(4),
+    })),
+  };
+  download('scroll_capture.json', JSON.stringify(out, null, 2), 'application/json');
+}
+
+function download(name, content, mime) {
+  const blob = new Blob([content], {type: mime});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// Start in recording mode
+zone.classList.add('recording');
+</script>
+</body>
+</html>
