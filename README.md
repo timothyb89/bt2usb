@@ -4,7 +4,9 @@ BLE HID to USB HID Bridge for Raspberry Pi Pico W.
 
 ## Overview
 
-This firmware connects to Bluetooth LE HID devices (mainly mice) and translates their input into USB HID, allowing them to be used with a USB switch between computers without re-pairing.
+This firmware connects to Bluetooth LE HID devices (mainly mice) and translates
+their input into USB HID, allowing them to be used with a USB switch between
+computers without re-pairing.
 
 I built this to pair with the fantastic
 [Full Scroll Dial by Engineer Bo](https://www.youtube.com/watch?v=tzqJ1rJURgs)
@@ -14,7 +16,8 @@ inspired by the excellent
 for actually remapping inputs and instead focusing on providing native-like
 input feel and explicit support for a few tricky devices. It's since evolved to
 help bridge OS support gaps by emulating supported devices on OSes that wouldn't
-otherwise support them (like the Full Scroll Dial on macOS).
+otherwise support them, like the Full Scroll Dial on macOS, or the Magic
+Trackpad on Windows.
 
 Notably, it fully supports the high resolution scrolling events emitted by the
 Full Scroll Dial and translates them to USB HID with no noticeable loss of
@@ -45,6 +48,15 @@ standard HID and Magic Trackpad emulation, even on a USB switch.
 - Supports up to 3 concurrently connected devices
 
 ## Device support notes
+
+Input devices will be mapped automatically depending on their profile and
+detected host OS, for reference:
+
+| BT Input device  | Windows & Linux output             | macOS output              |
+|------------------|------------------------------------|---------------------------|
+| Full Scroll Dial | Generic mouse with high-res scroll | Emulated Magic Trackpad 2 |
+| Generic mouse    | Generic mouse                      | Generic mouse             |
+| Magic Trackpad 2 | Generic Precision Touchpad (PTP)   | Magic Trackpad 2 (emulated passthrough) |
 
 I've tested a number of BLE devices successfully. The `Generic` (default)
 profile should be sufficient for most standard Bluetooth HID mice.
@@ -78,15 +90,8 @@ firmware](https://github.com/raspberrypi/debugprobe).
 
 ## TODOs
 
-- Improved bond storage robustness for the MX Master mice
-- Generic mouse/keyboard device profiles
-- Magic Trackpad 2 input support to emulate a generic touchpad on Windows
-- Support the Pico 2W
-
-Longer term desired TODOs:
-
-- Bluetooth Classic support. Supported by the Pico W, but not by `trouble`.
-  Many Bluetooth keyboards only support Bluetooth Classic.
+- Keyboard inputs (Classic and BLE)
+- Pico 2W builds
 
 ## Flashing
 
@@ -131,17 +136,20 @@ Grab `bt2usb-cli` from the releases page and ensure it's in your `$PATH`, then:
 # Ensure you can communicate with the device
 $ bt2usb-cli status 
 
-# Scan for pairable devices
+# On Linux, you might need to install udev rules:
+$ bt2usb-cli setup-rules
+
+# Scan for pairable devices with interactive pairing
 $ bt2usb-cli scan
 
-# Connect to a device
+# Connect to a device (if not done above)
 $ bt2usb-cli connect <address> 
 
-# If needed, change the profile (Full Scroll Dial defaults to 16-bit, profile 3)
+# If needed, change the profile (e.g. Full Scroll Dial 16-bit mode, profile 3)
 $ bt2usb-cli set-profile <address> <profile>
 
 # Mark the device as active (enables auto connect)
-$ bt2usb-cli set-active-device <address>
+$ bt2usb-cli set-auto-connect <address>
 
 # See `help` for all commands
 $ bt2usb-cli help
@@ -162,6 +170,28 @@ whenever it's attached.
 
 The OS probing process is designed to work properly with a USB switch, and
 will probe again whenever the USB connection is interrupted.
+
+### Magic Trackpad 2 input support
+
+The Magic Trackpad 2 is a Bluetooth Classic device and needs to be scanned for
+and connected to separately from BLE devices.
+
+```code
+# Scan and connect interactively
+$ bt2usb-cli scan --classic
+```
+
+Once connected it will emulate an appropriate device for the detected host OS
+(see `bt2usb-cli status`). That means:
+- On Windows: emulates a generic Precision Touchpad (PTP) with full gesture
+  support
+- On macOS: emulates a Magic Trackpad 2.
+
+  It's technically not full passthrough as the USB and BT protocols aren't
+  identical. All multi-finger gestures should work, and built-in force feedback
+  for clicks works too. The hard-press force touch dictionary lookup doesn't
+  work. Custom settings and third-party apps (like BetterTouchTool) aren't
+  tested and probably won't work as expected.
 
 ## Building
 
