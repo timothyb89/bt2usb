@@ -477,7 +477,7 @@ async fn classic_bt_task<C>(
     let mut resources = HostResources::<1>::new();
 
     // --- Main Classic connection loop (reconnects on disconnect) ---
-    loop {
+    'connect: loop {
         resources.reset();
         let mut runner = ClassicRunner::new(controller, &mut resources, &link_keys);
 
@@ -734,10 +734,9 @@ async fn classic_bt_task<C>(
                             defmt::Debug2Format(&e)
                         );
                         if attempt >= MAX_RETRIES {
-                            error!("[classic] All {} attempts failed, idling", MAX_RETRIES);
-                            loop {
-                                Timer::after_secs(3600).await;
-                            }
+                            warn!("[classic] All {} attempts failed, will retry in 30s", MAX_RETRIES);
+                            Timer::after_secs(30).await;
+                            continue 'connect;
                         }
                         Timer::after_secs(5).await;
                     }
