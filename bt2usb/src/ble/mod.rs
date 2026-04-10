@@ -66,6 +66,9 @@ async fn cyw43_task(
 }
 
 /// LED blink task using CYW43 (spawned on Core 0).
+///
+/// Also feeds the persistent watchdog each blink cycle (~2 s). If this task
+/// stops executing, the watchdog fires after 8 s and the device resets.
 #[embassy_executor::task]
 async fn led_task(control: &'static mut cyw43::Control<'static>) {
     loop {
@@ -73,6 +76,7 @@ async fn led_task(control: &'static mut cyw43::Control<'static>) {
         Timer::after_millis(1000).await;
         control.gpio_set(0, false).await;
         Timer::after_millis(1000).await;
+        crate::feed_watchdog();
     }
 }
 
@@ -129,6 +133,10 @@ pub async fn core0_ble_main(
 
     control.init(clm).await;
     info!("[core0] CYW43 initialized with Bluetooth");
+
+    // Enable the persistent watchdog now that CYW43 firmware download is done.
+    // The LED task feeds it every ~2 s; timeout is 8 s (see main::configure_watchdog).
+    crate::configure_watchdog();
 
     // Spawn LED blink task
     static CONTROL: StaticCell<cyw43::Control<'static>> = StaticCell::new();

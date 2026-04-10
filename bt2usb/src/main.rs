@@ -78,7 +78,15 @@ bind_interrupts!(struct Irqs {
 /// Flash size for RP2040 (2MB).
 pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
-// ============ System Reset ============
+// ============ System Reset & Watchdog ============
+
+const WATCHDOG_BASE: u32 = 0x4005_8000;
+const PSM_BASE: u32 = 0x4001_0000;
+
+/// Watchdog timeout for the persistent watchdog: 8 seconds (in µs).
+/// Must exceed the longest gap between `feed_watchdog()` calls.
+/// The LED task blinks every ~2 s, giving comfortable 4× headroom.
+const WATCHDOG_TIMEOUT_US: u32 = 8_000_000;
 
 /// Trigger a full system reset via the RP2040 watchdog.
 ///
@@ -87,9 +95,6 @@ pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
 /// This function does not return.
 pub fn system_reset() -> ! {
     unsafe {
-        const WATCHDOG_BASE: u32 = 0x40058000;
-        const PSM_BASE: u32 = 0x40010000;
-
         // Disable all interrupts globally on this core
         cortex_m::interrupt::disable();
 
@@ -108,6 +113,63 @@ pub fn system_reset() -> ! {
             cortex_m::asm::nop();
         }
     }
+}
+
+/// Configure the persistent watchdog with `WATCHDOG_TIMEOUT_US` timeout.
+///
+/// Call once after CYW43 init is complete (to avoid triggering during firmware
+/// download). The LED task on Core 0 keeps the watchdog alive by calling
+/// `feed_watchdog()` every blink cycle (~2 s).
+///
+/// If neither core feeds the watchdog within the timeout (e.g. deadlock or a
+/// panic that fires while the defmt spinlock is held), the chip resets to Phase 1
+/// via the preserved scratch registers.
+pub fn configure_watchdog() {
+    unsafe {
+        // Reset all subsystems on watchdog expiry (same scope as system_reset)
+        core::ptr::write_volatile((PSM_BASE + 0x08) as *mut u32, 0xFFFFFFFF);
+
+        // Load initial countdown
+        core::ptr::write_volatile((WATCHDOG_BASE + 0x04) as *mut u32, WATCHDOG_TIMEOUT_US);
+
+        // Enable watchdog; pause while either core is being debugged so a
+        // breakpoint session doesn't trigger a spurious reset.
+        const CTRL_ENABLE: u32 = 1 << 30;
+        const CTRL_PAUSE_DBG0: u32 = 1 << 27;
+        const CTRL_PAUSE_DBG1: u32 = 1 << 28;
+        core::ptr::write_volatile(
+            WATCHDOG_BASE as *mut u32,
+            CTRL_ENABLE | CTRL_PAUSE_DBG0 | CTRL_PAUSE_DBG1,
+        );
+    }
+    info!("Watchdog configured ({}s timeout)", WATCHDOG_TIMEOUT_US / 1_000_000);
+}
+
+/// Feed the persistent watchdog to reset the countdown.
+///
+/// Must be called at least once every `WATCHDOG_TIMEOUT_US` microseconds.
+/// Currently called from `led_task` on Core 0 each blink cycle (~2 s).
+#[inline]
+pub fn feed_watchdog() {
+    unsafe {
+        core::ptr::write_volatile((WATCHDOG_BASE + 0x04) as *mut u32, WATCHDOG_TIMEOUT_US);
+    }
+}
+
+/// HardFault exception handler — resets the device instead of hanging.
+///
+/// On Cortex-M0+ without a debug probe, `panic_probe` ends with a loop of
+/// `bkpt` instructions. Each `bkpt` triggers a HardFault, and the default
+/// cortex-m-rt handler is itself an infinite loop, so any panic causes a
+/// permanent hang. Overriding HardFault with `system_reset()` ensures the
+/// device recovers from both panics and genuine CPU faults (invalid instructions,
+/// unaligned accesses). The watchdog-based reset preserves scratch registers so
+/// Phase 1 resumes immediately without going through the OS probe again.
+///
+/// This vector is in the shared table so it covers both cores.
+#[cortex_m_rt::exception]
+unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
+    system_reset()
 }
 
 // ============ Dual-Core Infrastructure ============
