@@ -404,8 +404,18 @@ async fn dispatch_request(
             let y = crate::usb_hid::MULTIPLIER_Y.load(Relaxed);
             let threshold = crate::usb_hid::SCROLL_THRESHOLD.load(Relaxed);
             let max_detents = crate::usb_hid::MAX_DETENTS_PER_EMIT.load(Relaxed);
-            protocol::encode_response_config(cbor_buf, scroll, pan, x, y, threshold, max_detents)
-                .unwrap_or(0)
+            let smoothing = crate::usb_hid::SCROLL_SMOOTHING.load(Relaxed);
+            protocol::encode_response_config(
+                cbor_buf,
+                scroll,
+                pan,
+                x,
+                y,
+                threshold,
+                max_detents,
+                smoothing,
+            )
+            .unwrap_or(0)
         }
 
         protocol::Request::SetConfig { key, value } => {
@@ -434,6 +444,10 @@ async fn dispatch_request(
                 }
                 CONFIG_KEY_MAX_DETENTS => {
                     MAX_DETENTS_PER_EMIT.store(*value, Relaxed);
+                    true
+                }
+                CONFIG_KEY_SCROLL_SMOOTHING => {
+                    SCROLL_SMOOTHING.store(*value, Relaxed);
                     true
                 }
                 _ => false,

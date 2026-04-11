@@ -273,11 +273,11 @@ fn encode_bonds_response() {
 #[test]
 fn encode_config_response() {
     let mut buf = [0u8; 64];
-    let len = encode_response_config(&mut buf, 100, 200, 300, 400, 10, 5).unwrap();
+    let len = encode_response_config(&mut buf, 100, 200, 300, 400, 10, 5, 1).unwrap();
 
     let mut d = minicbor::Decoder::new(&buf[..len]);
     let arr_len = d.array().unwrap().unwrap();
-    assert_eq!(arr_len, 7);
+    assert_eq!(arr_len, 8);
     assert_eq!(d.u8().unwrap(), RESP_CONFIG);
     assert_eq!(d.u32().unwrap(), 100);
     assert_eq!(d.u32().unwrap(), 200);
@@ -285,6 +285,7 @@ fn encode_config_response() {
     assert_eq!(d.u32().unwrap(), 400);
     assert_eq!(d.u32().unwrap(), 10);
     assert_eq!(d.u32().unwrap(), 5);
+    assert_eq!(d.u32().unwrap(), 1);
 }
 
 #[test]

@@ -584,6 +584,7 @@ pub fn cmd_get_config(transport: &mut Transport) -> Result<()> {
             y_mult,
             scroll_threshold,
             max_detents,
+            scroll_smoothing,
         } => {
             println!("Configuration:");
             println!("  scroll:        {}%", scroll_mult.to_string().bold());
@@ -592,6 +593,12 @@ pub fn cmd_get_config(transport: &mut Transport) -> Result<()> {
             println!("  y:             {}%", y_mult.to_string().bold());
             println!("  threshold:     {}", scroll_threshold.to_string().bold());
             println!("  max_detents:   {}", max_detents.to_string().bold());
+            let smoothing_label = if scroll_smoothing > 0 {
+                "smooth"
+            } else {
+                "linear"
+            };
+            println!("  smoothing:     {}", smoothing_label.bold());
         }
         Response::Error { code, message } => {
             eprintln!("{} (code {code}): {message}", "Error".red());

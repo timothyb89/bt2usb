@@ -143,6 +143,7 @@ pub fn config_key_from_name(name: &str) -> Option<u8> {
         "y" => Some(3),
         "threshold" => Some(4),
         "max_detents" => Some(5),
+        "smoothing" => Some(6),
         _ => None,
     }
 }
@@ -369,6 +370,7 @@ pub enum Response {
         y_mult: u32,
         scroll_threshold: u32,
         max_detents: u32,
+        scroll_smoothing: u32,
     },
     Version {
         version: String,
@@ -510,6 +512,7 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             // New fields (backward compatible — default if missing)
             let scroll_threshold = d.u32().unwrap_or(120);
             let max_detents = d.u32().unwrap_or(3);
+            let scroll_smoothing = d.u32().unwrap_or(0);
             Ok(Response::Config {
                 scroll_mult,
                 pan_mult,
@@ -517,6 +520,7 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
                 y_mult,
                 scroll_threshold,
                 max_detents,
+                scroll_smoothing,
             })
         }
         RESP_VERSION => {

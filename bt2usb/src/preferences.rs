@@ -32,6 +32,8 @@ pub const PREF_KEY_SCROLL_THRESHOLD: u8 = 6;
 pub const PREF_KEY_MAX_DETENTS: u8 = 7;
 /// Forced OS override (0=Auto/probe, 1=Windows, 2=Linux, 3=macOS).
 pub const PREF_KEY_FORCED_OS: u8 = 8;
+/// Scroll smoothing mode (0=linear, 1=smooth).
+pub const PREF_KEY_SCROLL_SMOOTHING: u8 = 9;
 
 /// Active device preference - which device to auto-connect to
 #[derive(Clone, Debug)]

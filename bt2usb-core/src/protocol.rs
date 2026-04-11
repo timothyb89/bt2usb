@@ -464,7 +464,7 @@ pub fn encode_response_version(buf: &mut [u8], version: &str) -> EncResult {
 }
 
 /// Encode a config response with all configurable values.
-/// Format: [RESP_CONFIG, scroll_pct, pan_pct, x_pct, y_pct, scroll_threshold, max_detents]
+/// Format: [RESP_CONFIG, scroll_pct, pan_pct, x_pct, y_pct, scroll_threshold, max_detents, scroll_smoothing]
 pub fn encode_response_config(
     buf: &mut [u8],
     scroll_mult: u32,
@@ -473,9 +473,10 @@ pub fn encode_response_config(
     y_mult: u32,
     scroll_threshold: u32,
     max_detents: u32,
+    scroll_smoothing: u32,
 ) -> EncResult {
     cbor_encode(buf, |e| {
-        e.array(7)
+        e.array(8)
             .unwrap()
             .u8(RESP_CONFIG)
             .unwrap()
@@ -490,6 +491,8 @@ pub fn encode_response_config(
             .u32(scroll_threshold)
             .unwrap()
             .u32(max_detents)
+            .unwrap()
+            .u32(scroll_smoothing)
             .unwrap();
     })
 }

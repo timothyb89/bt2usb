@@ -205,15 +205,19 @@ pub async fn core0_ble_main(
         let max_detents =
             preferences::load_u32_preference(&mut flash, preferences::PREF_KEY_MAX_DETENTS, 3)
                 .await;
+        let smoothing =
+            preferences::load_u32_preference(&mut flash, preferences::PREF_KEY_SCROLL_SMOOTHING, 0)
+                .await;
         crate::usb_hid::SCROLL_THRESHOLD.store(threshold, Relaxed);
         crate::usb_hid::MAX_DETENTS_PER_EMIT.store(max_detents, Relaxed);
+        crate::usb_hid::SCROLL_SMOOTHING.store(smoothing, Relaxed);
         info!(
             "[core0] Axis multipliers: scroll={}% pan={}% x={}% y={}%",
             scroll, pan, x, y
         );
         info!(
-            "[core0] Scroll params: threshold={} max_detents={}",
-            threshold, max_detents
+            "[core0] Scroll params: threshold={} max_detents={} smoothing={}",
+            threshold, max_detents, smoothing
         );
     }
 

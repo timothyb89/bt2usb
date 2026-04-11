@@ -395,6 +395,14 @@ const LOWRES_DRAIN_TICKS: i32 = 8;
 /// 8 ticks × 4ms = 32ms of explicit zero-velocity dwell.
 const LOWRES_COAST_TICKS: u8 = 8;
 
+/// Smooth mode: exponential drain divisor. Each tick drains buffer/N of the
+/// remaining buffer. Higher N = smoother but slower response.
+const SMOOTH_DIVISOR: i32 = 4;
+
+/// Smooth mode: number of ticks to ramp up drain rate from zero.
+/// Produces ease-in at gesture start. 3 ticks = 12ms ramp.
+const SMOOTH_RAMP_TICKS: i32 = 3;
+
 /// Maximum per-event Y delta. Caps the raw BLE delta before adding to
 /// the velocity buffer.
 const MAX_DELTA_PER_EVENT: i16 = 500;
@@ -527,6 +535,9 @@ pub struct TouchSynthesizer {
     /// Controls ending behavior: low-res gestures coast to zero velocity
     /// before releasing to prevent macOS flings.
     lowres_mode: bool,
+    /// Tick counter for smooth mode ease-in ramp. Counts up from 0 on
+    /// gesture start; drain rate scales linearly until SMOOTH_RAMP_TICKS.
+    smooth_ramp: i32,
 }
 
 impl TouchSynthesizer {
@@ -539,6 +550,7 @@ impl TouchSynthesizer {
             last_event_ticks: 0,
             timestamp: 10000,
             lowres_mode: false,
+            smooth_ramp: 0,
         }
     }
 
@@ -586,6 +598,7 @@ impl TouchSynthesizer {
                 self.y_pos = 0;
                 self.velocity_buffer = delta as i32;
                 self.drain_rate = new_rate;
+                self.smooth_ramp = 0;
                 debug!("MT2 touch: gesture START");
                 let _ = out.push(self.make_report(&TEMPLATE_NONE));
                 let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
@@ -621,6 +634,7 @@ impl TouchSynthesizer {
                 self.y_pos = 0;
                 self.velocity_buffer = delta as i32;
                 self.drain_rate = (delta.abs() as i32 / LOWRES_DRAIN_TICKS).max(1);
+                self.smooth_ramp = 0;
                 debug!("MT2 touch: gesture START (lowres)");
                 let _ = out.push(self.make_report(&TEMPLATE_NONE));
                 let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
@@ -701,15 +715,29 @@ impl TouchSynthesizer {
                     }
                 }
 
-                // Drain velocity buffer at the tracked constant rate.
+                // Drain velocity buffer at the tracked rate.
                 if self.velocity_buffer != 0 {
+                    let smooth = self.lowres_mode
+                        && crate::usb_hid::SCROLL_SMOOTHING.load(Ordering::Relaxed) > 0;
+
                     let step = if self.velocity_buffer.abs() <= IMMEDIATE_THRESHOLD {
                         // Small buffer: apply all at once so macOS registers it
                         self.velocity_buffer
+                    } else if smooth {
+                        // Smooth mode: exponential drain (25% of remaining per
+                        // tick) with ease-in ramp over the first few ticks.
+                        // Produces natural acceleration/deceleration feel.
+                        let base = self.velocity_buffer / SMOOTH_DIVISOR;
+                        let ramp_factor = self.smooth_ramp.min(SMOOTH_RAMP_TICKS) + 1;
+                        let scaled = base * ramp_factor / (SMOOTH_RAMP_TICKS + 1);
+                        self.smooth_ramp += 1;
+                        // Ensure at least 1 unit of movement per tick
+                        let magnitude = scaled.abs().max(1).min(self.velocity_buffer.abs());
+                        magnitude * self.velocity_buffer.signum()
                     } else {
-                        // Constant-rate drain: use tracked rate, capped to
-                        // remaining buffer. Produces uniform velocity between
-                        // BLE events — no sawtooth from exponential decay.
+                        // Linear mode: constant-rate drain. Produces uniform
+                        // velocity between BLE events — no sawtooth from
+                        // exponential decay.
                         let rate = self.drain_rate.max(1);
                         let magnitude = rate.min(self.velocity_buffer.abs());
                         magnitude * self.velocity_buffer.signum()

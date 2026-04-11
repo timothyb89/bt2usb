@@ -60,6 +60,12 @@ pub const CONFIG_KEY_X_MULT: u8 = 2;
 pub const CONFIG_KEY_Y_MULT: u8 = 3;
 pub const CONFIG_KEY_SCROLL_THRESHOLD: u8 = 4;
 pub const CONFIG_KEY_MAX_DETENTS: u8 = 5;
+pub const CONFIG_KEY_SCROLL_SMOOTHING: u8 = 6;
+
+/// Scroll smoothing mode for low-res mice on macOS (0=linear, 1=smooth).
+/// Linear: fixed-rate drain, bypasses macOS acceleration.
+/// Smooth: ease-in/out velocity envelope, enables natural macOS scrolling.
+pub static SCROLL_SMOOTHING: AtomicU32 = AtomicU32::new(0);
 
 /// Scroll accumulator threshold (raw units before emitting).
 /// Default 120 = one standard detent in HID Resolution Multiplier spec.
