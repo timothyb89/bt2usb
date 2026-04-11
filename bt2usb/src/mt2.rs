@@ -384,6 +384,17 @@ const TRACKPAD2_MAX_Y: i16 = 4000;
 /// Idle timeout in ticks before lifting fingers (150ms at 1MHz tick rate).
 const IDLE_TIMEOUT_TICKS: u64 = 150_000;
 
+/// Number of ticks to drain each low-res detent. Controls the velocity of
+/// the Y movement per detent — too few ticks means a velocity spike that
+/// macOS interprets as fast flinging; too many means sluggish response.
+/// 8 ticks × 4ms = 32ms per detent.
+const LOWRES_DRAIN_TICKS: i32 = 8;
+
+/// Number of stationary TOUCH ticks before ending a low-res gesture.
+/// Establishes zero velocity so macOS doesn't apply momentum (fling).
+/// 8 ticks × 4ms = 32ms of explicit zero-velocity dwell.
+const LOWRES_COAST_TICKS: u8 = 8;
+
 /// Maximum per-event Y delta. Caps the raw BLE delta before adding to
 /// the velocity buffer.
 const MAX_DELTA_PER_EVENT: i16 = 500;
@@ -476,6 +487,10 @@ enum Phase {
     Scrolling,
     /// Briefly lifting fingers to reset Y position (replanting).
     Replanting(u8),
+    /// Stationary dwell before ending (low-res only). Sends TOUCH reports at
+    /// the current Y position to establish zero velocity, preventing macOS
+    /// from applying momentum (fling) when fingers lift.
+    Coasting(u8),
     /// Ending gesture: clean release sequence to avoid tap detection.
     Ending(u8),
 }
@@ -508,6 +523,10 @@ pub struct TouchSynthesizer {
     last_event_ticks: u64,
     /// Internal timestamp for report headers.
     timestamp: u16,
+    /// Whether the current gesture is from a low-res source (standard mouse).
+    /// Controls ending behavior: low-res gestures coast to zero velocity
+    /// before releasing to prevent macOS flings.
+    lowres_mode: bool,
 }
 
 impl TouchSynthesizer {
@@ -519,10 +538,12 @@ impl TouchSynthesizer {
             drain_rate: 0,
             last_event_ticks: 0,
             timestamp: 10000,
+            lowres_mode: false,
         }
     }
 
-    /// Process a scroll delta. Returns 0-2 reports (gesture start only).
+    /// Process a high-res scroll delta (e.g. from the Full Scroll Dial).
+    /// Returns 0-2 reports (gesture start only).
     ///
     /// The delta is added to the velocity buffer. The drain rate is updated
     /// based on `|delta| / ticks_since_last_event`, smoothed via EMA.
@@ -531,6 +552,7 @@ impl TouchSynthesizer {
         let now = embassy_time::Instant::now().as_ticks();
         let elapsed_us = now.saturating_sub(self.last_event_ticks);
         self.last_event_ticks = now;
+        self.lowres_mode = false;
         let mut out = heapless::Vec::new();
 
         // Invert delta: positive dial rotation = scroll down = fingers move
@@ -559,7 +581,7 @@ impl TouchSynthesizer {
         }
 
         match self.phase {
-            Phase::Idle | Phase::Ending(_) => {
+            Phase::Idle | Phase::Ending(_) | Phase::Coasting(_) => {
                 // Start new gesture
                 self.y_pos = 0;
                 self.velocity_buffer = delta as i32;
@@ -572,6 +594,51 @@ impl TouchSynthesizer {
             Phase::Replanting(_) | Phase::Scrolling => {
                 self.velocity_buffer =
                     (self.velocity_buffer + delta as i32).clamp(-MAX_BUFFER, MAX_BUFFER);
+            }
+        }
+
+        out
+    }
+
+    /// Process a low-res scroll delta (standard mouse, ±1 detent scaled to ±120).
+    /// Returns 0-2 reports (gesture start only).
+    ///
+    /// Unlike process_scroll, uses a fixed drain rate per detent rather than
+    /// computing from inter-event timing. Standard mice send discrete ±1
+    /// per detent with unpredictable timing — the EMA-based rate calculation
+    /// produces rate=1 on isolated events, making the buffer barely move.
+    /// Fixed rate ensures each detent produces consistent, visible Y displacement.
+    pub fn process_scroll_lowres(&mut self, delta: i16) -> heapless::Vec<[u8; 30], 3> {
+        self.last_event_ticks = embassy_time::Instant::now().as_ticks();
+        self.lowres_mode = true;
+        let mut out = heapless::Vec::new();
+
+        let delta = (-delta).clamp(-MAX_DELTA_PER_EVENT, MAX_DELTA_PER_EVENT);
+        let delta = ((delta as i32 * MT2_SCROLL_SCALE_PCT) / 100) as i16;
+
+        match self.phase {
+            Phase::Idle | Phase::Ending(_) => {
+                self.y_pos = 0;
+                self.velocity_buffer = delta as i32;
+                self.drain_rate = (delta.abs() as i32 / LOWRES_DRAIN_TICKS).max(1);
+                debug!("MT2 touch: gesture START (lowres)");
+                let _ = out.push(self.make_report(&TEMPLATE_NONE));
+                let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
+                self.phase = Phase::Scrolling;
+            }
+            Phase::Coasting(_) => {
+                // Resume scrolling from coast — user scrolled again before
+                // the gesture fully ended.
+                self.velocity_buffer = delta as i32;
+                self.drain_rate = (delta.abs() as i32 / LOWRES_DRAIN_TICKS).max(1);
+                self.phase = Phase::Scrolling;
+            }
+            Phase::Replanting(_) | Phase::Scrolling => {
+                self.velocity_buffer =
+                    (self.velocity_buffer + delta as i32).clamp(-MAX_BUFFER, MAX_BUFFER);
+                // Recalculate rate for the total buffer so accumulated
+                // detents drain in the same fixed window.
+                self.drain_rate = (self.velocity_buffer.abs() / LOWRES_DRAIN_TICKS).max(1);
             }
         }
 
@@ -596,6 +663,19 @@ impl TouchSynthesizer {
                         1 => Some(self.make_report(&TEMPLATE_APPROACH)),
                         _ => Some(self.make_report(&TEMPLATE_RELEASE)),
                     }
+                }
+            }
+            Phase::Coasting(remaining) => {
+                // Stationary dwell: send TOUCH at current Y (zero velocity).
+                // Ensures macOS sees a clear stop before fingers lift.
+                if remaining == 0 {
+                    self.phase = Phase::Ending(1);
+                    self.drain_rate = 0;
+                    debug!("MT2 touch: gesture END (coasted)");
+                    Some(self.make_report(&TEMPLATE_RELEASE))
+                } else {
+                    self.phase = Phase::Coasting(remaining - 1);
+                    Some(self.make_report(&TEMPLATE_TOUCH))
                 }
             }
             Phase::Ending(remaining) => {
@@ -655,10 +735,17 @@ impl TouchSynthesizer {
                 // buffer is fully drained (so RELEASE fires at zero velocity).
                 let now = embassy_time::Instant::now().as_ticks();
                 if now - self.last_event_ticks > IDLE_TIMEOUT_TICKS && self.velocity_buffer == 0 {
-                    self.phase = Phase::Ending(1);
-                    self.drain_rate = 0;
-                    debug!("MT2 touch: gesture END");
-                    Some(self.make_report(&TEMPLATE_RELEASE))
+                    if self.lowres_mode {
+                        // Low-res: coast to explicit zero velocity before
+                        // releasing. Prevents macOS from applying momentum.
+                        self.phase = Phase::Coasting(LOWRES_COAST_TICKS);
+                        Some(self.make_report(&TEMPLATE_TOUCH))
+                    } else {
+                        self.phase = Phase::Ending(1);
+                        self.drain_rate = 0;
+                        debug!("MT2 touch: gesture END");
+                        Some(self.make_report(&TEMPLATE_RELEASE))
+                    }
                 } else {
                     Some(self.make_report(&TEMPLATE_TOUCH))
                 }

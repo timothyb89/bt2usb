@@ -312,6 +312,24 @@ async fn usb_hid_handler_task_standard(
     }
 }
 
+/// Extract mouse fields from a BLE report using the standard byte-offset heuristic.
+/// Returns (buttons, x, y, scroll_delta) for reports that follow the common layout:
+///   [buttons(1), X(i8), Y(i8), wheel(i8), pan(i8)]
+fn extract_mouse_heuristic(event: &HidReportEvent) -> (u8, i8, i8, i16) {
+    if event.len < 3 {
+        return (0, 0, 0, 0);
+    }
+    let buttons = event.data[0] & 0x1F;
+    let x = event.data[1] as i8;
+    let y = event.data[2] as i8;
+    let wheel = if event.len >= 4 {
+        event.data[3] as i8 as i16
+    } else {
+        0
+    };
+    (buttons, x, y, wheel)
+}
+
 // ============ MT2 HID Handler Task (macOS) ============
 
 /// Tick interval for MT2 continuous touch report streaming (~250 Hz).
@@ -358,27 +376,107 @@ async fn usb_hid_handler_task_mt2(
                     mt2_passthrough.receive_bt_report(&event.data[..event.len]);
                 }
                 HidReportType::Mouse => {
-                    // Non-MT2 devices (Dial, etc.): extract scroll delta for TouchSynthesizer
-                    if !crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
-                        continue;
-                    }
+                    // Non-MT2 BLE devices: split into cursor + scroll paths.
+                    // Buttons/X/Y → Report ID 0x02 (MT2 mouse collection)
+                    // Wheel → TouchSynthesizer → Report ID 0x44 (MT2 touch)
 
-                    let scroll_delta: i16 = if event.profile.uses_16bit_reports() {
-                        if event.len >= 2 {
+                    // Extract mouse fields via layout-aware path or heuristic.
+                    // For scroll, also determine whether the wheel field is low-res
+                    // (≤8 bits, ±1 per detent) or high-res (>8 bits, native velocity).
+                    // Low-res values must be scaled up for the TouchSynthesizer, which
+                    // was tuned for high-res 16-bit deltas from devices like the Dial.
+                    let (buttons, x, y, scroll_delta, wheel_is_lowres) = if event.profile
+                        == crate::device_profile::DeviceProfile::Generic
+                    {
+                        if let Some(layout) =
+                            crate::ble_hid::find_slot_layout(event.slot_index as usize, event.len)
+                        {
+                            let d = &event.data[..event.len];
+                            let lowres = layout.wheel.is_some_and(|l| l.bit_size <= 8);
+                            (
+                                layout
+                                    .buttons
+                                    .map(|loc| crate::hid_report_map::extract_field(d, &loc) as u8)
+                                    .unwrap_or(0)
+                                    & 0x1F,
+                                layout
+                                    .x
+                                    .map(|loc| {
+                                        crate::hid_report_map::extract_field(d, &loc)
+                                            .clamp(-127, 127)
+                                            as i8
+                                    })
+                                    .unwrap_or(0),
+                                layout
+                                    .y
+                                    .map(|loc| {
+                                        crate::hid_report_map::extract_field(d, &loc)
+                                            .clamp(-127, 127)
+                                            as i8
+                                    })
+                                    .unwrap_or(0),
+                                layout
+                                    .wheel
+                                    .map(|loc| {
+                                        crate::hid_report_map::extract_field(d, &loc)
+                                            .clamp(i16::MIN as i32, i16::MAX as i32)
+                                            as i16
+                                    })
+                                    .unwrap_or(0),
+                                lowres,
+                            )
+                        } else {
+                            // Heuristic fallback: standard mouse layout (always low-res)
+                            let (b, x, y, w) = extract_mouse_heuristic(&event);
+                            (b, x, y, w, true)
+                        }
+                    } else if event.profile.uses_16bit_reports() {
+                        // Named 16-bit profiles (FullScrollDial16Bit): scroll in bytes 0-1
+                        let scroll = if event.len >= 2 {
                             i16::from_le_bytes([event.data[0], event.data[1]])
                         } else {
                             0
-                        }
-                    } else if event.len >= 4 {
-                        event.data[3] as i8 as i16
+                        };
+                        (0, 0, 0, scroll, false)
                     } else {
-                        0
+                        // Named 8-bit profiles: use standard heuristic
+                        let (b, x, y, w) = extract_mouse_heuristic(&event);
+                        (b, x, y, w, true)
                     };
 
-                    if scroll_delta != 0 {
+                    // Forward buttons/cursor via MT2 mouse collection (Report ID 0x02)
+                    // This works regardless of MT_ENABLED — the mouse collection is
+                    // always present in the MT2 descriptor.
+                    if buttons != 0 || x != 0 || y != 0 {
+                        let mut buf = [0u8; 8];
+                        buf[0] = 0x02; // Report ID
+                        buf[1] = buttons;
+                        buf[2] = x as u8;
+                        buf[3] = y as u8;
+                        // bytes 4-7: padding (matches MT2 descriptor)
+                        if let Err(e) = mt2_writer.write(&buf).await {
+                            warn!("MT2 mouse write error: {:?}", e);
+                        }
+                    }
+
+                    // Route scroll through TouchSynthesizer (requires MT activation)
+                    if scroll_delta != 0 && crate::mt2::MT_ENABLED.load(Ordering::Relaxed) {
+                        // Low-res wheel (≤8-bit, standard mice): scale ±1 detent up
+                        // to high-res units and use the lowres synthesizer path.
+                        // High-res devices (Dial) send native 16-bit velocity and
+                        // use the EMA-based drain rate in process_scroll.
+                        let scroll_hires = if wheel_is_lowres {
+                            scroll_delta.saturating_mul(120)
+                        } else {
+                            scroll_delta
+                        };
                         let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-                        let scaled = crate::usb_hid::apply_multiplier_i16(scroll_delta, scroll_m);
-                        let reports = touch_synth.process_scroll(scaled);
+                        let scaled = crate::usb_hid::apply_multiplier_i16(scroll_hires, scroll_m);
+                        let reports = if wheel_is_lowres {
+                            touch_synth.process_scroll_lowres(scaled)
+                        } else {
+                            touch_synth.process_scroll(scaled)
+                        };
                         for report in reports {
                             if let Err(e) = mt2_writer.write(&report).await {
                                 warn!("MT2 trackpad write error: {:?}", e);
