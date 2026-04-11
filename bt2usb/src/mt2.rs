@@ -397,11 +397,11 @@ const LOWRES_COAST_TICKS: u8 = 8;
 
 /// Smooth mode: exponential drain divisor. Each tick drains buffer/N of the
 /// remaining buffer. Higher N = smoother but slower response.
-const SMOOTH_DIVISOR: i32 = 4;
+const SMOOTH_DIVISOR: i32 = 10;
 
 /// Smooth mode: number of ticks to ramp up drain rate from zero.
-/// Produces ease-in at gesture start. 3 ticks = 12ms ramp.
-const SMOOTH_RAMP_TICKS: i32 = 3;
+/// Produces ease-in at gesture start. 6 ticks = 24ms ramp.
+const SMOOTH_RAMP_TICKS: i32 = 6;
 
 /// Maximum per-event Y delta. Caps the raw BLE delta before adding to
 /// the velocity buffer.
@@ -412,7 +412,7 @@ const MAX_DELTA_PER_EVENT: i16 = 500;
 /// USB mouse wheel path. Tuned so that a given MULTIPLIER_SCROLL setting
 /// produces roughly the same scroll speed on macOS (via MT2) as on
 /// Windows/Linux (via standard HID wheel).
-const MT2_SCROLL_SCALE_PCT: i32 = 200;
+const MT2_SCROLL_SCALE_PCT: i32 = 250;
 
 /// Maximum drain rate (Y units per tick). Caps the tracked velocity to
 /// prevent extreme speeds in macOS's nonlinear acceleration region.
@@ -635,7 +635,8 @@ impl TouchSynthesizer {
                 self.velocity_buffer = delta as i32;
                 self.drain_rate = (delta.abs() as i32 / LOWRES_DRAIN_TICKS).max(1);
                 self.smooth_ramp = 0;
-                debug!("MT2 touch: gesture START (lowres)");
+                let smooth = crate::usb_hid::SCROLL_SMOOTHING.load(Ordering::Relaxed) > 0;
+                debug!("MT2 touch: gesture START (lowres, smooth={})", smooth);
                 let _ = out.push(self.make_report(&TEMPLATE_NONE));
                 let _ = out.push(self.make_report(&TEMPLATE_APPROACH));
                 self.phase = Phase::Scrolling;
