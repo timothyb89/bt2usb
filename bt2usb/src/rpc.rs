@@ -223,7 +223,7 @@ fn encode_ble_event(
                 name,
                 data.rssi,
                 data.is_hid,
-                data.transport_type,
+                data.transport_type.as_u8(),
             )
             .unwrap_or(0)
         }
@@ -321,7 +321,9 @@ async fn dispatch_request(
             ignore_bond,
             transport_type,
         } => {
-            if *transport_type == 1 {
+            if crate::ble_state::TransportType::from_u8(*transport_type)
+                == crate::ble_state::TransportType::Classic
+            {
                 // Classic BT connect
                 let _ = crate::ble_state::CLASSIC_CMD_CHANNEL
                     .try_send(crate::ble_state::ClassicCommand::Connect { address: *address });
@@ -366,7 +368,7 @@ async fn dispatch_request(
                             *profile,
                             name.as_str(),
                             *auto_connect,
-                            *transport,
+                            transport.as_u8(),
                         ));
                     }
                     protocol::encode_response_bonds(cbor_buf, bond_refs.as_slice()).unwrap_or(0)
@@ -473,7 +475,7 @@ async fn dispatch_request(
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::UpdateBondProfile {
                 address: *address,
                 profile_id: *profile_id,
-                transport_type: *transport_type,
+                transport_type: crate::ble_state::TransportType::from_u8(*transport_type),
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
@@ -501,7 +503,7 @@ async fn dispatch_request(
         } => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond {
                 address: *address,
-                transport_type: *transport_type,
+                transport_type: crate::ble_state::TransportType::from_u8(*transport_type),
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
@@ -514,7 +516,7 @@ async fn dispatch_request(
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::SetAutoConnect {
                 address: *address,
                 enabled: *enabled,
-                transport_type: *transport_type,
+                transport_type: crate::ble_state::TransportType::from_u8(*transport_type),
             });
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }

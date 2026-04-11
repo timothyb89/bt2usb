@@ -21,7 +21,6 @@ use trouble_host::Host;
 use crate::ble_state::{BleEvent, BLE_EVENT_CHANNEL};
 use crate::bonding;
 use crate::device_profile::DeviceProfile;
-use crate::preferences;
 use crate::protocol::ConnectionState;
 use crate::rpc_log;
 
@@ -57,7 +56,6 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
     active_profile: &mut DeviceProfile,
     has_stored_bond: bool,
     slot: usize,
-    _active_device_pref: &Option<preferences::ActiveDevice>,
 ) -> Option<()> {
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
     rpc_log::info("Connecting to BLE device");

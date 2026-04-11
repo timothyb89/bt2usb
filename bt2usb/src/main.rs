@@ -142,7 +142,10 @@ pub fn configure_watchdog() {
             CTRL_ENABLE | CTRL_PAUSE_DBG0 | CTRL_PAUSE_DBG1,
         );
     }
-    info!("Watchdog configured ({}s timeout)", WATCHDOG_TIMEOUT_US / 1_000_000);
+    info!(
+        "Watchdog configured ({}s timeout)",
+        WATCHDOG_TIMEOUT_US / 1_000_000
+    );
 }
 
 /// Feed the persistent watchdog to reset the countdown.

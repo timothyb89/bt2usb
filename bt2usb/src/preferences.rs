@@ -9,7 +9,7 @@ use embassy_rp::flash::{Async, Flash};
 use embassy_rp::peripherals::FLASH;
 use sequential_storage::cache::NoCache;
 use sequential_storage::map::{
-    fetch_item, remove_all_items, store_item, SerializationError, Value,
+    fetch_item, remove_all_items, remove_item, store_item, SerializationError, Value,
 };
 
 /// Flash storage range for preferences
@@ -149,12 +149,28 @@ pub async fn clear_all_preferences(
 pub async fn clear_active_device(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
 ) -> Result<(), ()> {
-    // Store a dummy value with all zeros to effectively clear
-    let dummy = ActiveDevice {
-        address: [0u8; 6],
-        addr_kind: 0,
-    };
-    set_active_device(flash, &dummy).await
+    let mut buffer = [0u8; 64];
+    match remove_item::<u8, _>(
+        flash,
+        flash_range(),
+        &mut NoCache::new(),
+        &mut buffer,
+        &PREF_KEY_ACTIVE_DEVICE,
+    )
+    .await
+    {
+        Ok(_) => {
+            info!("Active device preference cleared");
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                "Failed to clear active device: {:?}",
+                defmt::Debug2Format(&e)
+            );
+            Err(())
+        }
+    }
 }
 
 /// Axis multiplier value (percentage, e.g. 100 = 1.0x)

@@ -71,6 +71,18 @@ async fn handle_keyboard_report(
     }
 }
 
+/// Apply user-configured axis multipliers to a 16-bit mouse report.
+fn apply_multipliers(report: &mut crate::usb_hid::MouseReport16) {
+    let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
+    let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
+    let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
+    let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
+    report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
+    report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
+    report.wheel = crate::usb_hid::apply_multiplier_i16(report.wheel, scroll_m);
+    report.pan = crate::usb_hid::apply_multiplier_i16(report.pan, pan_m);
+}
+
 /// Handle a mouse HID report event (standard path, no MT2 routing).
 async fn handle_mouse_report_standard(
     writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
@@ -126,14 +138,7 @@ async fn handle_mouse_report_standard(
                     .unwrap_or(0),
             };
 
-            let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-            let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
-            let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
-            let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
-            report16.x = crate::usb_hid::apply_multiplier_i8(report16.x, x_m);
-            report16.y = crate::usb_hid::apply_multiplier_i8(report16.y, y_m);
-            report16.wheel = crate::usb_hid::apply_multiplier_i16(report16.wheel, scroll_m);
-            report16.pan = crate::usb_hid::apply_multiplier_i16(report16.pan, pan_m);
+            apply_multipliers(&mut report16);
 
             // Apply hires scroll scaling only for standard mice (≤8-bit wheel).
             // Devices with 16-bit wheel fields already send fine-grained values.
@@ -164,14 +169,7 @@ async fn handle_mouse_report_standard(
             event
                 .profile
                 .translate_mouse_report_16bit(&event.data, event.len, scroll_accum);
-        let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-        let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
-        let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
-        let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
-        report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
-        report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
-        report.wheel = crate::usb_hid::apply_multiplier_i16(report.wheel, scroll_m);
-        report.pan = crate::usb_hid::apply_multiplier_i16(report.pan, pan_m);
+        apply_multipliers(&mut report);
         let data = serialize_mouse_report_16bit(&report);
         let mut buf = [0u8; 8];
         buf[0] = 0x01;
@@ -180,17 +178,9 @@ async fn handle_mouse_report_standard(
             warn!("Mouse write error (16-bit): {:?}", e);
         }
     } else {
-        let mut report = event
+        let report = event
             .profile
             .translate_mouse_report(&event.data, event.len, scroll_accum);
-        let scroll_m = crate::usb_hid::MULTIPLIER_SCROLL.load(Ordering::Relaxed);
-        let pan_m = crate::usb_hid::MULTIPLIER_PAN.load(Ordering::Relaxed);
-        let x_m = crate::usb_hid::MULTIPLIER_X.load(Ordering::Relaxed);
-        let y_m = crate::usb_hid::MULTIPLIER_Y.load(Ordering::Relaxed);
-        report.x = crate::usb_hid::apply_multiplier_i8(report.x, x_m);
-        report.y = crate::usb_hid::apply_multiplier_i8(report.y, y_m);
-        report.wheel = crate::usb_hid::apply_multiplier_i8(report.wheel, scroll_m);
-        report.pan = crate::usb_hid::apply_multiplier_i8(report.pan, pan_m);
         // USB descriptor always uses 16-bit wheel/pan — promote to MouseReport16.
         // When hires scroll is active, the OS expects scroll in 1/120th-notch units
         // (per the Resolution Multiplier in the descriptor). Standard mice send ±1
@@ -200,13 +190,14 @@ async fn handle_mouse_report_standard(
         } else {
             1
         };
-        let report16 = crate::usb_hid::MouseReport16 {
+        let mut report16 = crate::usb_hid::MouseReport16 {
             buttons: report.buttons,
             x: report.x,
             y: report.y,
             wheel: (report.wheel as i16) * hires_scale,
             pan: (report.pan as i16) * hires_scale,
         };
+        apply_multipliers(&mut report16);
         let data = serialize_mouse_report_16bit(&report16);
         let mut buf = [0u8; 8];
         buf[0] = 0x01;

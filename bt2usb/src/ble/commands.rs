@@ -47,7 +47,7 @@ pub fn handle_get_status(
                 address: slots::get_slot_address(i),
                 profile_id: slots::SLOT_PROFILES[i].load(Ordering::Relaxed),
                 battery_level: ble_hid::BATTERY_LEVELS[i].load(Ordering::Relaxed),
-                transport_type: 0, // BLE
+                transport_type: ble_state::TransportType::Ble,
             });
             connected_count += 1;
         }
@@ -58,7 +58,7 @@ pub fn handle_get_status(
             address: slots::get_classic_address(),
             profile_id: slots::CLASSIC_PROFILE.load(Ordering::Relaxed),
             battery_level: 0xFF, // Classic doesn't report battery via HID
-            transport_type: 1,   // Classic BT
+            transport_type: ble_state::TransportType::Classic,
         });
         connected_count += 1;
     }
@@ -112,8 +112,14 @@ pub fn handle_get_bonds(
             });
         }
 
-        let _ = bond_list.push((addr, addr_kind, lb.profile_id, name, lb.auto_connect, 0));
-        // 0 = BLE
+        let _ = bond_list.push((
+            addr,
+            addr_kind,
+            lb.profile_id,
+            name,
+            lb.auto_connect,
+            ble_state::TransportType::Ble,
+        ));
     }
 
     // Classic BT bonds
@@ -134,8 +140,14 @@ pub fn handle_get_bonds(
             });
         }
 
-        let _ = bond_list.push((cb.addr, 0, cb.profile_id, name, cb.auto_connect, 1));
-        // 1 = Classic
+        let _ = bond_list.push((
+            cb.addr,
+            0,
+            cb.profile_id,
+            name,
+            cb.auto_connect,
+            ble_state::TransportType::Classic,
+        ));
     }
 
     let _ = ble_state::BONDS_RESPONSE_CHANNEL.try_send(bond_list);
@@ -183,13 +195,13 @@ pub async fn handle_update_bond_profile(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     address: &[u8; 6],
     profile_id: u8,
-    transport_type: u8,
+    transport_type: ble_state::TransportType,
 ) -> Option<heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>> {
     info!(
         "Updating bond profile for {:?} (transport={}) to {}",
         address, transport_type, profile_id
     );
-    let result = if transport_type == 1 {
+    let result = if transport_type == ble_state::TransportType::Classic {
         bonding::update_classic_bond_profile(flash, address, profile_id).await
     } else {
         bonding::update_bond_profile(flash, address, profile_id).await
@@ -291,14 +303,14 @@ pub async fn handle_set_auto_connect(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     address: &[u8; 6],
     enabled: bool,
-    transport_type: u8,
+    transport_type: ble_state::TransportType,
     loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
 ) {
     info!(
         "Setting auto_connect for {:?} (transport={}) to {}",
         address, transport_type, enabled
     );
-    let result = if transport_type == 1 {
+    let result = if transport_type == ble_state::TransportType::Classic {
         bonding::update_classic_auto_connect(flash, address, enabled).await
     } else {
         bonding::update_auto_connect(flash, address, enabled).await
@@ -324,14 +336,14 @@ pub async fn handle_set_auto_connect(
 pub async fn handle_clear_bond(
     flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     address: &[u8; 6],
-    transport_type: u8,
+    transport_type: ble_state::TransportType,
     loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
 ) {
     info!(
         "Clearing bond for {:?} (transport={})",
         address, transport_type
     );
-    let result = if transport_type == 1 {
+    let result = if transport_type == ble_state::TransportType::Classic {
         bonding::clear_classic_bond_by_address(flash, address).await
     } else {
         bonding::clear_bond_by_address(flash, address).await

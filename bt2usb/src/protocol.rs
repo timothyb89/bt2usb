@@ -401,7 +401,7 @@ pub fn encode_response_status(
                 .unwrap()
                 .u8(dev.battery_level)
                 .unwrap()
-                .u8(dev.transport_type)
+                .u8(dev.transport_type.as_u8())
                 .unwrap();
         }
     })
