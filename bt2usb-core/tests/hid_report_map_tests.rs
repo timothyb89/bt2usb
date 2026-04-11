@@ -157,76 +157,41 @@ fn extract_buttons_3bit() {
 /// Report ID 0x02: 16-bit buttons, 16-bit X, 16-bit Y, 8-bit wheel, 8-bit pan
 const MX_MASTER_3S_REPORT_MAP: &[u8] = &[
     // Usage Page (Generic Desktop)
-    0x05, 0x01,
-    // Usage (Mouse)
-    0x09, 0x02,
-    // Collection (Application)
-    0xA1, 0x01,
-    // Report ID (2)
-    0x85, 0x02,
-    // Usage (Pointer)
-    0x09, 0x01,
-    // Collection (Physical)
-    0xA1, 0x00,
-    // Usage Page (Button)
-    0x05, 0x09,
-    // Usage Minimum (1)
-    0x19, 0x01,
-    // Usage Maximum (16)
-    0x29, 0x10,
-    // Logical Minimum (0)
-    0x15, 0x00,
-    // Logical Maximum (1)
-    0x25, 0x01,
-    // Report Count (16)
-    0x95, 0x10,
-    // Report Size (1)
-    0x75, 0x01,
-    // Input (Data, Variable, Absolute)
-    0x81, 0x02,
-    // Usage Page (Generic Desktop)
-    0x05, 0x01,
-    // Usage (X)
-    0x09, 0x30,
-    // Usage (Y)
-    0x09, 0x31,
-    // Logical Minimum (-32767)
-    0x16, 0x01, 0x80,
-    // Logical Maximum (32767)
-    0x26, 0xFF, 0x7F,
-    // Report Count (2)
-    0x95, 0x02,
-    // Report Size (16)
-    0x75, 0x10,
-    // Input (Data, Variable, Relative)
-    0x81, 0x06,
-    // Usage Page (Generic Desktop)
-    0x05, 0x01,
-    // Usage (Wheel)
-    0x09, 0x38,
-    // Logical Minimum (-127)
-    0x15, 0x81,
-    // Logical Maximum (127)
-    0x25, 0x7F,
-    // Report Count (1)
-    0x95, 0x01,
-    // Report Size (8)
-    0x75, 0x08,
-    // Input (Data, Variable, Relative)
-    0x81, 0x06,
-    // Usage Page (Consumer)
-    0x05, 0x0C,
-    // Usage (AC Pan)
-    0x0A, 0x38, 0x02,
-    // Report Count (1)
-    0x95, 0x01,
-    // Report Size (8)
-    0x75, 0x08,
-    // Input (Data, Variable, Relative)
-    0x81, 0x06,
-    // End Collection
-    0xC0,
-    // End Collection
+    0x05, 0x01, // Usage (Mouse)
+    0x09, 0x02, // Collection (Application)
+    0xA1, 0x01, // Report ID (2)
+    0x85, 0x02, // Usage (Pointer)
+    0x09, 0x01, // Collection (Physical)
+    0xA1, 0x00, // Usage Page (Button)
+    0x05, 0x09, // Usage Minimum (1)
+    0x19, 0x01, // Usage Maximum (16)
+    0x29, 0x10, // Logical Minimum (0)
+    0x15, 0x00, // Logical Maximum (1)
+    0x25, 0x01, // Report Count (16)
+    0x95, 0x10, // Report Size (1)
+    0x75, 0x01, // Input (Data, Variable, Absolute)
+    0x81, 0x02, // Usage Page (Generic Desktop)
+    0x05, 0x01, // Usage (X)
+    0x09, 0x30, // Usage (Y)
+    0x09, 0x31, // Logical Minimum (-32767)
+    0x16, 0x01, 0x80, // Logical Maximum (32767)
+    0x26, 0xFF, 0x7F, // Report Count (2)
+    0x95, 0x02, // Report Size (16)
+    0x75, 0x10, // Input (Data, Variable, Relative)
+    0x81, 0x06, // Usage Page (Generic Desktop)
+    0x05, 0x01, // Usage (Wheel)
+    0x09, 0x38, // Logical Minimum (-127)
+    0x15, 0x81, // Logical Maximum (127)
+    0x25, 0x7F, // Report Count (1)
+    0x95, 0x01, // Report Size (8)
+    0x75, 0x08, // Input (Data, Variable, Relative)
+    0x81, 0x06, // Usage Page (Consumer)
+    0x05, 0x0C, // Usage (AC Pan)
+    0x0A, 0x38, 0x02, // Report Count (1)
+    0x95, 0x01, // Report Size (8)
+    0x75, 0x08, // Input (Data, Variable, Relative)
+    0x81, 0x06, // End Collection
+    0xC0, // End Collection
     0xC0,
 ];
 
@@ -272,58 +237,32 @@ fn parse_mx_master_3s() {
 /// No report IDs, single report.
 const SIMPLE_MOUSE_REPORT_MAP: &[u8] = &[
     // Usage Page (Generic Desktop)
-    0x05, 0x01,
-    // Usage (Mouse)
-    0x09, 0x02,
-    // Collection (Application)
-    0xA1, 0x01,
-    // Usage (Pointer)
-    0x09, 0x01,
-    // Collection (Physical)
-    0xA1, 0x00,
-    // Usage Page (Button)
-    0x05, 0x09,
-    // Usage Minimum (1)
-    0x19, 0x01,
-    // Usage Maximum (3)
-    0x29, 0x03,
-    // Logical Minimum (0)
-    0x15, 0x00,
-    // Logical Maximum (1)
-    0x25, 0x01,
-    // Report Count (3)
-    0x95, 0x03,
-    // Report Size (1)
-    0x75, 0x01,
-    // Input (Data, Variable, Absolute)
-    0x81, 0x02,
-    // Report Count (1)
-    0x95, 0x01,
-    // Report Size (5)
-    0x75, 0x05,
-    // Input (Constant) - padding
-    0x81, 0x01,
-    // Usage Page (Generic Desktop)
-    0x05, 0x01,
-    // Usage (X)
-    0x09, 0x30,
-    // Usage (Y)
-    0x09, 0x31,
-    // Usage (Wheel)
-    0x09, 0x38,
-    // Logical Minimum (-127)
-    0x15, 0x81,
-    // Logical Maximum (127)
-    0x25, 0x7F,
-    // Report Count (3)
-    0x95, 0x03,
-    // Report Size (8)
-    0x75, 0x08,
-    // Input (Data, Variable, Relative)
-    0x81, 0x06,
-    // End Collection
-    0xC0,
-    // End Collection
+    0x05, 0x01, // Usage (Mouse)
+    0x09, 0x02, // Collection (Application)
+    0xA1, 0x01, // Usage (Pointer)
+    0x09, 0x01, // Collection (Physical)
+    0xA1, 0x00, // Usage Page (Button)
+    0x05, 0x09, // Usage Minimum (1)
+    0x19, 0x01, // Usage Maximum (3)
+    0x29, 0x03, // Logical Minimum (0)
+    0x15, 0x00, // Logical Maximum (1)
+    0x25, 0x01, // Report Count (3)
+    0x95, 0x03, // Report Size (1)
+    0x75, 0x01, // Input (Data, Variable, Absolute)
+    0x81, 0x02, // Report Count (1)
+    0x95, 0x01, // Report Size (5)
+    0x75, 0x05, // Input (Constant) - padding
+    0x81, 0x01, // Usage Page (Generic Desktop)
+    0x05, 0x01, // Usage (X)
+    0x09, 0x30, // Usage (Y)
+    0x09, 0x31, // Usage (Wheel)
+    0x09, 0x38, // Logical Minimum (-127)
+    0x15, 0x81, // Logical Maximum (127)
+    0x25, 0x7F, // Report Count (3)
+    0x95, 0x03, // Report Size (8)
+    0x75, 0x08, // Input (Data, Variable, Relative)
+    0x81, 0x06, // End Collection
+    0xC0, // End Collection
     0xC0,
 ];
 

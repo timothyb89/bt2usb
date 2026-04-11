@@ -69,33 +69,7 @@ pub static SCROLL_THRESHOLD: AtomicU32 = AtomicU32::new(120);
 /// Caps fast-scroll bursts to stay in macOS's linear acceleration region.
 pub static MAX_DETENTS_PER_EMIT: AtomicU32 = AtomicU32::new(3);
 
-/// Apply a percentage multiplier to an i8 value, clamping to i8 range.
-pub fn apply_multiplier_i8(value: i8, multiplier_pct: u32) -> i8 {
-    if multiplier_pct == 100 {
-        return value;
-    }
-    let scaled = (value as i32) * (multiplier_pct as i32) / 100;
-    scaled.clamp(-127, 127) as i8
-}
-
-/// Apply a percentage multiplier to an i16 value, clamping to i16 range.
-pub fn apply_multiplier_i16(value: i16, multiplier_pct: u32) -> i16 {
-    if multiplier_pct == 100 {
-        return value;
-    }
-    let scaled = (value as i32) * (multiplier_pct as i32) / 100;
-    scaled.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
-
-/// Mouse report with 16-bit wheel and pan for experimental mode
-#[derive(Clone, Copy, Debug, defmt::Format)]
-pub struct MouseReport16 {
-    pub buttons: u8,
-    pub x: i8,
-    pub y: i8,
-    pub wheel: i16,
-    pub pan: i16,
-}
+pub use bt2usb_core::mouse::{apply_multiplier_i16, apply_multiplier_i8, MouseReport16};
 
 /// Keyboard HID report - re-export from usbd_hid for compatibility
 pub use usbd_hid::descriptor::KeyboardReport as KeyboardHidReport;

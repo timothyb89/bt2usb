@@ -31,7 +31,9 @@ fn header_max_seq() {
 
 // ============ Request decode ============
 
-fn encode_cbor(f: impl FnOnce(&mut minicbor::Encoder<&mut minicbor::encode::write::Cursor<&mut [u8]>>)) -> Vec<u8> {
+fn encode_cbor(
+    f: impl FnOnce(&mut minicbor::Encoder<&mut minicbor::encode::write::Cursor<&mut [u8]>>),
+) -> Vec<u8> {
     let mut buf = [0u8; 256];
     let mut cursor = minicbor::encode::write::Cursor::new(&mut buf[..]);
     {
@@ -388,8 +390,7 @@ fn encode_scan_result_event() {
 fn encode_connection_state_event() {
     let addr = [0x01; 6];
     let mut buf = [0u8; 64];
-    let len =
-        encode_event_connection_state(&mut buf, ConnectionState::Connected, &addr).unwrap();
+    let len = encode_event_connection_state(&mut buf, ConnectionState::Connected, &addr).unwrap();
 
     let mut d = minicbor::Decoder::new(&buf[..len]);
     let _ = d.array().unwrap();
