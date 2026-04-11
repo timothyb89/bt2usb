@@ -62,6 +62,22 @@ jobs:
           name: firmware-elf
           path: target/thumbv6m-none-eabi/release/bt2usb
 
+  core-test:
+    name: Core Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Test
+        run: cargo test -p bt2usb-core
+
   cli-lint:
     name: CLI Lint
     runs-on: ubuntu-latest

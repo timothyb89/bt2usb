@@ -39,6 +39,9 @@ hci-mux = { path = "../hci-mux", features = ["defmt"] }
 # Classic Bluetooth HID host stack
 bt-classic-host = { path = "../bt-classic-host", features = ["defmt"] }
 
+# Shared pure-logic modules (testable on host)
+bt2usb-core = { path = "../bt2usb-core", features = ["defmt"] }
+
 # USB HID
 usbd-hid = { version = "0.9" }
 

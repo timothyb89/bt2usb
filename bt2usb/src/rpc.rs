@@ -272,19 +272,29 @@ async fn dispatch_request(
             )
             .await
             {
-                Ok(status) => protocol::encode_response_status(
-                    cbor_buf,
-                    last_state,
-                    status.bonded_count,
-                    status.active_profile,
-                    status.active_device_set,
-                    &status.active_device_address,
-                    status.battery_level,
-                    detected_os,
-                    status.connected_count,
-                    &status.connected_devices,
-                )
-                .unwrap_or(0),
+                Ok(status) => {
+                    let wire_devs = status.connected_devices.map(|d| {
+                        d.map(|d| protocol::ConnectedDevice {
+                            address: d.address,
+                            profile_id: d.profile_id,
+                            battery_level: d.battery_level,
+                            transport_type: d.transport_type.as_u8(),
+                        })
+                    });
+                    protocol::encode_response_status(
+                        cbor_buf,
+                        last_state,
+                        status.bonded_count,
+                        status.active_profile,
+                        status.active_device_set,
+                        &status.active_device_address,
+                        status.battery_level,
+                        detected_os,
+                        status.connected_count,
+                        &wire_devs,
+                    )
+                    .unwrap_or(0)
+                }
                 Err(_) => {
                     // Timeout - use defaults
                     let empty_devs = [None, None, None, None];
