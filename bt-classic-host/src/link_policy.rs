@@ -42,6 +42,33 @@ cmd! {
     }
 }
 
+cmd! {
+    /// Sniff Subrating (OGF=0x02, OCF=0x0011)
+    ///
+    /// Layered on top of Sniff mode. Lets the link manager extend the effective
+    /// sniff interval when no data is flowing, and collapse back to the base
+    /// sniff interval as soon as traffic resumes — without a full mode change.
+    /// The peer peripheral can sleep its radio for up to `max_latency` slots
+    /// (units of 0.625ms) during idle, which meaningfully improves HID device
+    /// battery life.
+    ///
+    /// `min_remote_timeout` / `min_local_timeout` are the minimum number of
+    /// slots the remote/local device must listen after receiving a packet
+    /// before re-entering subrated sniff. Zero is a valid "no extra wait"
+    /// value.
+    SniffSubrating(LINK_POLICY, 0x0011) {
+        SniffSubratingParams {
+            handle: ConnHandle,
+            max_latency: u16,
+            min_remote_timeout: u16,
+            min_local_timeout: u16,
+        }
+        SniffSubratingReturn {
+            handle: ConnHandle,
+        }
+    }
+}
+
 // OGF 0x03 = HOST_CONTROLLER_BASEBAND
 
 cmd! {

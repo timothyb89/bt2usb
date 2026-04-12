@@ -119,6 +119,7 @@ pub async fn classic_bt_task<C>(
             bt_hci::cmd::link_control::UserConfirmationRequestReply,
         > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::WriteLinkPolicySettings>
         + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>
+        + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffSubrating>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::Inquiry>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::InquiryCancel>,
 {
@@ -498,7 +499,7 @@ pub async fn classic_bt_task<C>(
         // (11.25ms interval), matching the real MT2's native USB report rate.
         {
             use bt_classic_host::link_policy::{
-                SniffMode, WriteLinkPolicySettings, LINK_POLICY_ENABLE_SNIFF,
+                SniffMode, SniffSubrating, WriteLinkPolicySettings, LINK_POLICY_ENABLE_SNIFF,
             };
 
             // Enable sniff mode in link policy
@@ -523,6 +524,24 @@ pub async fn classic_bt_task<C>(
                 Ok(_) => info!("[classic] Sniff mode requested (interval=18 slots / 11.25ms)"),
                 Err(e) => warn!(
                     "[classic] Failed to request sniff mode: {:?}",
+                    defmt::Debug2Format(&e)
+                ),
+            }
+
+            // Layer Sniff Subrating on top of the base sniff interval so the
+            // link manager can stretch the effective interval during idle.
+            // max_latency=800 slots = 500ms: the peer may skip up to ~44 base
+            // sniff slots between listens when no data is flowing, cutting
+            // peripheral radio-on time substantially. Traffic collapses the
+            // subrating back to the base 11.25ms interval automatically, so
+            // active-use latency is unchanged.
+            match controller
+                .exec(&SniffSubrating::new(handle, 800, 0, 0))
+                .await
+            {
+                Ok(_) => info!("[classic] Sniff subrating enabled (max_latency=800 / 500ms)"),
+                Err(e) => warn!(
+                    "[classic] Failed to enable sniff subrating: {:?}",
                     defmt::Debug2Format(&e)
                 ),
             }
