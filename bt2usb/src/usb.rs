@@ -255,6 +255,11 @@ async fn usb_hid_handler_task_standard(
         send_battery_level(&mut mouse_writer, initial_level).await;
     }
 
+    // Periodic ticker for PTP passthrough reclocking. See mt2 task for
+    // why this must be a Ticker rather than a Timer::after.
+    let mut ptp_ticker =
+        embassy_time::Ticker::every(embassy_time::Duration::from_millis(MT2_TICK_MS));
+
     loop {
         check_reprobe();
 
@@ -269,7 +274,7 @@ async fn usb_hid_handler_task_standard(
         match select3(
             HID_REPORT_CHANNEL.receive(),
             BATTERY_USB_SIGNAL.wait(),
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(MT2_TICK_MS)),
+            ptp_ticker.next(),
         )
         .await
         {
@@ -351,13 +356,22 @@ async fn usb_hid_handler_task_mt2(
     let mut touch_synth = crate::mt2::TouchSynthesizer::new();
     let mut mt2_passthrough = crate::mt2_translate::Mt2Passthrough::new();
 
+    // Periodic ticker for MT2 synthesis. Unlike Timer::after (which resets
+    // on every loop iteration), Ticker fires at fixed intervals regardless
+    // of how frequently BLE events arrive. This is critical: under streaming
+    // mouse movement, a reset-on-iteration timer is starved out by events,
+    // which stops tick() from draining the scroll buffer and sending
+    // stationary touch reports — causing macOS to fling at gesture end.
+    let mut mt2_ticker =
+        embassy_time::Ticker::every(embassy_time::Duration::from_millis(MT2_TICK_MS));
+
     loop {
         check_reprobe();
 
         match select3(
             HID_REPORT_CHANNEL.receive(),
             BATTERY_USB_SIGNAL.wait(),
-            embassy_time::Timer::after(embassy_time::Duration::from_millis(MT2_TICK_MS)),
+            mt2_ticker.next(),
         )
         .await
         {
