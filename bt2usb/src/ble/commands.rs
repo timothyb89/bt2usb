@@ -57,7 +57,7 @@ pub fn handle_get_status(
         connected_devices[3] = Some(ble_state::ConnectedDeviceInfo {
             address: slots::get_classic_address(),
             profile_id: slots::CLASSIC_PROFILE.load(Ordering::Relaxed),
-            battery_level: 0xFF, // Classic doesn't report battery via HID
+            battery_level: ble_hid::CLASSIC_BATTERY_LEVEL.load(Ordering::Relaxed),
             transport_type: ble_state::TransportType::Classic,
         });
         connected_count += 1;

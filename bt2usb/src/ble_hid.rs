@@ -43,17 +43,19 @@ pub static BATTERY_LEVELS: [AtomicU8; MAX_CONNECTIONS] = [
 /// Used for backward compatibility with single-device status reporting.
 pub static BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
 
+/// Battery level for the Classic BT slot (e.g. Magic Trackpad 2).
+/// Reported via HIDP GET_REPORT(Input, 0x90) — see ble/classic.rs.
+pub static CLASSIC_BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
+
 /// Signal from BLE (Core 0) to USB battery task (Core 1).
 /// Signaled with the new battery level (0-100) whenever it changes.
 /// The USB task wakes up and sends a USB HID battery input report.
 pub static BATTERY_USB_SIGNAL: Signal<CriticalSectionRawMutex, u8> = Signal::new();
 
-/// Update battery level for a specific slot and refresh the aggregate.
-pub fn update_battery_level(slot: usize, level: u8) {
+/// Recompute the aggregate `BATTERY_LEVEL` (minimum across BLE slots + Classic)
+/// and notify the USB battery task.
+fn refresh_aggregate() {
     use core::sync::atomic::Ordering::Relaxed;
-    BATTERY_LEVELS[slot].store(level, Relaxed);
-
-    // Aggregate: minimum non-0xFF level across all slots
     let mut min = 0xFFu8;
     for bl in &BATTERY_LEVELS {
         let l = bl.load(Relaxed);
@@ -61,13 +63,36 @@ pub fn update_battery_level(slot: usize, level: u8) {
             min = l;
         }
     }
+    let classic = CLASSIC_BATTERY_LEVEL.load(Relaxed);
+    if classic != 0xFF && classic < min {
+        min = classic;
+    }
     BATTERY_LEVEL.store(min, Relaxed);
     BATTERY_USB_SIGNAL.signal(min);
 }
 
-/// Clear battery level for a specific slot and refresh the aggregate.
+/// Update battery level for a specific BLE slot and refresh the aggregate.
+pub fn update_battery_level(slot: usize, level: u8) {
+    use core::sync::atomic::Ordering::Relaxed;
+    BATTERY_LEVELS[slot].store(level, Relaxed);
+    refresh_aggregate();
+}
+
+/// Clear battery level for a specific BLE slot and refresh the aggregate.
 pub fn clear_battery_level(slot: usize) {
     update_battery_level(slot, 0xFF);
+}
+
+/// Update the Classic BT battery level and refresh the aggregate.
+pub fn update_classic_battery_level(level: u8) {
+    use core::sync::atomic::Ordering::Relaxed;
+    CLASSIC_BATTERY_LEVEL.store(level, Relaxed);
+    refresh_aggregate();
+}
+
+/// Clear the Classic BT battery level (on disconnect) and refresh.
+pub fn clear_classic_battery_level() {
+    update_classic_battery_level(0xFF);
 }
 
 // ============ Per-slot parsed report layouts ============

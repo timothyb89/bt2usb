@@ -12,11 +12,11 @@ use core::sync::atomic::Ordering;
 use bt_classic_host::hidp::ReportType;
 use bt_classic_host::{ClassicRunner, HidClient, HostResources, L2capState};
 use defmt::*;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_time::{Duration, Ticker, Timer};
 
 /// One-shot gate fired by `classic_bt_task` after it has (re)issued the
 /// merged `SetEventMask`. The BLE connection manager awaits this signal
@@ -758,6 +758,21 @@ where
             info!("[classic] Multitouch enabled!");
         }
 
+        // --- Initial battery probe (Report ID 0x90, Input) ---
+        // Real MT2 responds with 2 bytes: [flags, capacity] — see the IF0 HID
+        // descriptor in notes/magic-mouse (Power Device / Battery System collection).
+        // Response arrives asynchronously on the control channel and is decoded
+        // in the report loop below. Subsequent polls are driven by `battery_ticker`.
+        if let Err(e) = hid
+            .get_report(&l2cap, controller, ReportType::Input, 0x90)
+            .await
+        {
+            warn!(
+                "[classic] Battery GET_REPORT failed: {:?}",
+                defmt::Debug2Format(&e)
+            );
+        }
+
         // --- Main HID report loop ---
         info!("[classic] === CLASSIC HID SESSION ACTIVE ===");
         info!("[classic] Listening for touch reports...");
@@ -765,16 +780,38 @@ where
             crate::ble_state::BleEvent::StateChanged(crate::protocol::ConnectionState::Connected),
         );
 
+        // Poll MT2 battery every 60s (matches hid-magicmouse.c USB_BATTERY_TIMEOUT_SEC).
+        let mut battery_ticker = Ticker::every(Duration::from_secs(60));
+
         let mut report = bt_classic_host::HidReport::new();
         loop {
             let mut rx = [0u8; 259];
             let rx_ref = &mut rx[..];
-            match select(controller.read(rx_ref), CLASSIC_CMD_CHANNEL.receive()).await {
-                Either::Second(ClassicCommand::Disconnect) => {
+            match select3(
+                controller.read(rx_ref),
+                CLASSIC_CMD_CHANNEL.receive(),
+                battery_ticker.next(),
+            )
+            .await
+            {
+                Either3::Third(()) => {
+                    // Periodic battery poll
+                    if let Err(e) = hid
+                        .get_report(&l2cap, controller, ReportType::Input, 0x90)
+                        .await
+                    {
+                        warn!(
+                            "[classic] Battery poll failed: {:?}",
+                            defmt::Debug2Format(&e)
+                        );
+                    }
+                    continue;
+                }
+                Either3::Second(ClassicCommand::Disconnect) => {
                     info!("[classic] Disconnect command received");
                     break;
                 }
-                Either::Second(ClassicCommand::ClearBond { address }) => {
+                Either3::Second(ClassicCommand::ClearBond { address }) => {
                     let addr = bt_hci::param::BdAddr::new(address);
                     use bt_classic_host::LinkKeyStore;
                     link_keys.borrow_mut().remove(&addr);
@@ -785,11 +822,11 @@ where
                     }
                     continue;
                 }
-                Either::Second(_) => {
+                Either3::Second(_) => {
                     // Ignore other commands (Scan/Connect) while connected
                     continue;
                 }
-                Either::First(Ok(bt_hci::ControllerToHostPacket::Acl(_acl))) => {
+                Either3::First(Ok(bt_hci::ControllerToHostPacket::Acl(_acl))) => {
                     // rx[0] = HCI type indicator (0x02); ACL header starts at rx[1]
                     let handle_and_flags = u16::from_le_bytes([rx[1], rx[2]]);
                     let data_len = u16::from_le_bytes([rx[3], rx[4]]) as usize;
@@ -838,6 +875,16 @@ where
                                             );
                                         }
                                     }
+                                } else if report_id == 0x90 && report.len >= 3 {
+                                    // Battery report: [0x90, flags, capacity]
+                                    // flags bits: 0=AC present, 1=charging, 2=discharging
+                                    let flags = report.data[1];
+                                    let capacity = report.data[2];
+                                    info!(
+                                        "[classic] Battery: capacity={} flags=0x{:02x}",
+                                        capacity, flags
+                                    );
+                                    crate::ble_hid::update_classic_battery_level(capacity);
                                 } else {
                                     // Log non-touch reports for debugging
                                     debug!(
@@ -855,15 +902,15 @@ where
                         }
                     }
                 }
-                Either::First(Ok(bt_hci::ControllerToHostPacket::Event(event))) => {
+                Either3::First(Ok(bt_hci::ControllerToHostPacket::Event(event))) => {
                     // Handle disconnection during active session
                     if event.kind == bt_hci::event::EventKind::DisconnectionComplete {
                         error!("[classic] Disconnected!");
                         break;
                     }
                 }
-                Either::First(Ok(_)) => {}
-                Either::First(Err(_)) => {
+                Either3::First(Ok(_)) => {}
+                Either3::First(Err(_)) => {
                     Timer::after_millis(1).await;
                 }
             }
@@ -872,6 +919,7 @@ where
         // Disconnected — clean up and reconnect
         warn!("[classic] Classic HID session ended, will reconnect...");
         slots::set_classic_disconnected();
+        crate::ble_hid::clear_classic_battery_level();
         let _ =
             crate::ble_state::BLE_EVENT_CHANNEL.try_send(crate::ble_state::BleEvent::StateChanged(
                 crate::protocol::ConnectionState::Disconnected,
