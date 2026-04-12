@@ -55,7 +55,7 @@ detected host OS, for reference:
 | BT Input device  | Windows & Linux output             | macOS output              |
 |------------------|------------------------------------|---------------------------|
 | Full Scroll Dial | Generic mouse with high-res scroll | Emulated Magic Trackpad 2 |
-| Generic mouse    | Generic mouse                      | Generic mouse             |
+| Generic mouse    | Generic mouse                      | Generic mouse (movement, clicks) + emulated MT2 (scrolling) |
 | Magic Trackpad 2 | Generic Precision Touchpad (PTP)   | Magic Trackpad 2 (emulated passthrough) |
 
 I've tested a number of BLE devices successfully. The `Generic` (default)
@@ -170,6 +170,16 @@ whenever it's attached.
 
 The OS probing process is designed to work properly with a USB switch, and
 will probe again whenever the USB connection is interrupted.
+
+As a side effect of MT2 emulation, the emulated MT2 mouse device doesn't
+support traditional scrolling, only gestures. This means that any connected
+mice (that emit low-res scroll events) need to have their scroll events
+translated to synthesized touch events as well. We have two modes for this:
+- `bt2usb-cli set-config smoothing 0` (default) - smoothing is disabled, mouse
+  wheel events result in effectively unsmoothed linear motion.
+- `bt2usb-cli set-config smoothing 1` - smoothing is enabled, mouse wheel
+  events are given mild acceleration and deceleration smoothing (with no
+  acceleration), still approximately linear.
 
 ### Magic Trackpad 2 input support
 
