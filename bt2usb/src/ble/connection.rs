@@ -47,7 +47,7 @@ enum StartError {
 /// Bond storage uses the shared flash mutex (all on Core 0).
 /// Returns `None` when the connection ends naturally or after max retries.
 #[allow(clippy::too_many_arguments)]
-pub async fn ble_connect_and_run<'a, C: Controller>(
+pub async fn ble_connect_and_run<'a, C>(
     stack: &'a Stack<'a, C, DefaultPacketPool>,
     flash: &'a FlashMutex,
     target: Address,
@@ -55,7 +55,11 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
     has_stored_bond: bool,
     slot: usize,
     max_attempts: u8,
-) -> Option<()> {
+) -> Option<()>
+where
+    C: Controller
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeReadLocalSupportedFeatures>,
+{
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
     rpc_log::info("Connecting to BLE device");
 

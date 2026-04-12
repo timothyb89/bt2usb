@@ -11,9 +11,13 @@
 //! - Battery level notifications (if supported by device)
 //! - Battery level polling fallback (if notifications not supported)
 
+use core::sync::atomic::Ordering;
+
+use portable_atomic::AtomicU64;
+
 use defmt::*;
 use embassy_futures::select::{select, select3, select4, Either3, Either4};
-use embassy_time::Ticker;
+use embassy_time::{Instant, Ticker};
 use trouble_host::prelude::*;
 
 use crate::ble_hid::{
@@ -25,7 +29,58 @@ use crate::device_profile::DeviceProfile;
 use crate::protocol::ConnectionState;
 use crate::rpc_log;
 
-use super::slots::{self, SlotCommand, SLOT_CMD_CHANNELS};
+use super::slots::{self, SlotCommand, MAX_CONNECTIONS, SLOT_CMD_CHANNELS};
+
+/// Latency ladder: as the device sits idle, walk up the peripheral latency
+/// (in connection events) to save peer-side battery. Each entry is
+/// `(idle threshold, latency)`; the first entry whose threshold is greater
+/// than the current idle time wins. After the last threshold the target
+/// becomes the peer's own preferred latency (whatever it most recently
+/// requested) so we honor each device's chosen sleep behavior. Every step
+/// is also clamped against the peer's preferred value so we never push it
+/// past what it asked for.
+const LATENCY_LADDER: &[(u64, u16)] = &[
+    (60, 0),   // <60s idle: stay fully responsive
+    (120, 5),  // <120s: tolerate ~75ms wake-up
+    (300, 15), // <300s: tolerate ~225ms wake-up
+];
+
+/// How often the connection-event handler re-evaluates the latency ladder.
+const LADDER_TICK: embassy_time::Duration = embassy_time::Duration::from_secs(5);
+
+/// Per-slot timestamp (Embassy ticks) of the last HID notification received.
+/// Written by the notification loop, read by the connection-event handler.
+static SLOT_LAST_ACTIVITY_TICKS: [AtomicU64; MAX_CONNECTIONS] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+
+fn mark_slot_activity(slot: usize) {
+    if slot < MAX_CONNECTIONS {
+        SLOT_LAST_ACTIVITY_TICKS[slot].store(Instant::now().as_ticks(), Ordering::Relaxed);
+    }
+}
+
+fn slot_idle_secs(slot: usize) -> u64 {
+    if slot >= MAX_CONNECTIONS {
+        return 0;
+    }
+    let last = SLOT_LAST_ACTIVITY_TICKS[slot].load(Ordering::Relaxed);
+    if last == 0 {
+        return 0;
+    }
+    Instant::now()
+        .checked_duration_since(Instant::from_ticks(last))
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn target_latency_for_idle(idle_secs: u64, peer_preferred: u16) -> u16 {
+    for &(threshold, latency) in LATENCY_LADDER {
+        if idle_secs < threshold {
+            return latency.min(peer_preferred);
+        }
+    }
+    peer_preferred
+}
 
 /// Result of a GATT session.
 pub enum GattSessionResult {
@@ -41,12 +96,16 @@ pub enum GattSessionResult {
 ///
 /// This creates a GATT client and runs it concurrently with the HID notification loop.
 /// Returns a `GattSessionResult` indicating how the session ended.
-pub async fn run_gatt_session<'a, C: Controller>(
+pub async fn run_gatt_session<'a, C>(
     stack: &'a Stack<'a, C, DefaultPacketPool>,
     conn: &Connection<'a, DefaultPacketPool>,
     active_profile: &mut DeviceProfile,
     slot: usize,
-) -> GattSessionResult {
+) -> GattSessionResult
+where
+    C: Controller
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeReadLocalSupportedFeatures>,
+{
     info!("[slot{}] Creating GATT client...", slot);
 
     let client = match GattClient::<C, DefaultPacketPool, 10>::new(stack, conn).await {
@@ -413,6 +472,7 @@ async fn run_hid_event_loop<'a, 'c, C: Controller>(
             Either4::First(notification) => {
                 let data = notification.as_ref();
                 if !data.is_empty() {
+                    mark_slot_activity(slot);
                     let mut report = parse_hid_report(data, 0, *active_profile);
                     report.slot_index = slot as u8;
                     HID_REPORT_CHANNEL.send(report).await;
@@ -460,57 +520,153 @@ async fn run_hid_event_loop<'a, 'c, C: Controller>(
 
 /// Handle connection events during the GATT session.
 ///
-/// Polls `conn.next()` to process events like connection parameter update requests.
-/// Without this, the peripheral's L2CAP parameter update request goes unanswered
-/// and it disconnects after the 30-second signaling timeout.
-async fn handle_connection_events<'a, C: Controller>(
+/// Polls `conn.next()` to process events like connection parameter update requests
+/// (without this, the peripheral's L2CAP parameter update request goes unanswered
+/// and it disconnects after the 30-second signaling timeout) and runs the latency
+/// ladder timer that walks peripheral latency up as the slot stays idle.
+async fn handle_connection_events<'a, C>(
     conn: &Connection<'a, DefaultPacketPool>,
     stack: &'a Stack<'a, C, DefaultPacketPool>,
     slot: usize,
-) {
-    // Track the last accepted params to avoid retry loops.
-    // When accept fails with LL Procedure Collision, trouble-host sends an L2CAP
-    // rejection, which makes the peripheral retry immediately. By skipping
-    // duplicate requests, we let the LL-level update complete on its own.
-    let mut last_accepted_interval: u16 = 0;
-    let mut last_accepted_latency: u16 = 0;
+) where
+    C: Controller
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeReadLocalSupportedFeatures>,
+{
+    // Reset activity to "now" so a freshly-connected slot is treated as active
+    // and the ladder doesn't immediately push it up.
+    mark_slot_activity(slot);
+
+    // Track the most recent peer-requested params so we can dedup retries
+    // (avoids LL Procedure Collision loops while an update is in flight).
+    let mut last_seen_peer_interval: u16 = 0;
+    let mut last_seen_peer_latency: u16 = 0;
+    // The current latency we're targeting on the link. Starts at 0 and walks
+    // up via the ladder; resets to 0 when the peer signals wake.
+    let mut current_target_latency: u16 = 0;
+    // The highest latency the peer has asked for during this session. We use
+    // this as the ladder ceiling so each device gets its own preferred sleep
+    // behavior instead of a hard-coded constant.
+    let mut peer_preferred_latency: u16 = 0;
+    // Last params the peer requested — used as the base for self-initiated
+    // updates so we keep its preferred interval/timeout.
+    let mut base_params: Option<RequestedConnParams> = None;
+    // After a self-initiated `update_connection_params`, the LL procedure
+    // takes ~6+ connection intervals to apply. During that window, accepting
+    // an incoming peer request would issue a second LL update and collide
+    // (HCI status 0x23). Drop peer requests until this deadline passes.
+    let mut self_update_until: Option<Instant> = None;
+
+    let mut ladder_ticker = Ticker::every(LADDER_TICK);
 
     loop {
-        match conn.next().await {
-            ConnectionEvent::RequestConnectionParams(req) => {
-                let params = req.params();
-                let interval = params.max_connection_interval.as_micros() as u16;
-                let latency = params.max_latency;
+        match select(conn.next(), ladder_ticker.next()).await {
+            embassy_futures::select::Either::First(event) => match event {
+                ConnectionEvent::RequestConnectionParams(req) => {
+                    let requested = req.params().clone();
+                    let interval = requested.max_connection_interval.as_micros() as u16;
+                    let latency = requested.max_latency;
 
-                if interval == last_accepted_interval && latency == last_accepted_latency {
-                    // Same params we already accepted or attempted — skip to avoid
-                    // collision → rejection → retry loop. Use forget to suppress
-                    // trouble-host's Drop handler ("ConnParamRequest dropped" error).
-                    core::mem::forget(req);
+                    // If a self-initiated update is still propagating, drop
+                    // peer requests rather than colliding with it.
+                    if let Some(until) = self_update_until {
+                        if Instant::now() < until {
+                            core::mem::forget(req);
+                            continue;
+                        }
+                        self_update_until = None;
+                    }
+
+                    // A peer request asking for *lower* latency than our
+                    // current step is the wake-from-sleep signal — snap our
+                    // target down to 0 and mark the slot active so the ladder
+                    // restarts its climb from the bottom.
+                    if latency < current_target_latency {
+                        debug!(
+                            "[slot{}] Peer wake signal (latency {} < target {}) — snapping to 0",
+                            slot, latency, current_target_latency
+                        );
+                        current_target_latency = 0;
+                        mark_slot_activity(slot);
+                        last_seen_peer_interval = 0;
+                        last_seen_peer_latency = 0;
+                    }
+
+                    if interval == last_seen_peer_interval && latency == last_seen_peer_latency {
+                        // Same params we already processed — skip silently.
+                        core::mem::forget(req);
+                        continue;
+                    }
+
+                    // Clamp the peer's requested latency to our current ladder
+                    // step (peer can only ask for *more* latency than us; if
+                    // it asks for less we already snapped above).
+                    let clamped = RequestedConnParams {
+                        max_latency: current_target_latency,
+                        ..requested
+                    };
+                    base_params = Some(clamped.clone());
+
+                    debug!(
+                        "[slot{}] Peer param update: interval={} latency={} → clamped latency={}",
+                        slot, interval, latency, current_target_latency
+                    );
+                    let _ = req.accept(Some(&clamped), stack).await;
+                    last_seen_peer_interval = interval;
+                    last_seen_peer_latency = latency;
+                    if latency > peer_preferred_latency {
+                        peer_preferred_latency = latency;
+                    }
+                }
+                ConnectionEvent::Disconnected { reason } => {
+                    info!(
+                        "[slot{}] Connection event: disconnected ({:?})",
+                        slot, reason
+                    );
+                    break;
+                }
+                _ => {}
+            },
+
+            embassy_futures::select::Either::Second(()) => {
+                if peer_preferred_latency == 0 {
+                    // Peer hasn't asked for any latency yet — nothing to walk
+                    // toward. Wait for a request to set the ceiling.
                     continue;
                 }
-
-                debug!("[slot{}] Connection parameter update requested", slot);
-                match req.accept(None, stack).await {
+                let idle = slot_idle_secs(slot);
+                let target = target_latency_for_idle(idle, peer_preferred_latency);
+                if target == current_target_latency {
+                    continue;
+                }
+                let Some(ref base) = base_params else {
+                    current_target_latency = target;
+                    continue;
+                };
+                let params = RequestedConnParams {
+                    max_latency: target,
+                    ..base.clone()
+                };
+                if !params.is_valid() {
+                    continue;
+                }
+                debug!(
+                    "[slot{}] Ladder step: idle={}s, latency {} → {}",
+                    slot, idle, current_target_latency, target
+                );
+                match conn.update_connection_params(stack, &params).await {
                     Ok(()) => {
-                        last_accepted_interval = interval;
-                        last_accepted_latency = latency;
+                        current_target_latency = target;
+                        base_params = Some(params);
+                        // Block peer-request processing until the LL update
+                        // has had time to apply (~6 conn intervals + slack).
+                        self_update_until =
+                            Some(Instant::now() + embassy_time::Duration::from_millis(500));
                     }
                     Err(_) => {
-                        // LL Procedure Collision — record as attempted so we skip retries.
-                        last_accepted_interval = interval;
-                        last_accepted_latency = latency;
+                        // Likely LL Procedure Collision — try again next tick.
                     }
                 }
             }
-            ConnectionEvent::Disconnected { reason } => {
-                info!(
-                    "[slot{}] Connection event: disconnected ({:?})",
-                    slot, reason
-                );
-                break;
-            }
-            _ => {}
         }
     }
 }

@@ -691,11 +691,14 @@ async fn connection_manager_loop<
 /// 2. Connects to the target device
 /// 3. Runs the GATT session (HID report forwarding)
 /// 4. On disconnect, marks itself idle and loops back
-async fn connection_slot_task<'a, C: Controller>(
+async fn connection_slot_task<'a, C>(
     slot: usize,
     stack: &'a Stack<'a, C, DefaultPacketPool>,
     flash: &'a FlashMutex,
-) {
+) where
+    C: Controller
+        + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::le::LeReadLocalSupportedFeatures>,
+{
     info!("[slot{}] Connection slot task started", slot);
 
     loop {
