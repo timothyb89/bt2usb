@@ -600,8 +600,10 @@ pub async fn classic_bt_task<C>(
                 .await
             {
                 Ok(_) => info!("[classic] Sniff subrating enabled (max_latency=800 / 500ms)"),
-                Err(e) => warn!(
-                    "[classic] Failed to enable sniff subrating: {:?}",
+                // Many HID peers (including the Magic Trackpad 2) don't implement
+                // sniff subrating; the base sniff interval still applies.
+                Err(e) => info!(
+                    "[classic] Sniff subrating not supported by peer: {:?}",
                     defmt::Debug2Format(&e)
                 ),
             }

@@ -416,14 +416,9 @@ fn render(
             stdout,
             "{CLR}{}\r\n",
             format!(
-                "Scanning for {} devices...  {}s left{}",
+                "Scanning for {} devices...  {}s left",
                 if is_classic { "Classic BT" } else { "BLE" },
                 remaining_secs,
-                if is_classic {
-                    "  (names/RSSI unavailable)"
-                } else {
-                    ""
-                }
             )
             .cyan()
         )?;

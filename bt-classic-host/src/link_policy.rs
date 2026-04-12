@@ -4,7 +4,7 @@
 //! them here using the same `cmd!` macro pattern.
 
 use bt_hci::cmd;
-use bt_hci::param::{BdAddr, ConnHandle};
+use bt_hci::param::ConnHandle;
 
 // OGF 0x02 = LINK_POLICY
 
@@ -94,24 +94,6 @@ cmd! {
     WriteSimplePairingMode(CONTROL_BASEBAND, 0x0056) {
         WriteSimplePairingModeParams {
             simple_pairing_mode: u8,
-        }
-        Return = ();
-    }
-}
-
-// OGF 0x01 = LINK_CONTROL
-
-cmd! {
-    /// Remote Name Request (OGF=0x01, OCF=0x0019)
-    ///
-    /// Requests the remote device's user-friendly name. Returns CommandStatus;
-    /// RemoteNameRequestComplete event follows with the name.
-    RemoteNameRequest(LINK_CONTROL, 0x0019) {
-        RemoteNameRequestParams {
-            bd_addr: BdAddr,
-            page_scan_repetition_mode: u8,
-            reserved: u8,
-            clock_offset: u16,
         }
         Return = ();
     }
