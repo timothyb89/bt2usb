@@ -614,7 +614,12 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
     config.max_power = 500;
     config.max_packet_size_0 = 64;
     config.bcd_usb = embassy_usb::UsbVersion::Two;
-    config.supports_remote_wakeup = true;
+    // Remote wakeup is advertised only if the driver can actually issue resume
+    // signaling. embassy-rp 0.9 returns Unsupported from Bus::remote_wakeup(),
+    // so we'd be claiming a capability we can't deliver — and on Windows that
+    // keeps some hosts from entering selective suspend / system sleep. Leave
+    // this off until the RP2040 USB driver gains real remote-wakeup support.
+    config.supports_remote_wakeup = false;
     config.composite_with_iads = false;
     config.device_class = 0;
     config.device_sub_class = 0;
