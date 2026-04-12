@@ -54,6 +54,7 @@ mod rpc_log;
 pub mod scratch;
 mod usb;
 mod usb_hid;
+mod watchdog;
 
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, Ordering};

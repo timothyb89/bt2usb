@@ -209,7 +209,7 @@ async fn connect_to_device<'a, C: Controller>(
     match select3(
         central.connect(config),
         SLOT_CMD_CHANNELS[slot].receive(),
-        Timer::after(Duration::from_secs(30)),
+        Timer::after(Duration::from_secs(8)),
     )
     .await
     {
@@ -235,7 +235,7 @@ async fn connect_to_device<'a, C: Controller>(
             ConnectOutcome::Cancelled
         }
         Either3::Third(_) => {
-            warn!("[slot{}] Connection attempt timed out (30s)", slot);
+            warn!("[slot{}] Connection attempt timed out (8s)", slot);
             rpc_log::warn("Connection timed out - device not found");
             ConnectOutcome::RetryableError
         }

@@ -69,8 +69,10 @@ async fn cyw43_task(
 
 /// LED blink task using CYW43 (spawned on Core 0).
 ///
-/// Also feeds the persistent watchdog each blink cycle (~2 s). If this task
-/// stops executing, the watchdog fires after 8 s and the device resets.
+/// Liveness for the watchdog is tracked separately by `crate::watchdog`,
+/// not by this task — the LED loop blocks on CYW43 HCI commands which
+/// share a controller with the BLE stack and can stall during connect
+/// attempts.
 #[embassy_executor::task]
 async fn led_task(control: &'static mut cyw43::Control<'static>) {
     loop {
@@ -78,7 +80,6 @@ async fn led_task(control: &'static mut cyw43::Control<'static>) {
         Timer::after_millis(1000).await;
         control.gpio_set(0, false).await;
         Timer::after_millis(1000).await;
-        crate::feed_watchdog();
     }
 }
 
@@ -137,8 +138,12 @@ pub async fn core0_ble_main(
     info!("[core0] CYW43 initialized with Bluetooth");
 
     // Enable the persistent watchdog now that CYW43 firmware download is done.
-    // The LED task feeds it every ~2 s; timeout is 8 s (see main::configure_watchdog).
+    // Per-task liveness is tracked in `crate::watchdog`; the feeder task only
+    // pets the HW watchdog when every watched slot is fresh.
     crate::configure_watchdog();
+    crate::watchdog::init();
+    unwrap!(spawner.spawn(crate::watchdog::feeder_task()));
+    unwrap!(spawner.spawn(crate::watchdog::core0_tick_task()));
 
     // Spawn LED blink task
     static CONTROL: StaticCell<cyw43::Control<'static>> = StaticCell::new();
@@ -372,6 +377,7 @@ async fn connection_manager_loop<
     info!("[manager] Connection manager started");
 
     loop {
+        crate::watchdog::pet(crate::watchdog::SLOT_BLE_MANAGER);
         // Check if we should run a background scan for bonded auto-connect devices
         let unconnected = get_unconnected_auto_connect_addresses(loaded_bonds);
         let has_idle_slot = slots::find_idle_slot().is_some();

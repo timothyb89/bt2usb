@@ -767,6 +767,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
     let executor1 = EXECUTOR1.init(Executor::new());
     executor1.run(|spawner| {
         spawner.spawn(usb_task(usb_dev)).unwrap();
+        spawner.spawn(crate::watchdog::core1_tick_task()).unwrap();
 
         // Spawn the appropriate HID handler task based on OS
         match (mt2_writer, mouse_writer, ptp_writer) {
