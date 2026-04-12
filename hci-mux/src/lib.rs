@@ -90,8 +90,8 @@ impl Clone for RawPacket {
 pub struct MuxResources<const LE_SLOTS: usize = 10, const CLASSIC_SLOTS: usize = 4> {
     le_slots: CommandSlots<LE_SLOTS>,
     classic_slots: CommandSlots<CLASSIC_SLOTS>,
-    le_channel: Channel<CriticalSectionRawMutex, RawPacket, 8>,
-    classic_channel: Channel<CriticalSectionRawMutex, RawPacket, 8>,
+    le_channel: Channel<CriticalSectionRawMutex, RawPacket, 32>,
+    classic_channel: Channel<CriticalSectionRawMutex, RawPacket, 32>,
     handles: RefCell<HandleRegistry<8>>,
 }
 
@@ -203,6 +203,8 @@ where
             let rx_ref = unsafe { core::slice::from_raw_parts_mut(rx.as_mut_ptr(), rx.len()) };
             let transport = &self.mux.transport;
             let result = transport.read(rx_ref).await;
+            #[cfg(feature = "defmt")]
+            defmt::trace!("[mux] rx packet");
 
             // Determine the dispatch action without holding a borrow on rx.
             let action = match result {
@@ -374,7 +376,15 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        self.res.le_channel.send(pkt).await;
+        if self.res.le_channel.try_send(pkt).is_err() {
+            #[cfg(feature = "defmt")]
+            defmt::error!(
+                "[mux] le_channel full — dropping LE packet ({} bytes)",
+                copy_len
+            );
+            #[cfg(not(feature = "defmt"))]
+            let _ = copy_len;
+        }
     }
 
     async fn dispatch_classic(&self, buf: &[u8], len: usize) {
@@ -382,7 +392,15 @@ where
         let copy_len = len.min(MAX_HCI_PACKET_LEN);
         pkt.buf[..copy_len].copy_from_slice(&buf[..copy_len]);
         pkt.len = copy_len;
-        self.res.classic_channel.send(pkt).await;
+        if self.res.classic_channel.try_send(pkt).is_err() {
+            #[cfg(feature = "defmt")]
+            defmt::error!(
+                "[mux] classic_channel full — dropping Classic packet ({} bytes)",
+                copy_len
+            );
+            #[cfg(not(feature = "defmt"))]
+            let _ = copy_len;
+        }
     }
 
     async fn dispatch_to_both(&self, buf: &[u8], len: usize) {

@@ -376,6 +376,17 @@ async fn connection_manager_loop<
 
     info!("[manager] Connection manager started");
 
+    // Gate: wait for classic_bt_task to reissue the merged HCI event mask
+    // before we touch the controller. Without this, the classic task's
+    // SetEventMask can land mid-Create-Connection and wedge trouble-host
+    // (see log-5.txt for the failing timeline). Pet the watchdog slot while
+    // waiting so the gate itself doesn't look like a stall.
+    {
+        crate::watchdog::pet(crate::watchdog::SLOT_BLE_MANAGER);
+        classic::CLASSIC_INIT_DONE.wait().await;
+        info!("[manager] Classic init gate released");
+    }
+
     loop {
         crate::watchdog::pet(crate::watchdog::SLOT_BLE_MANAGER);
         // Check if we should run a background scan for bonded auto-connect devices

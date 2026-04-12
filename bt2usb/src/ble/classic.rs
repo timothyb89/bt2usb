@@ -13,7 +13,17 @@ use bt_classic_host::hidp::ReportType;
 use bt_classic_host::{ClassicRunner, HidClient, HostResources, L2capState};
 use defmt::*;
 use embassy_futures::select::{select, Either};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Timer;
+
+/// One-shot gate fired by `classic_bt_task` after it has (re)issued the
+/// merged `SetEventMask`. The BLE connection manager awaits this signal
+/// exactly once before it runs any scan or connect, so the mask update can
+/// never race an in-flight `LE Create Connection`. Only one waiter (the
+/// manager loop) consumes it; slot tasks are driven by the manager via
+/// channel commands, so they inherit the gate transitively.
+pub static CLASSIC_INIT_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 use super::slots;
 use super::FlashMutex;
@@ -125,8 +135,12 @@ pub async fn classic_bt_task<C>(
 {
     info!("[classic] Classic BT task started");
 
-    // Wait for BLE stack to initialize first (it sends SetEventMask during init)
-    Timer::after_millis(2000).await;
+    // Wait just long enough for trouble-host to finish its own init HCI
+    // sequence (including its SetEventMask). We only need to cover the
+    // init burst — not "hope no BLE connection lands here" — because the
+    // BLE connection manager gates on CLASSIC_INIT_DONE below, so no LE
+    // Create Connection can run until we've issued the merged mask.
+    Timer::after_millis(300).await;
 
     // --- Fix event mask: trouble-host's SetEventMask disables Classic auth events
     // (LinkKeyRequest, PinCodeRequest, AuthenticationComplete). Re-send with
@@ -165,6 +179,12 @@ pub async fn classic_bt_task<C>(
             ),
         }
     }
+
+    // Release the BLE manager: mask reconfiguration is done, so any LE
+    // Create Connection from here on is safe. Do this unconditionally,
+    // even on SetEventMask failure — otherwise BLE would deadlock waiting
+    // on a gate that never opens.
+    CLASSIC_INIT_DONE.signal(());
 
     // --- Create resources with flash-backed link key store ---
     let mut link_key_store = MemoryLinkKeyStore::new();
