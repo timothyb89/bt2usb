@@ -405,12 +405,11 @@ async fn connection_manager_loop<
                     rpc_log::info("Bonded device detected, connecting...");
                     // Small delay for HCI state to settle after scan stop
                     Timer::after_millis(50).await;
-                    let addr_kind = if (addr[5] & 0xC0) == 0xC0 { 1u8 } else { 0u8 };
-                    BleCommand::Connect {
-                        address: addr,
-                        addr_kind,
-                        ignore_bond: false,
-                    }
+                    // Dispatch a single connect attempt — no per-slot retry loop.
+                    // The bg-scan loop itself is the retry mechanism, which naturally
+                    // round-robins across all unconnected auto-connect bonds.
+                    dispatch_bg_auto_connect(loaded_bonds, addr);
+                    continue;
                 }
                 BgScanOutcome::Command(cmd) => {
                     // Small delay for HCI state to settle after scan stop
@@ -474,6 +473,7 @@ async fn connection_manager_loop<
                             addr_kind,
                             profile,
                             has_stored_bond: has_bond,
+                            max_attempts: 5,
                         });
                     }
                     None => {
@@ -505,6 +505,7 @@ async fn connection_manager_loop<
                             addr_kind,
                             profile,
                             has_stored_bond: true,
+                            max_attempts: 5,
                         });
                     } else {
                         warn!("[manager] No idle slots for auto-connect");
@@ -730,6 +731,7 @@ async fn connection_slot_task<'a, C: Controller>(
             &mut active_profile,
             request.has_stored_bond,
             slot,
+            request.max_attempts,
         )
         .await;
 
@@ -806,6 +808,43 @@ fn resolve_auto_connect_target(
 
 // ============ Background Scan for Auto-Reconnect ============
 
+/// Dispatch a single-attempt connect to an idle slot on behalf of the background
+/// auto-connect loop. Uses `max_attempts: 1` so the slot releases quickly after
+/// one failure — the bg scan is the retry mechanism and naturally round-robins
+/// across all unconnected auto-connect bonds.
+fn dispatch_bg_auto_connect(loaded_bonds: &[bonding::LoadedBond], address: [u8; 6]) {
+    if slots::find_slot_by_address(&address).is_some() {
+        return;
+    }
+    let Some(slot) = slots::find_idle_slot() else {
+        warn!("[manager] No idle slot for bg auto-connect {:?}", address);
+        return;
+    };
+    let addr_kind = if (address[5] & 0xC0) == 0xC0 {
+        1u8
+    } else {
+        0u8
+    };
+    let bond = loaded_bonds
+        .iter()
+        .find(|lb| lb.bond.identity.bd_addr.raw() == address);
+    let profile = bond
+        .map(|lb| DeviceProfile::from_id(lb.profile_id))
+        .unwrap_or(DeviceProfile::Generic);
+    let has_stored_bond = bond.is_some();
+    info!(
+        "[manager] Assigning slot {} for {:?} (profile: {:?}, bg auto-connect)",
+        slot, address, profile
+    );
+    CONNECT_SIGNALS[slot].signal(ConnectRequest {
+        address,
+        addr_kind,
+        profile,
+        has_stored_bond,
+        max_attempts: 1,
+    });
+}
+
 /// Outcome of the background scan.
 enum BgScanOutcome {
     /// A bonded device was seen advertising.
@@ -847,28 +886,17 @@ async fn run_background_scan<
     scanner: &mut Scanner<'_, C, DefaultPacketPool>,
     bonded_addrs: &[([u8; 6], u8)],
 ) -> BgScanOutcome {
-    use bt_hci::param::AddrKind;
-    use trouble_host::prelude::BdAddr;
-
-    // Build filter accept list from bonded addresses
-    let mut bd_addrs: heapless::Vec<BdAddr, { bonding::MAX_BONDS }> = heapless::Vec::new();
-    for (addr, _) in bonded_addrs {
-        let _ = bd_addrs.push(BdAddr::new(*addr));
-    }
-    let mut filter_list: heapless::Vec<(AddrKind, &BdAddr), { bonding::MAX_BONDS }> =
-        heapless::Vec::new();
-    for (i, (_, kind)) in bonded_addrs.iter().enumerate() {
-        let addr_kind = if *kind == 1 {
-            AddrKind::RANDOM
-        } else {
-            AddrKind::PUBLIC
-        };
-        let _ = filter_list.push((addr_kind, &bd_addrs[i]));
-    }
-
+    // Note: intentionally NOT passing filter_accept_list here. trouble-host
+    // would install these addresses into the controller's Filter Accept List,
+    // which then collides with the per-slot `central.connect()` later (it
+    // auto-adds stored bonds and duplicate-adds the slot target, wedging the
+    // connect future even after LE Conn Complete arrives — see notes/logs/log-8).
+    // We already filter by bonded address in software via `set_bg_scan_filter`
+    // and the scanner handler, so a wide passive scan is equivalent without
+    // mutating FAL state that slot connects depend on.
     let scan_config = trouble_host::connection::ScanConfig {
         active: false, // Passive scan — lower power
-        filter_accept_list: &filter_list,
+        filter_accept_list: &[],
         interval: embassy_time::Duration::from_millis(200),
         window: embassy_time::Duration::from_millis(100),
         timeout: embassy_time::Duration::from_secs(0), // No HCI timeout
@@ -883,10 +911,13 @@ async fn run_background_scan<
     let result = match scanner.scan(&scan_config).await {
         Ok(_session) => {
             // _session keeps scan alive; dropping it stops the scan
+            // 20s timeout — well under the 60s ble_manager watchdog deadline so
+            // that even if the outer loop does nothing but re-run bg scan, the
+            // feeder keeps getting fresh pets.
             match embassy_futures::select::select3(
                 crate::ble_state::BONDED_DEVICE_SEEN.wait(),
                 BLE_CMD_CHANNEL.receive(),
-                Timer::after(embassy_time::Duration::from_secs(60)),
+                Timer::after(embassy_time::Duration::from_secs(20)),
             )
             .await
             {

@@ -128,6 +128,12 @@ pub struct ConnectRequest {
     pub addr_kind: u8,
     pub profile: DeviceProfile,
     pub has_stored_bond: bool,
+    /// Max connection/pairing attempts before giving up. Auto-connect dispatches
+    /// from the background scan use `1` — the bg-scan loop naturally round-robins
+    /// across bonded devices, so per-slot retry would just block the rotation.
+    /// Explicit user Connect/AutoConnect commands use a larger value since the
+    /// user is actively waiting on a single target.
+    pub max_attempts: u8,
 }
 
 /// Per-slot connect signals. The manager signals a slot to connect.

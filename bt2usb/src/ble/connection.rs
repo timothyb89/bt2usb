@@ -7,7 +7,7 @@
 //! 4. Hand off to GATT session for HID report streaming
 //!
 //! The outer retry loop handles transient connection/pairing failures,
-//! retrying up to MAX_PAIRING_RETRIES times before giving up.
+//! retrying up to max_attempts times before giving up.
 
 use defmt::*;
 use embassy_futures::select::{select, select3, Either, Either3};
@@ -27,8 +27,6 @@ use crate::rpc_log;
 use super::gatt::{self, GattSessionResult};
 use super::slots::{self, SLOT_CMD_CHANNELS};
 use super::FlashMutex;
-
-const MAX_PAIRING_RETRIES: u8 = 5;
 
 /// Mutex to serialize BLE connection attempts across slots.
 /// The BLE controller only supports one LE Create Connection at a time.
@@ -56,6 +54,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
     active_profile: &mut DeviceProfile,
     has_stored_bond: bool,
     slot: usize,
+    max_attempts: u8,
 ) -> Option<()> {
     let _ = BLE_EVENT_CHANNEL.try_send(BleEvent::StateChanged(ConnectionState::Connecting));
     rpc_log::info("Connecting to BLE device");
@@ -82,7 +81,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
         pairing_attempts += 1;
         info!(
             "[slot{}] Connection attempt {} of {}",
-            slot, pairing_attempts, MAX_PAIRING_RETRIES
+            slot, pairing_attempts, max_attempts
         );
 
         // Phase 1: Establish BLE connection.
@@ -100,7 +99,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
                 }
                 ConnectOutcome::RetryableError => {
                     drop(_guard);
-                    if pairing_attempts >= MAX_PAIRING_RETRIES {
+                    if pairing_attempts >= max_attempts {
                         error!("[slot{}] Max connection retries exceeded", slot);
                         rpc_log::error("Max connection retries exceeded");
                         return None;
@@ -117,7 +116,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
             SecurityOutcome::Ready => false,
             SecurityOutcome::AlreadyEncrypted => true,
             SecurityOutcome::RetryableError => {
-                if pairing_attempts >= MAX_PAIRING_RETRIES {
+                if pairing_attempts >= max_attempts {
                     return None;
                 }
                 Timer::after(Duration::from_millis(500)).await;
@@ -142,7 +141,7 @@ pub async fn ble_connect_and_run<'a, C: Controller>(
                         );
                         try_stored_bond = false;
                     }
-                    if pairing_attempts >= MAX_PAIRING_RETRIES {
+                    if pairing_attempts >= max_attempts {
                         error!("[slot{}] Max pairing retries exceeded", slot);
                         rpc_log::error("Max pairing retries exceeded");
                         return None;
