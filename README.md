@@ -56,15 +56,18 @@ detected host OS, for reference:
 |------------------|------------------------------------|---------------------------|
 | Full Scroll Dial | Generic mouse with high-res scroll | Emulated Magic Trackpad 2 |
 | Generic mouse    | Generic mouse                      | Generic mouse (movement, clicks) + emulated MT2 (scrolling) |
-| Magic Trackpad 2 | Generic Precision Touchpad (PTP)   | Magic Trackpad 2 (emulated passthrough) |
+| Magic Trackpad 2* | Generic Precision Touchpad (PTP)   | Magic Trackpad 2 (emulated passthrough) |
 
-I've tested a number of BLE devices successfully. The `Generic` (default)
+_\* Both Lightning and USB-C variants of the Magic Trackpad 2 are supported_
+
+I've tested a number of input devices successfully. The `Generic` (default)
 profile should be sufficient for most standard Bluetooth HID mice.
 
 Known to work:
 - Full Scroll Dial
 - Logitech MX Master 3
 - Keychron M3 8K
+- Magic Trackpad 2 (Lightning and USB-C)
 
 Not currently supported:
 - Keyboards
@@ -141,6 +144,9 @@ $ bt2usb-cli setup-rules
 
 # Scan for pairable devices with interactive pairing
 $ bt2usb-cli scan
+
+# For BT Classic devices (e.g. Magic Trackpad 2), use --classic
+$ bt2usb-cli scan --classic
 
 # Connect to a device (if not done above)
 $ bt2usb-cli connect <address> 
