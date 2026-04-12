@@ -130,6 +130,8 @@ pub async fn classic_bt_task<C>(
         > + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::WriteLinkPolicySettings>
         + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffMode>
         + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::SniffSubrating>
+        + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::WriteInquiryMode>
+        + bt_hci::controller::ControllerCmdSync<bt_classic_host::link_policy::WriteSimplePairingMode>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::Inquiry>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::InquiryCancel>,
 {
@@ -169,12 +171,50 @@ pub async fn classic_bt_task<C>(
             .enable_simple_pairing_complete(true)
             .enable_mode_change(true)
             .enable_inquiry_complete(true)
-            .enable_inquiry_result(true);
+            .enable_inquiry_result(true)
+            // Required when WriteInquiryMode is set to 1 (RSSI) or 2 (EIR):
+            // the controller still emits these events, but they're gated by
+            // these mask bits. Without them inquiries return zero responses.
+            .enable_inquiry_result_with_rssi(true)
+            .enable_ext_inquiry_result(true)
+            // Needed if we ever want to issue RemoteNameRequest as a fallback.
+            .enable_remote_name_request_complete(true);
 
         match controller.exec(&SetEventMask::new(mask)).await {
             Ok(_) => info!("[classic] Event mask updated with Classic events"),
             Err(e) => warn!(
                 "[classic] Failed to set event mask: {:?}",
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
+
+    // --- Enable Secure Simple Pairing (required for EIR) ---
+    // The CYW43439 will not emit Extended Inquiry Result events unless SSP is
+    // enabled, even after WriteInquiryMode(2). This was almost certainly the
+    // missing piece in the previous "modes 1 and 2 return zero results" attempt.
+    {
+        use bt_classic_host::link_policy::WriteSimplePairingMode;
+        match controller.exec(&WriteSimplePairingMode::new(1)).await {
+            Ok(_) => info!("[classic] Simple Pairing Mode enabled"),
+            Err(e) => warn!(
+                "[classic] WriteSimplePairingMode failed: {:?}",
+                defmt::Debug2Format(&e)
+            ),
+        }
+    }
+
+    // --- Switch inquiry result format to Extended Inquiry Result ---
+    // Mode 0 = standard (no RSSI/EIR), Mode 1 = with RSSI, Mode 2 = EIR.
+    // The existing ExtendedInquiryResult handler already parses EIR for the
+    // device name (AD types 0x08/0x09), so once the controller starts emitting
+    // these events scan results will include both RSSI and the device name.
+    {
+        use bt_classic_host::link_policy::WriteInquiryMode;
+        match controller.exec(&WriteInquiryMode::new(2)).await {
+            Ok(_) => info!("[classic] Inquiry mode set to 2 (EIR)"),
+            Err(e) => warn!(
+                "[classic] WriteInquiryMode(2) failed: {:?}",
                 defmt::Debug2Format(&e)
             ),
         }
@@ -228,9 +268,6 @@ pub async fn classic_bt_task<C>(
                             info!("[classic] Starting Inquiry scan...");
                             crate::rpc_log::info("Classic Inquiry scan starting (~10s)...");
 
-                            // CYW43439 only supports inquiry mode 0 (standard results,
-                            // no RSSI/EIR). Modes 1 and 2 return zero results.
-
                             // GIAC LAP = 0x9E8B33, duration 23 (~29.4s), unlimited responses.
                             // Matches CLI's default 30s scan timeout.
                             match controller
@@ -243,9 +280,9 @@ pub async fn classic_bt_task<C>(
                             {
                                 Ok(_) => {
                                     // Read Inquiry events until InquiryComplete or ScanStop.
-                                    // Note: CYW43439 only supports inquiry mode 0 (no RSSI/EIR),
-                                    // and RemoteNameRequest events are not delivered by the mux.
-                                    // Names are unavailable during Classic scan.
+                                    // With WriteInquiryMode(2) + WriteSimplePairingMode(1) issued
+                                    // at task startup, the controller should emit
+                                    // ExtendedInquiryResult events containing RSSI + EIR (name).
                                     let mut rx = [0u8; 259];
                                     let rx_ref = &mut rx[..];
                                     let mut inquiry_done = false;
@@ -398,10 +435,13 @@ pub async fn classic_bt_task<C>(
                                                         );
                                                     }
                                                 }
-                                                _ => {
-                                                    debug!(
-                                                        "[classic] Inquiry: unhandled event {:?}",
-                                                        evt.kind
+                                                // NoCP is shared with BLE via the mux's "Both" dispatch
+                                                // and shows up here as noise whenever a BLE link is active.
+                                                bt_hci::event::EventKind::NumberOfCompletedPackets => {}
+                                                other => {
+                                                    info!(
+                                                        "[classic] Inquiry: unhandled event {:?} len={}",
+                                                        other, evt.data.len()
                                                     );
                                                 }
                                             }

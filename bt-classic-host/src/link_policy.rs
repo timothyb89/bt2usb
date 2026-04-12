@@ -85,6 +85,20 @@ cmd! {
     }
 }
 
+cmd! {
+    /// Write Simple Pairing Mode (OGF=0x03, OCF=0x0056)
+    ///
+    /// Enables Secure Simple Pairing on the controller. Must be set to 1 before
+    /// the controller will emit Extended Inquiry Result events, even if the
+    /// inquiry mode has been set to 2 via WriteInquiryMode.
+    WriteSimplePairingMode(CONTROL_BASEBAND, 0x0056) {
+        WriteSimplePairingModeParams {
+            simple_pairing_mode: u8,
+        }
+        Return = ();
+    }
+}
+
 // OGF 0x01 = LINK_CONTROL
 
 cmd! {
