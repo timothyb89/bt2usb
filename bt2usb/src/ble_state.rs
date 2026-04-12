@@ -11,7 +11,6 @@ use embassy_sync::signal::Signal;
 use trouble_host::prelude::*;
 use trouble_host::scan::LeAdvReportsIter;
 
-use crate::bonding::MAX_BONDS;
 use crate::protocol::ConnectionState;
 
 // ============ Commands (RPC -> BLE) ============
@@ -189,33 +188,14 @@ pub static STATUS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, StatusInfo,
 // ============ Background Scan State ============
 
 /// Signal from scanner handler to manager when a bonded device is seen advertising.
+/// During background scan, the controller's Filter Accept List ensures that only
+/// adverts from bonded devices reach us, so the handler can signal unconditionally.
 pub static BONDED_DEVICE_SEEN: Signal<CriticalSectionRawMutex, [u8; 6]> = Signal::new();
 
-/// Whether a background scan is active (handler should check bonded addresses).
+/// Whether a background scan is active. During bg scan, the handler signals
+/// `BONDED_DEVICE_SEEN` instead of emitting ScanResult events. The HW filter
+/// guarantees the advert is from a bonded device.
 pub static BG_SCAN_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Number of valid entries in `BG_SCAN_FILTER_ADDRS`.
-pub static BG_SCAN_FILTER_COUNT: AtomicU8 = AtomicU8::new(0);
-
-/// Addresses being monitored during background scan. Each entry is 7 bytes:
-/// [addr0..addr5, addr_kind]. Only the first `BG_SCAN_FILTER_COUNT` entries are valid.
-#[allow(clippy::declare_interior_mutable_const)]
-pub static BG_SCAN_FILTER_ADDRS: [AtomicU8; 7 * MAX_BONDS] = {
-    const ZERO: AtomicU8 = AtomicU8::new(0);
-    [ZERO; 7 * MAX_BONDS]
-};
-
-/// Populate the background scan filter with addresses to monitor.
-pub fn set_bg_scan_filter(addrs: &[([u8; 6], u8)]) {
-    for (i, (addr, kind)) in addrs.iter().enumerate() {
-        let base = i * 7;
-        for j in 0..6 {
-            BG_SCAN_FILTER_ADDRS[base + j].store(addr[j], Ordering::Relaxed);
-        }
-        BG_SCAN_FILTER_ADDRS[base + 6].store(*kind, Ordering::Relaxed);
-    }
-    BG_SCAN_FILTER_COUNT.store(addrs.len() as u8, Ordering::Relaxed);
-}
 
 // ============ Scanner Event Handler ============
 
@@ -321,22 +301,13 @@ impl EventHandler for RpcScannerHandler {
         let bg_active = BG_SCAN_ACTIVE.load(Ordering::Relaxed);
 
         while let Some(Ok(report)) = it.next() {
-            // Background scan: check if this is a monitored bonded device
+            // Background scan: HW Filter Accept List guarantees this advert is
+            // from a bonded device, so signal directly without re-checking.
             if bg_active {
                 let mut addr_bytes = [0u8; 6];
                 addr_bytes.copy_from_slice(report.addr.raw());
-                let count = BG_SCAN_FILTER_COUNT.load(Ordering::Relaxed) as usize;
-                for i in 0..count {
-                    let base = i * 7;
-                    let mut filter_addr = [0u8; 6];
-                    for j in 0..6 {
-                        filter_addr[j] = BG_SCAN_FILTER_ADDRS[base + j].load(Ordering::Relaxed);
-                    }
-                    if filter_addr == addr_bytes {
-                        BONDED_DEVICE_SEEN.signal(addr_bytes);
-                        return;
-                    }
-                }
+                BONDED_DEVICE_SEEN.signal(addr_bytes);
+                return;
             }
 
             // User-initiated scan: parse AD structures for HID devices

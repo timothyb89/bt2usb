@@ -836,6 +836,13 @@ fn dispatch_bg_auto_connect(loaded_bonds: &[bonding::LoadedBond], address: [u8; 
         "[manager] Assigning slot {} for {:?} (profile: {:?}, bg auto-connect)",
         slot, address, profile
     );
+    // Pre-reserve the slot synchronously so the manager's next loop iteration
+    // sees `any_slot_connecting() == true` and won't race a new bg scan against
+    // this slot's `central.connect()`. Both `scan()` and `connect()` in
+    // trouble-host mutate the shared Filter Accept List via `set_accept_filter`
+    // without internal serialization — if they interleave, the connect future
+    // wedges. See notes/trouble-host-fal-race.md.
+    slots::set_slot_connecting(slot, address, profile);
     CONNECT_SIGNALS[slot].signal(ConnectRequest {
         address,
         addr_kind,
@@ -886,25 +893,45 @@ async fn run_background_scan<
     scanner: &mut Scanner<'_, C, DefaultPacketPool>,
     bonded_addrs: &[([u8; 6], u8)],
 ) -> BgScanOutcome {
-    // Note: intentionally NOT passing filter_accept_list here. trouble-host
-    // would install these addresses into the controller's Filter Accept List,
-    // which then collides with the per-slot `central.connect()` later (it
-    // auto-adds stored bonds and duplicate-adds the slot target, wedging the
-    // connect future even after LE Conn Complete arrives — see notes/logs/log-8).
-    // We already filter by bonded address in software via `set_bg_scan_filter`
-    // and the scanner handler, so a wide passive scan is equivalent without
-    // mutating FAL state that slot connects depend on.
+    use bt_hci::param::AddrKind;
+    use trouble_host::prelude::BdAddr;
+
+    // Build filter accept list from bonded addresses. trouble-host will install
+    // these into the controller's FAL and use ScanningFilterPolicy::BasicFiltered,
+    // so non-bonded adverts are filtered in hardware and never reach the host.
+    // This keeps logs quiet while unconnected auto-connect devices are being
+    // waited for.
+    //
+    // Safety against the FAL race with slot `central.connect()`: we rely on the
+    // manager's `any_slot_connecting()` gate plus the synchronous pre-reservation
+    // in `dispatch_bg_auto_connect` to ensure bg scan and slot connect never run
+    // concurrently. See notes/trouble-host-fal-race.md for the underlying bug.
+    let mut bd_addrs: heapless::Vec<BdAddr, { bonding::MAX_BONDS }> = heapless::Vec::new();
+    for (addr, _) in bonded_addrs {
+        let _ = bd_addrs.push(BdAddr::new(*addr));
+    }
+    let mut filter_list: heapless::Vec<(AddrKind, &BdAddr), { bonding::MAX_BONDS }> =
+        heapless::Vec::new();
+    for (i, (_, kind)) in bonded_addrs.iter().enumerate() {
+        let addr_kind = if *kind == 1 {
+            AddrKind::RANDOM
+        } else {
+            AddrKind::PUBLIC
+        };
+        let _ = filter_list.push((addr_kind, &bd_addrs[i]));
+    }
+
     let scan_config = trouble_host::connection::ScanConfig {
         active: false, // Passive scan — lower power
-        filter_accept_list: &[],
+        filter_accept_list: &filter_list,
         interval: embassy_time::Duration::from_millis(200),
         window: embassy_time::Duration::from_millis(100),
         timeout: embassy_time::Duration::from_secs(0), // No HCI timeout
         ..Default::default()
     };
 
-    // Set the filter state for the scanner handler
-    crate::ble_state::set_bg_scan_filter(bonded_addrs);
+    // Tell the scanner handler we're in bg scan mode (so it signals
+    // BONDED_DEVICE_SEEN instead of emitting ScanResult events).
     crate::ble_state::BONDED_DEVICE_SEEN.reset();
     crate::ble_state::BG_SCAN_ACTIVE.store(true, core::sync::atomic::Ordering::Relaxed);
 
