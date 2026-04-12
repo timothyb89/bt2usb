@@ -144,6 +144,10 @@ pub enum ClassicCommand {
     Scan,
     /// Stop active Inquiry scan.
     ScanStop,
+    /// A bond was cleared from flash — drop the in-memory link key for this
+    /// address and disconnect the device if it's currently connected, so it
+    /// can't be silently re-stored on the next reconnect.
+    ClearBond { address: [u8; 6] },
 }
 
 /// Command channel for Classic BT task (capacity 2).
@@ -184,6 +188,10 @@ pub struct StatusInfo {
 /// Response channel for GetStatus (capacity 1, only one request at a time).
 pub static STATUS_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, StatusInfo, 1> =
     Channel::new();
+
+/// Response channel for ClearBond — true on success, false if the bond was
+/// not found (e.g. wrong transport or stale address).
+pub static CLEAR_BOND_RESPONSE_CHANNEL: Channel<CriticalSectionRawMutex, bool, 1> = Channel::new();
 
 // ============ Background Scan State ============
 

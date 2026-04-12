@@ -525,11 +525,29 @@ async fn dispatch_request(
             address,
             transport_type,
         } => {
+            // Drain any stale response so we don't pick up a previous result.
+            while crate::ble_state::CLEAR_BOND_RESPONSE_CHANNEL
+                .try_receive()
+                .is_ok()
+            {}
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::ClearBond {
                 address: *address,
                 transport_type: crate::ble_state::TransportType::from_u8(*transport_type),
             });
-            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+            match embassy_time::with_timeout(
+                embassy_time::Duration::from_millis(2000),
+                crate::ble_state::CLEAR_BOND_RESPONSE_CHANNEL.receive(),
+            )
+            .await
+            {
+                Ok(true) => protocol::encode_response_ok(cbor_buf).unwrap_or(0),
+                Ok(false) => {
+                    protocol::encode_response_error(cbor_buf, 1, "Bond not found").unwrap_or(0)
+                }
+                Err(_) => {
+                    protocol::encode_response_error(cbor_buf, 2, "Clear bond timeout").unwrap_or(0)
+                }
+            }
         }
 
         protocol::Request::SetAutoConnect {

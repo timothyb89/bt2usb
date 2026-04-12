@@ -77,11 +77,13 @@ pub fn handle_get_status(
 }
 
 /// Build and send a BondList response over the BONDS_RESPONSE_CHANNEL.
-/// Includes both BLE and Classic BT bonds.
-pub fn handle_get_bonds(
+/// Includes both BLE and Classic BT bonds. Classic bonds are reloaded from
+/// flash each call so that fresh stores/clears are visible without a reboot.
+pub async fn handle_get_bonds(
+    flash: &mut Flash<'static, FLASH, Async, FLASH_SIZE>,
     loaded_bonds: &[LoadedBond],
-    loaded_classic_bonds: &[bonding::StoredClassicBond],
 ) {
+    let loaded_classic_bonds = bonding::load_classic_bonds(flash).await;
     let mut bond_list: ble_state::BondList = heapless::Vec::new();
 
     // BLE bonds
@@ -123,7 +125,7 @@ pub fn handle_get_bonds(
     }
 
     // Classic BT bonds
-    for cb in loaded_classic_bonds {
+    for cb in &loaded_classic_bonds {
         let mut name: heapless::String<32> = heapless::String::new();
         if cb.name_len > 0 {
             if let Ok(s) = core::str::from_utf8(&cb.name[..cb.name_len as usize]) {
@@ -339,12 +341,17 @@ pub async fn handle_clear_bond(
     address: &[u8; 6],
     transport_type: ble_state::TransportType,
     loaded_bonds: &mut heapless::Vec<LoadedBond, { bonding::MAX_BONDS }>,
+    loaded_classic_bonds: &mut heapless::Vec<
+        bonding::StoredClassicBond,
+        { bonding::MAX_CLASSIC_BONDS },
+    >,
 ) {
     info!(
         "Clearing bond for {:?} (transport={})",
         address, transport_type
     );
-    let result = if transport_type == ble_state::TransportType::Classic {
+    let is_classic = transport_type == ble_state::TransportType::Classic;
+    let result = if is_classic {
         bonding::clear_classic_bond_by_address(flash, address).await
     } else {
         bonding::clear_bond_by_address(flash, address).await
@@ -353,11 +360,21 @@ pub async fn handle_clear_bond(
         Ok(slot) => {
             info!("Bond removed from slot {}", slot);
             rpc_log::info("Bond removed");
-            *loaded_bonds = bonding::load_bonds(flash).await;
+            if is_classic {
+                *loaded_classic_bonds = bonding::load_classic_bonds(flash).await;
+                // Tell the Classic task to drop the in-memory link key and
+                // disconnect if this address is currently active.
+                let _ = ble_state::CLASSIC_CMD_CHANNEL
+                    .try_send(ble_state::ClassicCommand::ClearBond { address: *address });
+            } else {
+                *loaded_bonds = bonding::load_bonds(flash).await;
+            }
+            let _ = ble_state::CLEAR_BOND_RESPONSE_CHANNEL.try_send(true);
         }
         Err(()) => {
             error!("Failed to clear bond: not found");
             rpc_log::error("Bond not found");
+            let _ = ble_state::CLEAR_BOND_RESPONSE_CHANNEL.try_send(false);
         }
     }
 }

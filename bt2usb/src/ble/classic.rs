@@ -14,6 +14,7 @@ use bt_classic_host::{ClassicRunner, HidClient, HostResources, L2capState};
 use defmt::*;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 
@@ -24,6 +25,62 @@ use embassy_time::Timer;
 /// manager loop) consumes it; slot tasks are driven by the manager via
 /// channel commands, so they inherit the gate transitively.
 pub static CLASSIC_INIT_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Cache of EIR-discovered names from the most recent Classic Inquiry, keyed
+/// by BD address. Populated by the inquiry loop when it parses an
+/// ExtendedInquiryResult; consumed by `store_classic_bond` after a successful
+/// pair so the human-readable name ends up in flash alongside the link key.
+///
+/// This is a simple ring of recent entries — small and static, not a
+/// long-lived database. Scans overwrite older entries as needed.
+const MAX_CACHED_NAMES: usize = 8;
+
+#[derive(Clone, Copy)]
+struct CachedName {
+    addr: [u8; 6],
+    name: [u8; 32],
+    name_len: u8,
+}
+
+static SCAN_NAME_CACHE: BlockingMutex<
+    CriticalSectionRawMutex,
+    RefCell<heapless::Vec<CachedName, MAX_CACHED_NAMES>>,
+> = BlockingMutex::new(RefCell::new(heapless::Vec::new()));
+
+fn cache_scan_name(addr: &[u8; 6], name: &[u8; 32], name_len: u8) {
+    if name_len == 0 {
+        return;
+    }
+    SCAN_NAME_CACHE.lock(|c| {
+        let mut cache = c.borrow_mut();
+        for entry in cache.iter_mut() {
+            if entry.addr == *addr {
+                entry.name = *name;
+                entry.name_len = name_len;
+                return;
+            }
+        }
+        let entry = CachedName {
+            addr: *addr,
+            name: *name,
+            name_len,
+        };
+        if cache.push(entry).is_err() {
+            // Evict oldest (index 0) when full
+            cache.remove(0);
+            let _ = cache.push(entry);
+        }
+    });
+}
+
+fn lookup_scan_name(addr: &[u8; 6]) -> Option<([u8; 32], u8)> {
+    SCAN_NAME_CACHE.lock(|c| {
+        c.borrow()
+            .iter()
+            .find(|e| e.addr == *addr)
+            .map(|e| (e.name, e.name_len))
+    })
+}
 
 use super::slots;
 use super::FlashMutex;
@@ -110,11 +167,8 @@ fn cod_is_peripheral(cod: &[u8]) -> bool {
 ///
 /// Runs the full connection lifecycle: ACL → Auth → Encrypt → L2CAP → HIDP.
 /// Forwards received HID reports to HID_REPORT_CHANNEL for USB translation.
-pub async fn classic_bt_task<C>(
-    controller: &C,
-    flash_mutex: &FlashMutex,
-    loaded_classic_bonds: &[bonding::StoredClassicBond],
-) where
+pub async fn classic_bt_task<C>(controller: &C, flash_mutex: &FlashMutex)
+where
     C: bt_hci::controller::Controller
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::controller_baseband::SetEventMask>
         + bt_hci::controller::ControllerCmdSync<bt_hci::cmd::link_control::CreateConnection>
@@ -228,7 +282,11 @@ pub async fn classic_bt_task<C>(
 
     // --- Create resources with flash-backed link key store ---
     let mut link_key_store = MemoryLinkKeyStore::new();
-    link_key_store.load_from_flash(loaded_classic_bonds);
+    {
+        let mut f = flash_mutex.lock().await;
+        let bonds = bonding::load_classic_bonds(&mut f).await;
+        link_key_store.load_from_flash(&bonds);
+    }
     info!(
         "[classic] Loaded {} link key(s) from flash",
         link_key_store.keys.len()
@@ -243,15 +301,23 @@ pub async fn classic_bt_task<C>(
 
         // --- Resolve target address: auto-connect bond, or wait for command ---
         let target_addr = {
-            // Check for auto-connect Classic bond
-            let auto_bond = loaded_classic_bonds.iter().find(|b| b.auto_connect);
+            // Re-read classic bonds from flash each cycle so that clears/stores
+            // take effect without a reboot.
+            let auto_bond_info = {
+                let mut f = flash_mutex.lock().await;
+                let bonds = bonding::load_classic_bonds(&mut f).await;
+                bonds
+                    .iter()
+                    .find(|b| b.auto_connect)
+                    .map(|b| (b.addr, b.profile_id))
+            };
 
-            if let Some(bond) = auto_bond {
-                let addr = bt_hci::param::BdAddr::new(bond.addr);
+            if let Some((addr_bytes, profile_id)) = auto_bond_info {
+                let addr = bt_hci::param::BdAddr::new(addr_bytes);
                 info!(
                     "[classic] Auto-connecting to bonded device: {:?} (profile: {:?})",
                     addr,
-                    DeviceProfile::from_id(bond.profile_id)
+                    DeviceProfile::from_id(profile_id)
                 );
                 addr
             } else {
@@ -420,6 +486,7 @@ pub async fn classic_bt_task<C>(
                                                             "[classic] Found: {:02x} rssi={} name_len={} CoD={:02x} hid={}",
                                                             addr, rssi, name_len, cod, is_hid
                                                         );
+                                                        cache_scan_name(&addr, &name, name_len);
                                                         let _ = crate::ble_state::BLE_EVENT_CHANNEL.try_send(
                                                             crate::ble_state::BleEvent::ScanResult(
                                                                 crate::ble_state::ScanResultData {
@@ -463,6 +530,12 @@ pub async fn classic_bt_task<C>(
                                     crate::rpc_log::error("Classic Inquiry failed");
                                 }
                             }
+                        }
+                        ClassicCommand::ClearBond { address } => {
+                            let addr = bt_hci::param::BdAddr::new(address);
+                            use bt_classic_host::LinkKeyStore;
+                            link_keys.borrow_mut().remove(&addr);
+                            info!("[classic] ClearBond: dropped link key for {:?}", addr);
                         }
                         ClassicCommand::ScanStop => {}
                         ClassicCommand::Disconnect => {}
@@ -514,11 +587,15 @@ pub async fn classic_bt_task<C>(
 
         // --- Mark Classic device as connected for status reporting ---
         let addr_bytes: &[u8; 6] = target_addr.raw().try_into().unwrap_or(&[0u8; 6]);
-        let classic_profile_id = loaded_classic_bonds
-            .iter()
-            .find(|b| &b.addr == addr_bytes)
-            .map(|b| b.profile_id)
-            .unwrap_or(DeviceProfile::MagicTrackpad.to_id());
+        let classic_profile_id = {
+            let mut f = flash_mutex.lock().await;
+            let bonds = bonding::load_classic_bonds(&mut f).await;
+            bonds
+                .iter()
+                .find(|b| &b.addr == addr_bytes)
+                .map(|b| b.profile_id)
+                .unwrap_or(DeviceProfile::MagicTrackpad.to_id())
+        };
         slots::set_classic_connected(addr_bytes, classic_profile_id);
 
         // --- Persist link key to flash after successful connect ---
@@ -528,6 +605,8 @@ pub async fn classic_bt_task<C>(
                 link_keys.borrow().load(&target_addr)
             };
             if let Some(ki) = key_info {
+                let (scan_name, scan_name_len) =
+                    lookup_scan_name(addr_bytes).unwrap_or(([0u8; 32], 0));
                 let mut f = flash_mutex.lock().await;
                 match bonding::store_classic_bond(
                     &mut f,
@@ -536,6 +615,8 @@ pub async fn classic_bt_task<C>(
                     ki.key_type,
                     classic_profile_id,
                     true, // auto_connect on first pairing
+                    &scan_name,
+                    scan_name_len,
                 )
                 .await
                 {
@@ -692,6 +773,17 @@ pub async fn classic_bt_task<C>(
                 Either::Second(ClassicCommand::Disconnect) => {
                     info!("[classic] Disconnect command received");
                     break;
+                }
+                Either::Second(ClassicCommand::ClearBond { address }) => {
+                    let addr = bt_hci::param::BdAddr::new(address);
+                    use bt_classic_host::LinkKeyStore;
+                    link_keys.borrow_mut().remove(&addr);
+                    info!("[classic] ClearBond: dropped link key for {:?}", addr);
+                    if addr.raw() == target_addr.raw() {
+                        info!("[classic] ClearBond targets active device, disconnecting");
+                        break;
+                    }
+                    continue;
                 }
                 Either::Second(_) => {
                     // Ignore other commands (Scan/Connect) while connected

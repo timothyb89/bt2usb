@@ -167,7 +167,7 @@ pub async fn core0_ble_main(
     }
 
     // Load Classic BT bonds from flash
-    let loaded_classic_bonds = bonding::load_classic_bonds(&mut flash).await;
+    let mut loaded_classic_bonds = bonding::load_classic_bonds(&mut flash).await;
     if !loaded_classic_bonds.is_empty() {
         for cb in &loaded_classic_bonds {
             info!(
@@ -330,7 +330,7 @@ pub async fn core0_ble_main(
                     &stack,
                     flash_mutex,
                     &mut loaded_bonds,
-                    &loaded_classic_bonds,
+                    &mut loaded_classic_bonds,
                     &mut active_device_pref,
                 ),
                 join(
@@ -339,12 +339,10 @@ pub async fn core0_ble_main(
                         connection_slot_task(1, &stack, flash_mutex),
                         connection_slot_task(2, &stack, flash_mutex),
                     ),
-                    // Classic BT task — connects to MT2 etc.
-                    classic::classic_bt_task(
-                        &classic_controller,
-                        flash_mutex,
-                        &loaded_classic_bonds,
-                    ),
+                    // Classic BT task — loads initial link keys from flash, then
+                    // is driven by CLASSIC_CMD_CHANNEL commands (including
+                    // ClearBond for in-memory link-key removal).
+                    classic::classic_bt_task(&classic_controller, flash_mutex),
                 ),
             ),
         ),
@@ -369,7 +367,10 @@ async fn connection_manager_loop<
     _stack: &'a Stack<'a, C, DefaultPacketPool>,
     flash: &'a FlashMutex,
     loaded_bonds: &mut heapless::Vec<bonding::LoadedBond, { bonding::MAX_BONDS }>,
-    loaded_classic_bonds: &[bonding::StoredClassicBond],
+    loaded_classic_bonds: &mut heapless::Vec<
+        bonding::StoredClassicBond,
+        { bonding::MAX_CLASSIC_BONDS },
+    >,
     active_device_pref: &mut Option<preferences::ActiveDevice>,
 ) {
     let mut manager_profile = determine_initial_profile(active_device_pref, loaded_bonds);
@@ -590,7 +591,8 @@ async fn connection_manager_loop<
 
             BleCommand::GetBonds => {
                 debug!("Getting bonds list");
-                commands::handle_get_bonds(loaded_bonds, loaded_classic_bonds);
+                let mut f = flash.lock().await;
+                commands::handle_get_bonds(&mut f, loaded_bonds).await;
             }
 
             BleCommand::ClearBonds => {
@@ -621,7 +623,14 @@ async fn connection_manager_loop<
                     }
                 }
                 let mut f = flash.lock().await;
-                commands::handle_clear_bond(&mut f, &address, transport_type, loaded_bonds).await;
+                commands::handle_clear_bond(
+                    &mut f,
+                    &address,
+                    transport_type,
+                    loaded_bonds,
+                    loaded_classic_bonds,
+                )
+                .await;
             }
 
             BleCommand::SetConfig { key, value } => {

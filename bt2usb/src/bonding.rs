@@ -594,9 +594,12 @@ pub async fn store_classic_bond(
     key_type: u8,
     profile_id: u8,
     auto_connect: bool,
+    device_name: &[u8; 32],
+    device_name_len: u8,
 ) -> Result<u8, ()> {
     let mut buffer = [0u8; 128];
     let mut target_slot: Option<u8> = None;
+    let mut preserved_name: Option<([u8; 32], u8)> = None;
 
     for i in 0..MAX_CLASSIC_BONDS as u8 {
         let key = CLASSIC_BOND_KEY_BASE + i;
@@ -612,6 +615,9 @@ pub async fn store_classic_bond(
             Ok(Some(existing)) => {
                 if existing.addr == *addr {
                     target_slot = Some(i);
+                    if existing.name_len > 0 {
+                        preserved_name = Some((existing.name, existing.name_len));
+                    }
                     break;
                 }
             }
@@ -631,14 +637,23 @@ pub async fn store_classic_bond(
     let slot = target_slot.ok_or(())?;
     let key = CLASSIC_BOND_KEY_BASE + slot;
 
+    // If the caller has a fresh name, use it; otherwise preserve what was already
+    // in flash. This keeps re-stores (e.g. profile updates) from wiping a name
+    // that was resolved during an earlier scan+pair.
+    let (name, name_len) = if device_name_len > 0 {
+        (*device_name, device_name_len)
+    } else {
+        preserved_name.unwrap_or_default()
+    };
+
     let stored = StoredClassicBond {
         addr: *addr,
         link_key: *link_key,
         key_type,
         profile_id,
         auto_connect,
-        name: [0u8; 32],
-        name_len: 0,
+        name,
+        name_len,
     };
 
     match store_item(
