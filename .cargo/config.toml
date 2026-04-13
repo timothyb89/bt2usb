@@ -2,3 +2,14 @@
 # Build the bt2usb firmware for the Raspberry Pi Pico W (RP2040)
 build-firmware = "build -p bt2usb --target thumbv6m-none-eabi"
 build-firmware-release = "build -p bt2usb --target thumbv6m-none-eabi --release"
+
+[target.thumbv6m-none-eabi]
+runner = "probe-rs run --chip RP2040"
+
+# Applied to every cargo invocation in this workspace (cargo merges config
+# files walking up from cwd). The bt2usb firmware needs 8 USB handler slots
+# for its HID interfaces; unrelated crates (bt2usb-cli, bt2usb-core) ignore
+# this value. Must be set here at the workspace root so `just build`, CI,
+# and `cargo build-firmware-release` pick it up regardless of cwd.
+[env]
+EMBASSY_USB_MAX_HANDLER_COUNT = "8"

@@ -1,9 +1,6 @@
-[target.thumbv6m-none-eabi]
-runner = "probe-rs run --chip RP2040"
-
+# Convenience config for users who `cd bt2usb && cargo build`.
+# The runner and EMBASSY_USB_MAX_HANDLER_COUNT env var are defined in the
+# workspace-root .cargo/config.toml so they apply to all invocation paths
+# (just, CI, `cargo build-firmware-release` from root).
 [build]
 target = "thumbv6m-none-eabi"
-
-[env]
-# embassy-usb needs enough handler slots for HID interfaces + device handler + BLE
-EMBASSY_USB_MAX_HANDLER_COUNT = "8"
