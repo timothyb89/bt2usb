@@ -12,7 +12,7 @@
 use core::sync::atomic::Ordering;
 use defmt::*;
 use embassy_executor::Executor;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select3, Either3};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_rp::Peri;
@@ -20,7 +20,7 @@ use embassy_usb::class::hid::{HidReader, HidReaderWriter, HidWriter};
 use static_cell::StaticCell;
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 
-use crate::ble_hid::{HidReportEvent, HidReportType, HID_REPORT_CHANNEL};
+use crate::ble_hid::{HidReportEvent, HidReportType, BATTERY_USB_SIGNAL, HID_REPORT_CHANNEL};
 use crate::scratch::DetectedOs;
 use crate::usb_hid::{
     serialize_keyboard_report, serialize_mouse_report_16bit, KeyboardHidReport,
@@ -212,6 +212,18 @@ async fn handle_mouse_report_standard(
     }
 }
 
+/// Send battery level Input report on the mouse interface (Report ID 2).
+///
+/// The report lives in a top-level Background Controls Application collection
+/// that is a sibling of the Mouse collection on the same interface, so Input
+/// reports here do not count as mouse activity for host idle-sleep purposes.
+async fn send_battery_level(writer: &mut HidWriter<'static, Driver<'static, USB>, 8>, level: u8) {
+    let buf = [0x02, level];
+    crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MOUSE, &buf, true);
+    let _ =
+        embassy_time::with_timeout(embassy_time::Duration::from_secs(5), writer.write(&buf)).await;
+}
+
 /// Check if a reprobe has been requested (USB switch detected) and reset if so.
 fn check_reprobe() {
     if crate::usb_hid::REPROBE_REQUESTED.load(Ordering::Relaxed) {
@@ -244,9 +256,13 @@ async fn usb_hid_handler_task_standard(
         crate::device_profile::ScrollAccumState::new(),
     ];
 
-    // Battery level is exposed as a Feature report only (Report ID 2 on the
-    // mouse interface); hosts poll via GET_REPORT. No unsolicited Input push,
-    // so no code here — see usb_hid::MOUSE_HIRES_16BIT_REPORT_DESC.
+    // Send initial battery level if already known. Report ID 2 lives in its
+    // own Background Controls top-level collection so this Input push should
+    // not count as mouse activity for host idle-sleep tracking.
+    let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
+    if initial_level != 0xFF {
+        send_battery_level(&mut mouse_writer, initial_level).await;
+    }
 
     // Periodic ticker for PTP passthrough reclocking. See mt2 task for
     // why this must be a Ticker rather than a Timer::after.
@@ -264,8 +280,14 @@ async fn usb_hid_handler_task_standard(
             }
         }
 
-        match select(HID_REPORT_CHANNEL.receive(), ptp_ticker.next()).await {
-            Either::First(event) => match event.report_type {
+        match select3(
+            HID_REPORT_CHANNEL.receive(),
+            BATTERY_USB_SIGNAL.wait(),
+            ptp_ticker.next(),
+        )
+        .await
+        {
+            Either3::First(event) => match event.report_type {
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
@@ -287,7 +309,10 @@ async fn usb_hid_handler_task_standard(
                     debug!("Unhandled HID report type");
                 }
             },
-            Either::Second(_) => {
+            Either3::Second(level) => {
+                send_battery_level(&mut mouse_writer, level).await;
+            }
+            Either3::Third(_) => {
                 // PTP passthrough tick: reclocked output at steady USB rate
                 if let Some(report) = ptp_passthrough.tick() {
                     if crate::ptp::PTP_ENABLED.load(Ordering::Relaxed) {
@@ -357,8 +382,14 @@ async fn usb_hid_handler_task_mt2(
     loop {
         check_reprobe();
 
-        match select(HID_REPORT_CHANNEL.receive(), mt2_ticker.next()).await {
-            Either::First(event) => match event.report_type {
+        match select3(
+            HID_REPORT_CHANNEL.receive(),
+            BATTERY_USB_SIGNAL.wait(),
+            mt2_ticker.next(),
+        )
+        .await
+        {
+            Either3::First(event) => match event.report_type {
                 HidReportType::Keyboard => {
                     handle_keyboard_report(&mut keyboard_writer, &event).await;
                 }
@@ -491,7 +522,12 @@ async fn usb_hid_handler_task_mt2(
                     debug!("Unhandled HID report type");
                 }
             },
-            Either::Second(_) => {
+            Either3::Second(_level) => {
+                // MT2 descriptor doesn't currently have a battery collection;
+                // swallow the signal so it doesn't stall the standard task.
+                debug!("MT2: battery update received (not forwarded)");
+            }
+            Either3::Third(_) => {
                 // MT2 passthrough tick: reclocked output at steady USB rate
                 if let Some((report, len)) = mt2_passthrough.tick() {
                     crate::usb_hid::record_hid_write(

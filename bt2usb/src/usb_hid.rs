@@ -262,15 +262,20 @@ pub const MOUSE_HIRES_REPORT_DESC: &[u8] = &[
 ///   Feature: 1 byte  [vert_mult:2, horiz_mult:2, padding:4]
 ///
 /// Report ID 2 — Battery Level (Battery System page 0x85, usage 0x65 AbsoluteStateOfCharge):
-///   Feature: 1 byte [level:8]  — returned on GET_REPORT(Feature, 2) from the host.
+///   Input:   1 byte [level:8]  — pushed when BLE reports a new level.
+///   Feature: 1 byte [level:8]  — returned on GET_REPORT(Feature, 2).
 ///
-/// Feature-only (no Input item): unsolicited Input reports on a mouse
-/// interface reset the Windows idle-sleep timer, so pushing a battery update
-/// every 5 minutes (the BLE battery poll interval) indefinitely keeps the
-/// host awake. Real wireless mice publish battery via Feature reports and
-/// let the host poll via `GET_REPORT`; Linux does the same through
-/// `hid_hw_request(HID_REQ_GET_REPORT)`, and Windows reads it via
-/// `HidD_GetFeature`.
+/// The battery is declared in its OWN top-level Application collection
+/// (Generic Device Controls / Background Controls), sibling to the Mouse
+/// collection on the same interface. Two reasons:
+///   1. Linux's hid-input only calls `hidinput_setup_battery()` when it sees
+///      the battery usage on an Input field — Feature-only didn't create a
+///      `/sys/class/power_supply/hid-*-battery` node.
+///   2. Windows resets its idle-sleep timer on any Input report inside a
+///      Mouse top-level collection, regardless of content. Putting battery
+///      in a separate Application collection — semantically tagged as
+///      "Background/Non-user Controls" per HID 1.4 — keeps battery pushes
+///      off the mouse-activity path.
 pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x02, // Usage (Mouse)
@@ -346,7 +351,13 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x95, 0x01, //     Report Count (1)
     0xB1, 0x01, //     Feature (Constant)
     0xC0, //   End Collection (Physical)
-    // ---- Report ID 2: Battery Level (Battery System page) ----
+    0xC0, // End Collection (Application, Mouse)
+    // ==== Top-level Battery collection (sibling to Mouse) ====
+    // Background Controls is an Application-type usage in the Generic Device
+    // Controls page (HID 1.4 §14), explicitly defined for non-user inputs.
+    0x05, 0x06, // Usage Page (Generic Device Controls)
+    0x09, 0x01, // Usage (Background Controls)
+    0xA1, 0x01, // Collection (Application)
     0x85, 0x02, //   Report ID (2)
     0x05, 0x85, //   Usage Page (Battery System)
     0x09, 0x65, //   Usage (Absolute State of Charge)
@@ -354,8 +365,10 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x25, 0x64, //   Logical Maximum (100)
     0x75, 0x08, //   Report Size (8)
     0x95, 0x01, //   Report Count (1)
-    0xB1, 0x02, //   Feature (Data, Variable, Absolute) — host polls via GET_REPORT
-    0xC0, // End Collection (Application)
+    0x81, 0x02, //   Input (Data, Variable, Absolute) — pushed on BLE update
+    0x09, 0x65, //   Usage (Absolute State of Charge)
+    0xB1, 0x02, //   Feature (Data, Variable, Absolute) — GET_REPORT query
+    0xC0, // End Collection (Application, Background Controls)
 ];
 
 /// Mouse request handler with Resolution Multiplier Feature report support.
