@@ -190,6 +190,18 @@ enum Command {
     /// Show firmware version
     Version,
 
+    /// Show per-interface USB HID write activity (debug instrumentation).
+    ///
+    /// Helps diagnose "device prevents host sleep" issues: any mouse/keyboard
+    /// HID write will reset the Windows idle-sleep timer, so this command
+    /// makes it easy to see if the firmware is silently emitting reports.
+    #[command(name = "hid-activity")]
+    HidActivity {
+        /// Poll repeatedly on an interval (seconds). Omit for a single snapshot.
+        #[arg(short, long)]
+        watch: Option<u64>,
+    },
+
     /// Restart the device
     Restart,
 
@@ -303,6 +315,7 @@ fn main() -> Result<()> {
         Command::GetConfig => cmd_get_config(&mut transport),
         Command::SetConfig { key, value } => cmd_set_config(&mut transport, &key, value),
         Command::Version => cmd_version(&mut transport),
+        Command::HidActivity { watch } => cmd_hid_activity(&mut transport, watch),
         Command::Restart => cmd_restart(&mut transport),
         Command::Reprobe => cmd_reprobe(&mut transport),
         Command::SetOs { os } => cmd_set_os(&mut transport, &os),

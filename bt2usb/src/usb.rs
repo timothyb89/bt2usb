@@ -65,6 +65,7 @@ async fn handle_keyboard_report(
             ],
         };
         let buf = serialize_keyboard_report(&report);
+        crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_KEYBOARD, &buf, false);
         if let Err(e) = writer.write(&buf).await {
             warn!("Keyboard write error: {:?}", e);
         }
@@ -157,6 +158,7 @@ async fn handle_mouse_report_standard(
             let mut buf = [0u8; 8];
             buf[0] = 0x01;
             buf[1..].copy_from_slice(&data);
+            crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MOUSE, &buf, true);
             if let Err(e) = writer.write(&buf).await {
                 warn!("Mouse write error (layout): {:?}", e);
             }
@@ -174,6 +176,7 @@ async fn handle_mouse_report_standard(
         let mut buf = [0u8; 8];
         buf[0] = 0x01;
         buf[1..].copy_from_slice(&data);
+        crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MOUSE, &buf, true);
         if let Err(e) = writer.write(&buf).await {
             warn!("Mouse write error (16-bit): {:?}", e);
         }
@@ -202,6 +205,7 @@ async fn handle_mouse_report_standard(
         let mut buf = [0u8; 8];
         buf[0] = 0x01;
         buf[1..].copy_from_slice(&data);
+        crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MOUSE, &buf, true);
         if let Err(e) = writer.write(&buf).await {
             warn!("Mouse write error (8-bit): {:?}", e);
         }
@@ -210,11 +214,10 @@ async fn handle_mouse_report_standard(
 
 /// Send battery level on the mouse interface (Report ID 2).
 async fn send_battery_level(writer: &mut HidWriter<'static, Driver<'static, USB>, 8>, level: u8) {
-    let _ = embassy_time::with_timeout(
-        embassy_time::Duration::from_secs(5),
-        writer.write(&[0x02, level]),
-    )
-    .await;
+    let buf = [0x02, level];
+    crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MOUSE, &buf, true);
+    let _ =
+        embassy_time::with_timeout(embassy_time::Duration::from_secs(5), writer.write(&buf)).await;
 }
 
 /// Check if a reprobe has been requested (USB switch detected) and reset if so.
@@ -307,6 +310,11 @@ async fn usb_hid_handler_task_standard(
                 // PTP passthrough tick: reclocked output at steady USB rate
                 if let Some(report) = ptp_passthrough.tick() {
                     if crate::ptp::PTP_ENABLED.load(Ordering::Relaxed) {
+                        crate::usb_hid::record_hid_write(
+                            crate::usb_hid::HID_IFACE_MT2,
+                            &report,
+                            true,
+                        );
                         if let Err(e) = ptp_writer.write(&report).await {
                             warn!("PTP tick write error: {:?}", e);
                         }
@@ -468,6 +476,7 @@ async fn usb_hid_handler_task_mt2(
                         buf[2] = x as u8;
                         buf[3] = y as u8;
                         // bytes 4-7: padding (matches MT2 descriptor)
+                        crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MT2, &buf, true);
                         if let Err(e) = mt2_writer.write(&buf).await {
                             warn!("MT2 mouse write error: {:?}", e);
                         }
@@ -492,6 +501,11 @@ async fn usb_hid_handler_task_mt2(
                             touch_synth.process_scroll(scaled)
                         };
                         for report in reports {
+                            crate::usb_hid::record_hid_write(
+                                crate::usb_hid::HID_IFACE_MT2,
+                                &report,
+                                true,
+                            );
                             if let Err(e) = mt2_writer.write(&report).await {
                                 warn!("MT2 trackpad write error: {:?}", e);
                             }
@@ -508,12 +522,18 @@ async fn usb_hid_handler_task_mt2(
             Either3::Third(_) => {
                 // MT2 passthrough tick: reclocked output at steady USB rate
                 if let Some((report, len)) = mt2_passthrough.tick() {
+                    crate::usb_hid::record_hid_write(
+                        crate::usb_hid::HID_IFACE_MT2,
+                        &report[..len],
+                        true,
+                    );
                     if let Err(e) = mt2_writer.write(&report[..len]).await {
                         warn!("MT2 passthrough tick write error: {:?}", e);
                     }
                 }
                 // TouchSynthesizer tick: Dial scroll synthesis
                 if let Some(report) = touch_synth.tick() {
+                    crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MT2, &report, true);
                     if let Err(e) = mt2_writer.write(&report).await {
                         warn!("MT2 synth tick write error: {:?}", e);
                     }

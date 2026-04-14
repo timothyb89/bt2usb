@@ -644,6 +644,96 @@ pub fn cmd_version(transport: &mut Transport) -> Result<()> {
     Ok(())
 }
 
+/// Print a single HID activity snapshot. Shared between the one-shot and
+/// --watch modes.
+fn print_hid_activity_snapshot(
+    now_ticks_us: u64,
+    entries: &[HidActivityEntry; HID_ACTIVITY_IFACE_COUNT],
+    prev_writes: Option<&[u32; HID_ACTIVITY_IFACE_COUNT]>,
+) {
+    println!(
+        "{:<10}  {:>14}  {:>10}  {:>10}  {:>9}",
+        "interface".bold(),
+        "last write".bold(),
+        "total".bold(),
+        "delta".bold(),
+        "report_id".bold(),
+    );
+    for (i, entry) in entries.iter().enumerate() {
+        let age = if entry.last_write_ticks_us == 0 {
+            "never".to_string()
+        } else {
+            let age_us = now_ticks_us.saturating_sub(entry.last_write_ticks_us);
+            let age_ms = age_us / 1000;
+            if age_ms < 1000 {
+                format!("{} ms ago", age_ms)
+            } else if age_ms < 60_000 {
+                format!("{:.1} s ago", age_ms as f64 / 1000.0)
+            } else {
+                format!("{:.1} min ago", age_ms as f64 / 60_000.0)
+            }
+        };
+        let delta = prev_writes
+            .map(|prev| entry.writes.saturating_sub(prev[i]))
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let report_id = if entry.last_report_id == 0 {
+            "-".to_string()
+        } else {
+            format!("0x{:02X}", entry.last_report_id)
+        };
+        println!(
+            "{:<10}  {:>14}  {:>10}  {:>10}  {:>9}",
+            hid_iface_label(i),
+            age,
+            entry.writes,
+            delta,
+            report_id,
+        );
+    }
+}
+
+pub fn cmd_hid_activity(transport: &mut Transport, watch_secs: Option<u64>) -> Result<()> {
+    let poll_once =
+        |t: &mut Transport| -> Result<(u64, [HidActivityEntry; HID_ACTIVITY_IFACE_COUNT])> {
+            let (resp, _) = t.request_simple(CMD_GET_HID_ACTIVITY, DEFAULT_TIMEOUT)?;
+            match resp {
+                Response::HidActivity {
+                    now_ticks_us,
+                    entries,
+                } => Ok((now_ticks_us, entries)),
+                Response::Error { code, message } => {
+                    anyhow::bail!("Device error (code {code}): {message}")
+                }
+                other => anyhow::bail!("Unexpected response: {other:?}"),
+            }
+        };
+
+    match watch_secs {
+        None => {
+            let (now, entries) = poll_once(transport)?;
+            print_hid_activity_snapshot(now, &entries, None);
+        }
+        Some(interval) => {
+            let interval = interval.max(1);
+            println!(
+                "{} (every {}s, Ctrl+C to stop)",
+                "Watching HID activity".cyan(),
+                interval,
+            );
+            let mut prev_writes: Option<[u32; HID_ACTIVITY_IFACE_COUNT]> = None;
+            loop {
+                let (now, entries) = poll_once(transport)?;
+                println!();
+                print_hid_activity_snapshot(now, &entries, prev_writes.as_ref());
+                prev_writes = Some(entries.map(|e| e.writes));
+                std::thread::sleep(Duration::from_secs(interval));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn cmd_restart(transport: &mut Transport) -> Result<()> {
     println!("{}", "Restarting device...".cyan());
     let (resp, _) = transport.request_simple(CMD_RESTART, DEFAULT_TIMEOUT)?;

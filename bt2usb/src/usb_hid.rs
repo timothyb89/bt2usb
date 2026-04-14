@@ -75,6 +75,94 @@ pub static SCROLL_THRESHOLD: AtomicU32 = AtomicU32::new(120);
 /// Caps fast-scroll bursts to stay in macOS's linear acceleration region.
 pub static MAX_DETENTS_PER_EMIT: AtomicU32 = AtomicU32::new(3);
 
+// ============ HID activity tracking ============
+//
+// Per-interface counters for debugging "device prevents host sleep" reports.
+// Windows resets its idle-sleep timer on any HID input report on a mouse or
+// keyboard interface, so stray writes (battery updates routed to the mouse
+// interface, idle/release notifications from the BLE peripheral, etc.) can
+// silently keep the host awake. These counters let us see at a glance which
+// interface is writing and how recently.
+//
+// `last_write_ticks` stores the embassy `Instant::now().as_ticks()` value at
+// the most recent write (1 tick = 1 µs on RP2040). 0 means "never written."
+// `writes` is a monotonic write count. Report ID of the most recent write is
+// also tracked so battery reports (ID 0x02 on the mouse interface) can be
+// distinguished from standard mouse reports (ID 0x01).
+
+pub const HID_IFACE_KEYBOARD: usize = 0;
+pub const HID_IFACE_MOUSE: usize = 1;
+pub const HID_IFACE_MT2: usize = 2;
+pub const HID_IFACE_RPC: usize = 3;
+pub const HID_IFACE_COUNT: usize = 4;
+
+pub static HID_ACTIVITY_LAST_TICKS: [AtomicU64; HID_IFACE_COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+// Use portable-atomic for AtomicU32 because fetch_add isn't available on
+// core::sync::atomic::AtomicU32 for ARMv6-M (RP2040 lacks LDREX/STREX).
+pub static HID_ACTIVITY_WRITES: [portable_atomic::AtomicU32; HID_IFACE_COUNT] = [
+    portable_atomic::AtomicU32::new(0),
+    portable_atomic::AtomicU32::new(0),
+    portable_atomic::AtomicU32::new(0),
+    portable_atomic::AtomicU32::new(0),
+];
+
+pub static HID_ACTIVITY_LAST_REPORT_ID: [AtomicU8; HID_IFACE_COUNT] = [
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+    AtomicU8::new(0),
+];
+
+fn iface_name(iface: usize) -> &'static str {
+    match iface {
+        HID_IFACE_KEYBOARD => "kbd",
+        HID_IFACE_MOUSE => "mouse",
+        HID_IFACE_MT2 => "mt2",
+        HID_IFACE_RPC => "rpc",
+        _ => "?",
+    }
+}
+
+/// Record a HID write for activity tracking and debug logging.
+///
+/// Call before `HidWriter::write` at every write site. Payload should be the
+/// bytes passed to the writer (Report ID in byte 0 for most of our paths;
+/// pass `report_id_in_byte0 = false` for keyboard/RPC interfaces that don't
+/// prepend an explicit report ID).
+pub fn record_hid_write(iface: usize, payload: &[u8], report_id_in_byte0: bool) {
+    if iface >= HID_IFACE_COUNT || payload.is_empty() {
+        return;
+    }
+    let now = embassy_time::Instant::now().as_ticks();
+    HID_ACTIVITY_LAST_TICKS[iface].store(now, Ordering::Relaxed);
+    HID_ACTIVITY_WRITES[iface].fetch_add(1, Ordering::Relaxed);
+
+    let (report_id, body) = if report_id_in_byte0 {
+        (payload[0], &payload[1..])
+    } else {
+        (0u8, payload)
+    };
+    HID_ACTIVITY_LAST_REPORT_ID[iface].store(report_id, Ordering::Relaxed);
+
+    // An "idle" write is one whose body (after Report ID) is entirely zero.
+    // These still reset the Windows idle-sleep timer on mouse/keyboard
+    // interfaces and are the most common cause of unwanted wake behavior.
+    let is_idle = body.iter().all(|b| *b == 0);
+    debug!(
+        "hid-tx {}: id=0x{:02X} len={} idle={}",
+        iface_name(iface),
+        report_id,
+        payload.len(),
+        is_idle,
+    );
+}
+
 pub use bt2usb_core::mouse::{apply_multiplier_i16, apply_multiplier_i8, MouseReport16};
 
 /// Keyboard HID report - re-export from usbd_hid for compatibility

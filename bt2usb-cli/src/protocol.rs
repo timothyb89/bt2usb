@@ -53,6 +53,7 @@ pub const CMD_UNSUBSCRIBE_DEFMT: u8 = 21;
 pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 pub const CMD_CLEAR_BOND: u8 = 23;
 pub const CMD_FACTORY_RESET: u8 = 24;
+pub const CMD_GET_HID_ACTIVITY: u8 = 27;
 
 // ============ Response IDs ============
 
@@ -63,6 +64,29 @@ pub const RESP_BONDS: u8 = 3;
 pub const RESP_CONFIG: u8 = 4;
 pub const RESP_VERSION: u8 = 5;
 pub const RESP_ACTIVE_DEVICE: u8 = 6;
+pub const RESP_HID_ACTIVITY: u8 = 7;
+
+/// Number of HID interfaces tracked by HidActivity responses. Must match
+/// `HID_ACTIVITY_IFACE_COUNT` in bt2usb-core / the firmware.
+pub const HID_ACTIVITY_IFACE_COUNT: usize = 4;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HidActivityEntry {
+    pub last_write_ticks_us: u64,
+    pub writes: u32,
+    pub last_report_id: u8,
+}
+
+/// Human label for a HID activity slot index.
+pub fn hid_iface_label(idx: usize) -> &'static str {
+    match idx {
+        0 => "keyboard",
+        1 => "mouse",
+        2 => "mt2/ptp",
+        3 => "rpc",
+        _ => "?",
+    }
+}
 
 // ============ Event IDs ============
 
@@ -381,6 +405,10 @@ pub enum Response {
         #[allow(dead_code)]
         addr_kind: u8,
     },
+    HidActivity {
+        now_ticks_us: u64,
+        entries: [HidActivityEntry; HID_ACTIVITY_IFACE_COUNT],
+    },
 }
 
 #[derive(Debug)]
@@ -535,6 +563,24 @@ pub fn decode_response(cbor: &[u8]) -> Result<Response, String> {
             }
             let addr_kind = d.u8().map_err(|e| format!("kind: {e}"))?;
             Ok(Response::ActiveDevice { address, addr_kind })
+        }
+        RESP_HID_ACTIVITY => {
+            let now_ticks_us = d.u64().map_err(|e| format!("now: {e}"))?;
+            let _inner_arr = d.array().map_err(|e| format!("entries arr: {e}"))?;
+            let mut entries = [HidActivityEntry::default(); HID_ACTIVITY_IFACE_COUNT];
+            for entry in entries.iter_mut() {
+                // Each entry is a 3-element array; tolerate early end for fwd compat.
+                if d.array().is_err() {
+                    break;
+                }
+                entry.last_write_ticks_us = d.u64().unwrap_or(0);
+                entry.writes = d.u32().unwrap_or(0);
+                entry.last_report_id = d.u8().unwrap_or(0);
+            }
+            Ok(Response::HidActivity {
+                now_ticks_us,
+                entries,
+            })
         }
         _ => Err(format!("unknown response id: {resp_id}")),
     }

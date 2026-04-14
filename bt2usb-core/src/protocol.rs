@@ -65,6 +65,7 @@ pub const CMD_CLEAR_BOND: u8 = 23;
 pub const CMD_FACTORY_RESET: u8 = 24;
 pub const CMD_CLASSIC_SCAN: u8 = 25;
 pub const CMD_CLASSIC_SCAN_STOP: u8 = 26;
+pub const CMD_GET_HID_ACTIVITY: u8 = 27;
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -131,6 +132,8 @@ pub enum Request {
     },
     /// Factory reset: clear all bonds and preferences, then restart.
     FactoryReset,
+    /// Get per-interface HID write activity counters (debug instrumentation).
+    GetHidActivity,
 }
 
 // ============ Response (device -> host) ============
@@ -141,6 +144,23 @@ pub const RESP_STATUS: u8 = 2;
 pub const RESP_BONDS: u8 = 3;
 pub const RESP_CONFIG: u8 = 4;
 pub const RESP_VERSION: u8 = 5;
+// 6 is reserved by a legacy CLI `RESP_ACTIVE_DEVICE` path that was never
+// emitted by firmware. Use 7 to avoid any wire-format ambiguity.
+pub const RESP_HID_ACTIVITY: u8 = 7;
+
+/// Number of HID interfaces tracked by HidActivity reports.
+/// Must match `HID_IFACE_COUNT` in the firmware.
+pub const HID_ACTIVITY_IFACE_COUNT: usize = 4;
+
+/// One interface's activity snapshot: (last_write_ticks_us, writes, last_report_id).
+/// `last_write_ticks_us == 0` means "never written since boot".
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct HidActivityEntry {
+    pub last_write_ticks_us: u64,
+    pub writes: u32,
+    pub last_report_id: u8,
+}
 
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -330,6 +350,7 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         CMD_FACTORY_RESET => Ok(Request::FactoryReset),
         CMD_CLASSIC_SCAN => Ok(Request::ClassicScan),
         CMD_CLASSIC_SCAN_STOP => Ok(Request::ClassicScanStop),
+        CMD_GET_HID_ACTIVITY => Ok(Request::GetHidActivity),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }
@@ -495,6 +516,63 @@ pub fn encode_response_config(
             .u32(scroll_smoothing)
             .unwrap();
     })
+}
+
+/// Encode a HID activity response.
+///
+/// Wire format: `[RESP_HID_ACTIVITY, now_ticks_us, [[last_us, writes, report_id], ...]]`
+/// Timestamps are raw embassy tick counts (1 µs per tick on RP2040). The host
+/// computes "N ms ago" as `(now - last) / 1000`.
+pub fn encode_response_hid_activity(
+    buf: &mut [u8],
+    now_ticks_us: u64,
+    entries: &[HidActivityEntry; HID_ACTIVITY_IFACE_COUNT],
+) -> EncResult {
+    cbor_encode(buf, |e| {
+        e.array(3)
+            .unwrap()
+            .u8(RESP_HID_ACTIVITY)
+            .unwrap()
+            .u64(now_ticks_us)
+            .unwrap();
+        e.array(HID_ACTIVITY_IFACE_COUNT as u64).unwrap();
+        for entry in entries {
+            e.array(3)
+                .unwrap()
+                .u64(entry.last_write_ticks_us)
+                .unwrap()
+                .u32(entry.writes)
+                .unwrap()
+                .u8(entry.last_report_id)
+                .unwrap();
+        }
+    })
+}
+
+/// Decode a HID activity response body (CBOR, after header).
+/// Returns `(now_ticks_us, entries)`.
+pub fn decode_response_hid_activity(
+    cbor: &[u8],
+) -> Result<(u64, [HidActivityEntry; HID_ACTIVITY_IFACE_COUNT]), ProtocolError> {
+    let mut d = Decoder::new(cbor);
+    let _arr = d.array().map_err(|_| ProtocolError::InvalidCbor)?;
+    let tag = d.u8().map_err(|_| ProtocolError::InvalidCbor)?;
+    if tag != RESP_HID_ACTIVITY {
+        return Err(ProtocolError::InvalidCbor);
+    }
+    let now = d.u64().map_err(|_| ProtocolError::MissingField)?;
+    let count = d
+        .array()
+        .map_err(|_| ProtocolError::InvalidCbor)?
+        .ok_or(ProtocolError::MissingField)?;
+    let mut entries: [HidActivityEntry; HID_ACTIVITY_IFACE_COUNT] = Default::default();
+    for entry in entries.iter_mut().take(count as usize) {
+        let _inner = d.array().map_err(|_| ProtocolError::InvalidCbor)?;
+        entry.last_write_ticks_us = d.u64().map_err(|_| ProtocolError::MissingField)?;
+        entry.writes = d.u32().map_err(|_| ProtocolError::MissingField)?;
+        entry.last_report_id = d.u8().map_err(|_| ProtocolError::MissingField)?;
+    }
+    Ok((now, entries))
 }
 
 // ============ Event encoding ============

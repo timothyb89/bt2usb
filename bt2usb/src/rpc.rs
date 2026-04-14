@@ -31,6 +31,7 @@ async fn send_frame(
     for chunk in frame.chunks(64) {
         let mut buf = [0u8; 64];
         buf[..chunk.len()].copy_from_slice(chunk);
+        crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_RPC, &buf, false);
         writer.write(&buf).await?;
     }
     Ok(())
@@ -476,6 +477,20 @@ async fn dispatch_request(
 
         protocol::Request::GetVersion => {
             protocol::encode_response_version(cbor_buf, VERSION).unwrap_or(0)
+        }
+
+        protocol::Request::GetHidActivity => {
+            use core::sync::atomic::Ordering::Relaxed;
+            let mut entries: [protocol::HidActivityEntry; protocol::HID_ACTIVITY_IFACE_COUNT] =
+                Default::default();
+            for (i, entry) in entries.iter_mut().enumerate() {
+                entry.last_write_ticks_us =
+                    crate::usb_hid::HID_ACTIVITY_LAST_TICKS[i].load(Relaxed);
+                entry.writes = crate::usb_hid::HID_ACTIVITY_WRITES[i].load(Relaxed);
+                entry.last_report_id = crate::usb_hid::HID_ACTIVITY_LAST_REPORT_ID[i].load(Relaxed);
+            }
+            let now = embassy_time::Instant::now().as_ticks();
+            protocol::encode_response_hid_activity(cbor_buf, now, &entries).unwrap_or(0)
         }
 
         protocol::Request::SetActiveDevice { address, addr_kind } => {
