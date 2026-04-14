@@ -262,17 +262,15 @@ pub const MOUSE_HIRES_REPORT_DESC: &[u8] = &[
 ///   Feature: 1 byte  [vert_mult:2, horiz_mult:2, padding:4]
 ///
 /// Report ID 2 — Battery Level (Battery System page 0x85, usage 0x65 AbsoluteStateOfCharge):
-///   Input:   1 byte  [level:8]  — sent proactively when BLE battery changes;
-///                                 Linux hid-battery reads this and updates
-///                                 /sys/class/power_supply/hid-*/capacity
-///   Feature: 1 byte  [level:8]  — returned on GET_REPORT(Feature, 2);
-///                                 readable on Windows via HidD_GetFeature
+///   Feature: 1 byte [level:8]  — returned on GET_REPORT(Feature, 2) from the host.
 ///
-/// Usage 0x65 (AbsoluteStateOfCharge) is required — kernel only calls
-/// hidinput_setup_battery() for this usage. Usage 0x44 (Charging) is also
-/// recognized but only sets EV_PWR without creating a power_supply.
-/// Embedding battery in the mouse interface is required for Linux power_supply
-/// integration: hidinput_setup_battery() is only called for input interfaces.
+/// Feature-only (no Input item): unsolicited Input reports on a mouse
+/// interface reset the Windows idle-sleep timer, so pushing a battery update
+/// every 5 minutes (the BLE battery poll interval) indefinitely keeps the
+/// host awake. Real wireless mice publish battery via Feature reports and
+/// let the host poll via `GET_REPORT`; Linux does the same through
+/// `hid_hw_request(HID_REQ_GET_REPORT)`, and Windows reads it via
+/// `HidD_GetFeature`.
 pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x02, // Usage (Mouse)
@@ -351,14 +349,12 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     // ---- Report ID 2: Battery Level (Battery System page) ----
     0x85, 0x02, //   Report ID (2)
     0x05, 0x85, //   Usage Page (Battery System)
-    0x09, 0x65, //   Usage (Absolute State of Charge) — triggers hidinput_setup_battery()
+    0x09, 0x65, //   Usage (Absolute State of Charge)
     0x15, 0x00, //   Logical Minimum (0)
     0x25, 0x64, //   Logical Maximum (100)
     0x75, 0x08, //   Report Size (8)
     0x95, 0x01, //   Report Count (1)
-    0x81, 0x02, //   Input (Data, Variable, Absolute) — proactive push
-    0x09, 0x65, //   Usage (Absolute State of Charge)
-    0xB1, 0x02, //   Feature (Data, Variable, Absolute) — GET_REPORT query
+    0xB1, 0x02, //   Feature (Data, Variable, Absolute) — host polls via GET_REPORT
     0xC0, // End Collection (Application)
 ];
 
