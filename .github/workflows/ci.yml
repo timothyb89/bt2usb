@@ -51,16 +51,35 @@ jobs:
         with:
           workspaces: "."
 
+      - name: Cache elf2uf2-rs
+        id: cache-elf2uf2
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/elf2uf2-rs
+          key: elf2uf2-rs-2.2.0-${{ runner.os }}
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Install elf2uf2-rs
+        if: steps.cache-elf2uf2.outputs.cache-hit != 'true'
+        run: cargo install elf2uf2-rs --version 2.2.0 --locked
+
       - name: Download CYW43 firmware
         run: just download-firmware
 
-      - name: Build
-        run: just build release
+      - name: Build UF2
+        run: just build-uf2 release
 
       - uses: actions/upload-artifact@v7
         with:
           name: firmware-elf
           path: target/thumbv6m-none-eabi/release/bt2usb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-uf2
+          path: bt2usb/bt2usb.uf2
 
   core-test:
     name: Core Tests

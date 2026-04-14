@@ -70,14 +70,8 @@ sequential-storage = { version = "4", features = ["defmt-03"] }
 minicbor = { version = "0.25", default-features = false, features = ["derive"] }
 cobs = { version = "0.3", default-features = false }
 
-[profile.dev]
-debug = 2
-opt-level = 1
-
-[profile.release]
-debug = 2
-lto = true
-opt-level = "s"
+# Profiles live in the workspace-root Cargo.toml; cargo ignores per-package
+# profile sections in workspace members.
 
 # Set defmt log level to INFO to hide DEBUG spam from dependencies
 [features]

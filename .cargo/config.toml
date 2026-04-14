@@ -5,6 +5,16 @@ build-firmware-release = "build -p bt2usb --target thumbv6m-none-eabi --release"
 
 [target.thumbv6m-none-eabi]
 runner = "probe-rs run --chip RP2040"
+# Strip absolute build paths so CI and local builds produce byte-identical
+# firmware. rustc applies the longest matching prefix, and unmatched paths
+# pass through unchanged, so listing every well-known location is harmless.
+# Add an entry here if your local checkout sits somewhere else.
+rustflags = [
+    "--remap-path-prefix=/workspaces/bt2usb=/bt2usb",                # dev container
+    "--remap-path-prefix=/home/runner/work/bt2usb/bt2usb=/bt2usb",   # GitHub Actions
+    "--remap-path-prefix=/usr/local/cargo=/cargo",                   # dev container CARGO_HOME
+    "--remap-path-prefix=/home/runner/.cargo=/cargo",                # GitHub Actions CARGO_HOME
+]
 
 # Applied to every cargo invocation in this workspace (cargo merges config
 # files walking up from cwd). The bt2usb firmware needs 8 USB handler slots
